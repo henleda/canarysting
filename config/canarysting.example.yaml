@@ -1,0 +1,43 @@
+# Example operator configuration. See docs/ENGINE.md, docs/SCOPE.md, docs/STING.md.
+
+# Per-tier strictness: target false-positive rate, 0.01 (permissive) .. 1.00 (strict).
+# Higher = stricter. Low tiers tolerate more FP than high tiers, by design.
+confidence_required:
+  tier1: 0.30
+  tier2: 0.60
+  tier3: 0.90
+
+# Enforcement mode for tiers 2-3. Tiers 0-1 are always async.
+# async MUST enforce in the kernel.
+mode:
+  tier2: async
+  tier3: inline
+
+# Inline fail behavior per tier. Tier 1 fail-open, Tier 3 fail-closed.
+fail_closed:
+  tier1: false
+  tier3: true
+
+# Attrition aggressiveness FLOOR. Default conservative; aggressive is explicit.
+# passive | moderate | aggressive
+sting_floor: passive
+
+# Sting self-cost budget (attrition must not burn the defender).
+sting_budget:
+  max_bytes_per_flow: 5242880   # 5 MiB
+  max_depth: 8
+  max_duration_seconds: 120
+  global_ceiling_bytes: 524288000  # 500 MiB host-wide
+
+# Scope. Leave zones empty to use derived cluster identity. On environments with
+# no derivable cluster identity (e.g. standalone nginx), boundary is REQUIRED or
+# the engine refuses to start. Never falls back to a global scope.
+scope:
+  zones: []          # optional operator-defined trust zones (must not overlap)
+  boundary: ""       # required only when no cluster identity is derivable
+
+# Correlation window for scoring. Tight windows reduce false positives.
+scoring:
+  window_seconds: 300
+  benign_exclusion:  # service accounts / monitoring / scheduled tasks
+    - "system:serviceaccount:monitoring"

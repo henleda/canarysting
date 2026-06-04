@@ -1,0 +1,13 @@
+# Go
+/bin/
+*.test
+*.out
+# eBPF build artifacts
+*.bpf.o
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+# local agent tooling (not product code)
+.claude-flow/
+.swarm/

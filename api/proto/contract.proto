@@ -1,0 +1,39 @@
+// contract.proto mirrors internal/contract for any out-of-process boundary
+// (e.g. an adapter running as a sidecar talking to the engine over gRPC).
+// internal/contract is the source of truth; keep this in sync deliberately.
+// See docs/ARCHITECTURE.md.
+
+syntax = "proto3";
+package canarysting.v1;
+option go_package = "github.com/canarysting/canarysting/api/gen;canarystingv1";
+
+message FlowIdentity {
+  uint64 socket_cookie = 1; // the L7<->kernel join key; required to enforce
+  uint64 cgroup_id = 2;
+  uint32 pid = 3;
+  string spiffe_id = 4;
+  map<string, string> l7_attributes = 5;
+}
+
+message SignalEvent {
+  FlowIdentity flow = 1;
+  string canary_type = 2;
+  string scope = 3;
+  int64 timestamp_unix_ms = 4;
+}
+
+enum Tier { TIER_OBSERVE = 0; TIER_TAG = 1; TIER_CONTAIN = 2; TIER_JAIL = 3; }
+enum EnforcementMode { MODE_ASYNC = 0; MODE_INLINE = 1; }
+
+message Verdict {
+  FlowIdentity flow = 1;
+  string scope = 2;
+  Tier tier = 3;
+  EnforcementMode mode = 4;
+  double score = 5;
+  bool calibrated = 6;
+}
+
+service Engine {
+  rpc Submit(SignalEvent) returns (Verdict);
+}
