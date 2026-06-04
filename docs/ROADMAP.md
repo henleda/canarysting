@@ -299,16 +299,94 @@ precisely because we refuse to fake it.
 
 ---
 
-## 7. Kubernetes feasibility (research)
+## 7. Kubernetes feasibility (research findings, 2026-06-03)
 
-Research is underway (background) on whether the design — Envoy ext_proc + host
-eBPF cgroup/TC enforcement keyed by the socket cookie + SPIFFE/cluster-UID scope
-isolation — runs cleanly in Kubernetes/EKS, including: the socket-cookie join
-across the pod/sidecar boundary, the eBPF DaemonSet + BTF requirements on EKS node
-AMIs, coexistence with the CNI (Cilium / AWS VPC CNI), Istio ext_proc support and
-ambient-mesh implications, and socket→pod→workload-identity attribution. Findings
-and a recommended K8s approach will be folded in here and into M11 when the
-research completes.
+**Bottom line: Kubernetes is not a problem for this design — it is the design's
+native habitat.** The substrate we need (a privileged eBPF DaemonSet doing
+cgroup/TCX enforcement, socket-cookie correlation, and cgroup→pod attribution) is
+exactly what Cilium and Tetragon already ship in production on EKS. The novel
+parts (deception trigger, non-triggering baseline multiplier, attrition) sit
+*above* the substrate and are unaffected by the orchestrator. Porting to K8s is
+deployment-shape work, not a redesign. There is **one** real integration risk to
+de-risk early (socket-cookie stamping at Envoy, below); it applies to the
+single-host demo too, so we hit it during M4/M5 regardless.
+
+### What the research confirmed
+
+- **The socket-cookie L7↔kernel join works on Linux/K8s.** The socket cookie is
+  stable for the life of the socket and is a global unique identifier. Userspace
+  can read it via `getsockopt(SO_COOKIE)` and it equals the value
+  `bpf_get_socket_cookie()` sees in the kernel (verified by a kernel selftest that
+  cross-checks SO_COOKIE against `sock_diag`). That is precisely the join
+  `IDENTITY.md` mandates. **Caveat:** the cookie is *per-socket and host-local* —
+  it never crosses the wire, and a client socket and a server socket have
+  different cookies. So we enforce on the offending socket *where it lives*; we do
+  not correlate a cookie across hosts. That matches our model (enforce the flow at
+  its endpoint) but must stay explicit.
+- **EKS node AMIs are modern and BTF-capable.** Current EKS-optimized **Amazon
+  Linux 2023** AMIs run kernel **6.12.x** (e.g. 6.12.46, 6.12.53 in late-2025
+  builds); **Bottlerocket** is typically first to pick up new kernel eBPF
+  features. AL2 AMIs stopped publishing **Nov 26, 2025**; AL2023 + Bottlerocket
+  are the supported AMIs for K8s 1.33+. **Caveat:** there are real, reported
+  per-build BTF breakages ("failed to find valid kernel BTF" on specific
+  AL2023/Bottlerocket versions), so we **pin and test the exact AMI version** and
+  carry a BTFHub fallback for CO-RE.
+- **CNI coexistence is solved by TCX + cgroup hooks.** **TCX** (kernel 6.6+) gives
+  safe ownership, explicit ordering, and multi-program coexistence at the TC hooks
+  — built specifically so third-party BPF coexists with the CNI; Cilium itself
+  migrated to TCX. The AWS VPC CNI is the EKS default and chains cleanly. Doing
+  enforcement at **cgroup hooks** (`cgroup/skb`, `cgroup/connect`) plus TCX, rather
+  than clobbering legacy `tc`, keeps us out of the CNI's way. **Tetragon (GA v1.0,
+  2024, production on EKS) is the existence proof** for our exact deployment shape:
+  a privileged eBPF security DaemonSet running alongside the CNI.
+- **Socket→pod→workload attribution is well-trodden.** cgroup v2 gives every
+  process a stable 64-bit `cgroupid`; `bpf_skb_cgroup_id()` (kernel 5.2+) reads it,
+  and `skb->sk → task → cgroup` lets us map socket→container→pod. Tetragon already
+  enriches with pod/namespace metadata. **SPIFFE identity stays an L7-side
+  attribute** (Envoy sees it via mTLS) joined to kernel state by the socket cookie
+  — exactly `SCOPE.md` + `IDENTITY.md`, unchanged.
+- **Envoy/Istio: own our Envoy; mind ambient mode.** ext_proc/ext_authz inject
+  via `EnvoyFilter` in **sidecar** Istio, but the `EnvoyFilter` API is still Alpha
+  and fragile, and is **not supported in Istio ambient mode** at all. In ambient,
+  L7 lives in **waypoint proxies** (ztunnel is Rust, L4-only); ext_proc must attach
+  at the waypoint (Envoy Gateway / kgateway support this). **Implication:** the
+  credible, robust path is to **own the Envoy we attach to** (ship it, or be the
+  waypoint) rather than patch a customer's sidecar via a fragile EnvoyFilter —
+  which also matches our "thin adapter we control" model.
+
+### The one early risk to de-risk (M4/M5)
+
+**Stamping the socket cookie at Envoy.** Envoy does not natively surface
+`SO_COOKIE` to an ext_proc filter, and `bpf_get_socket_cookie()` is unavailable in
+some eBPF contexts (e.g. `cgroup/getsockopt`). The proven pattern is a **sockops
+eBPF program that captures the cookie and a map keyed by the ephemeral source
+port**, which the L7 side (or a companion cgroup program) reads back to stamp the
+cookie onto the signal event. This is the load-bearing piece of `IDENTITY.md`'s
+"no second join mechanism" rule, and it is the same on a single host as in K8s —
+so we **prove it during M4/M5 on the single-host demo**, and K8s inherits it.
+
+### Recommended K8s approach (for M11)
+
+- eBPF enforcement + observation as a **privileged DaemonSet** (CAP_BPF,
+  CAP_NET_ADMIN, CAP_SYS_ADMIN as required), one per node — the Tetragon shape.
+- Enforce at **cgroup hooks + TCX**, never legacy `tc` clobbering; chain cleanly
+  with AWS VPC CNI (and validate ordering if Cilium CNI is present).
+- **Own the Envoy** (our dataplane, or the ambient waypoint); the sockops bridge
+  stamps the socket cookie where ext_proc can't read it directly.
+- **EKS nodes:** AL2023 or Bottlerocket, **pinned AMI version**, kernel 6.x with
+  BTF verified on that exact build; CO-RE with a BTFHub fallback.
+- **Scope key** from SPIFFE trust domain (mesh) or cluster UID, joined to kernel
+  state by socket cookie + cgroup→pod attribution. No design change from §
+  `SCOPE.md`.
+
+*Sources:* eBPF socket-cookie docs (docs.ebpf.io); LWN — getsockopt SO_COOKIE
+(lwn.net/Articles/719719); kernel BPF docs (docs.kernel.org/bpf); EKS AL2023/
+Bottlerocket AMI + kernel notes (docs.aws.amazon.com/eks, aws.amazon.com/
+bottlerocket, bottlerocket-os & projectcalico issues for BTF caveats); TCX
+coexistence (eunomia.dev/tutorials/50-tcx, docs.cilium.io); Tetragon (tetragon.io,
+github.com/cilium/tetragon); cgroup-id attribution (kernel docs, howtech
+substack); Istio ambient + EnvoyFilter/ext_proc (istio.io/docs/ambient,
+kgateway.dev, cncf.io). Full URLs captured in the research session.
 
 ---
 
