@@ -6,7 +6,7 @@ jobs:
     name: go (fmt, vet, build, test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -20,7 +20,7 @@ jobs:
     name: ebpf (clang build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install clang/llvm + libbpf headers
         run: |
           sudo apt-get update
