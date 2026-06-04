@@ -9,8 +9,8 @@ import "github.com/canarysting/canarysting/internal/contract"
 
 // State reports a scope's calibration status, surfaced to operators.
 type State struct {
-	Calibrated   bool
-	EvidenceSeen int
+	Calibrated    bool
+	EvidenceSeen  int
 	EvidenceFloor int
 }
 

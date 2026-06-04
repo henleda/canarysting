@@ -1,13 +1,33 @@
 name: ci
 on: [push, pull_request]
+
 jobs:
-  build:
+  go:
+    name: go (fmt, vet, build, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version-file: go.mod }
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test ./...
-  # TODO: add an eBPF build job (clang) for bpf/enforce once implemented.
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make fmt-check
+      - run: make vet
+      - run: make build
+      - run: make test
+
+  ebpf:
+    name: ebpf (clang build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang/llvm + libbpf headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev
+      - name: clang version
+        run: clang --version
+      # Compiles bpf/enforce/*.bpf.c to BPF objects. While the kernel C is a
+      # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
+      # is implemented (see docs/STING.md, docs/TECHNICAL_ARCHITECTURE.md).
+      - run: make bpf

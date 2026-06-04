@@ -55,10 +55,10 @@ type SignalEvent struct {
 type Tier int
 
 const (
-	TierObserve   Tier = 0 // log, attribute, score; no action
-	TierTag       Tier = 1 // mark suspicious, feed richer decoys; no blocking
-	TierContain   Tier = 2 // rate-limit / tarpit in kernel; attrition may begin
-	TierJail      Tier = 3 // hard deny / jail, or full adversarial attrition
+	TierObserve Tier = 0 // log, attribute, score; no action
+	TierTag     Tier = 1 // mark suspicious, feed richer decoys; no blocking
+	TierContain Tier = 2 // rate-limit / tarpit in kernel; attrition may begin
+	TierJail    Tier = 3 // hard deny / jail, or full adversarial attrition
 )
 
 // EnforcementMode is where a verdict is enforced. Tier 0-1 are always async.
@@ -68,7 +68,7 @@ type EnforcementMode int
 
 const (
 	ModeAsync  EnforcementMode = iota // enforce on subsequent packets, in kernel
-	ModeInline                         // hold the request for the verdict
+	ModeInline                        // hold the request for the verdict
 )
 
 // StingFloor is the operator-selected maximum aggressiveness of attrition.
@@ -78,8 +78,8 @@ type StingFloor int
 
 const (
 	FloorPassive    StingFloor = iota // slow responses / tarpit only
-	FloorModerate                      // plausible fake resources, keep them looping
-	FloorAggressive                    // full adversarial, token-maximizing
+	FloorModerate                     // plausible fake resources, keep them looping
+	FloorAggressive                   // full adversarial, token-maximizing
 )
 
 // Verdict is the engine's output for a flow. Adapters and the sting layer act
