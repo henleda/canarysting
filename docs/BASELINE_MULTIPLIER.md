@@ -218,6 +218,32 @@ Counsel should foreground the non-triggering constraint as the point of novelty,
 
 ---
 
+## 10a. Implementation status (M2)
+
+The multiplier math and gating are implemented and tested in
+`internal/engine/baseline` (ROADMAP M2):
+
+- **Math:** `Deviation` (per-feature cap at `c_max` → Euclidean norm), `G`
+  (saturating Hill `d/(d+k)`), `MFromD` / `MFromFeatures` (`M = 1 + (M_max−1)·g`,
+  bounded to `[1, M_max]`). Defaults `M_max=3.0`, `k=0.5`, `c_max=1.0` live here
+  and in `config/canarysting.example.yaml`.
+- **Composition:** `scoring.WindowedScorer` applies `Score = B × M` via a
+  `MultiplierSource`, clamping any `M < 1` up to the floor of one. Default source
+  is `NeutralMultiplier` (M = 1).
+- **Gating:** `baseline.Store` forces `M = 1.0` unless the scope is calibrated
+  (tied to the SAME evidence floor as the canary weights), the baseline is live
+  (fresh), and the current time bucket has sufficient data — the three force-to-
+  neutral conditions of §6, each tested.
+- **Tests:** the five invariants of §1, the four worked examples of §5, per-
+  feature outlier bounding, monotonicity/saturation, and the three gates.
+
+**Fed in a later milestone (the seam is in place):** the real per-scope baseline
+and the per-flow `Features` derivation (adjacency/identity/port/volume/cadence vs
+the time-bucketed baseline) come from the eBPF observation path (`bpf/loader`,
+M5/M7). Until a scope's baseline is marked live, the scoring path returns `M = 1`
+everywhere — touch-only scoring, the safe cold-start behavior. `baseline.Store.M`
+already evaluates the full math+gating on explicit feature vectors today.
+
 ## 11. Open tuning items
 
 These are values to calibrate during implementation, not open design questions. The design is fixed by the invariants in Section 1.

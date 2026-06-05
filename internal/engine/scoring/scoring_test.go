@@ -116,3 +116,39 @@ func TestScore_EmptyScopeIsError(t *testing.T) {
 		t.Fatal("empty scope must error, never score")
 	}
 }
+
+// fixedMultiplier returns a constant M for the Score = B × M tests.
+type fixedMultiplier float64
+
+func (m fixedMultiplier) Multiplier(contract.ScopeKey, contract.FlowIdentity, time.Time) float64 {
+	return float64(m)
+}
+
+func TestScore_AppliesBaselineMultiplier(t *testing.T) {
+	s := New(5*time.Minute, uniformWeights{}, nil).UseMultiplier(fixedMultiplier(2.0))
+	t0 := time.Unix(1_000_000, 0)
+	s.Score("scope", ev("scope", 1, "a", t0))
+	s.Score("scope", ev("scope", 1, "b", t0.Add(time.Second)))
+	got, _ := s.Score("scope", ev("scope", 1, "c", t0.Add(2*time.Second)))
+	if got != 6.0 { // base 3.0 × M 2.0
+		t.Fatalf("Score = B×M: got %.2f, want 6.0", got)
+	}
+}
+
+func TestScore_MultiplierClampedToFloorOfOne(t *testing.T) {
+	// A misbehaving source returning < 1 must never suppress the base.
+	s := New(5*time.Minute, uniformWeights{}, nil).UseMultiplier(fixedMultiplier(0.5))
+	got, _ := s.Score("scope", ev("scope", 1, "a", time.Unix(1_000_000, 0)))
+	if got != 1.0 {
+		t.Fatalf("M<1 must clamp to floor 1: got %.2f, want 1.0", got)
+	}
+}
+
+func TestScore_ZeroBaseStaysZeroUnderAnyMultiplier(t *testing.T) {
+	// B = 0 (here via benign exclusion) × M = 0, even at maximal M. The guardrail.
+	s := New(5*time.Minute, uniformWeights{}, excludeCookie(9)).UseMultiplier(fixedMultiplier(3.0))
+	got, _ := s.Score("scope", ev("scope", 9, "a", time.Unix(1_000_000, 0)))
+	if got != 0.0 {
+		t.Fatalf("zero base must yield zero score under any M: got %.2f", got)
+	}
+}

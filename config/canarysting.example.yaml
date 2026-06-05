@@ -41,3 +41,15 @@ scoring:
   window_seconds: 300
   benign_exclusion:  # service accounts / monitoring / scheduled tasks
     - "system:serviceaccount:monitoring"
+
+# Baseline weight multiplier (docs/BASELINE_MULTIPLIER.md). The per-scope eBPF
+# baseline enters the score ONLY as a bounded multiplier on a canary touch:
+# Score = base × M, M in [1, M_max]. It never triggers anything on its own, and
+# it is forced to 1.0 while the scope is uncalibrated, the baseline is stale, or
+# the current time bucket is sparse. These are documented inputs, not constants.
+baseline:
+  m_max: 3.0              # multiplier cap (asymptotic). Range 1.0..3.0. Conservative.
+  k: 0.5                  # saturation knee: the deviation d at which g(d)=0.5
+  c_max: 1.0              # per-feature contribution cap (bounded influence)
+  time_bucket: dow_hour   # baseline conditioning: day-of-week × hour
+  learning_window_days: 14 # must span a full weekly cycle (>= 2 weeks)

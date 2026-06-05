@@ -165,13 +165,18 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   each core invariant has a failing-if-violated test. See `docs/ENGINE.md`
   "Implementation status (M1)".
 
-#### M2 — Baseline multiplier  · 2–3 days
-- Implement `M(d)` exactly per `BASELINE_MULTIPLIER.md`: per-feature caps →
-  bounded `d` → saturating `g(d)` → `M ∈ [1, M_max]`; `Score = base × M`.
-- Force `M = 1.0` when uncalibrated / stale / time-bucket-sparse.
-- Property tests: `M ≥ 1` always; `base = 0 ⇒ Score = 0`; the four worked
-  examples in §5 of the spec.
-- **Exit:** the guardrail is arithmetic and proven by test.
+#### M2 — Baseline multiplier  · 2–3 days · ← **DONE (2026-06-05)**
+- [x] Implement `M(d)` exactly per `BASELINE_MULTIPLIER.md`: per-feature caps →
+  bounded `d` → saturating `g(d)` → `M ∈ [1, M_max]`; `Score = base × M`
+  (`internal/engine/baseline`; `scoring` applies it via a `MultiplierSource`).
+- [x] Force `M = 1.0` when uncalibrated / stale / time-bucket-sparse
+  (`baseline.Store`, tied to the shared evidence floor).
+- [x] Property tests: `M ≥ 1` always; `base = 0 ⇒ Score = 0`; the four worked
+  examples in §5; per-feature outlier bounding; monotonic/saturating.
+- **Exit (met):** the guardrail is arithmetic and proven by test. Defaults in
+  `config/`. The live baseline + per-flow feature derivation are fed by the eBPF
+  path (M5/M7); until then `M = 1` in the scoring path (documented in
+  `BASELINE_MULTIPLIER.md` §10a).
 
 #### M3 — Canary layer  · 2–4 days
 - `catalog` — initial canary types (fake secret, fake bucket listing, planted
@@ -577,3 +582,14 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   refuse-to-start path. 43 tests, `make check` green. Calibrated-mode threshold-
   FP-solving and the M2 baseline multiplier are documented as the next increments
   (`docs/ENGINE.md`). Unblocks M2, M3, M6, and the D1 event store.
+- **2026-06-05** — **M2 (Baseline multiplier) complete.** `internal/engine/baseline`
+  implements the bounded multiplier `M` exactly per `BASELINE_MULTIPLIER.md`:
+  per-feature cap → Euclidean `d` → saturating `g(d)=d/(d+k)` → `M=1+(M_max−1)g`,
+  `M ∈ [1, M_max]` (defaults `M_max=3.0, k=0.5, c_max=1.0`, also in `config/`).
+  `scoring` applies `Score = B × M` (floor-of-one clamp); `baseline.Store` forces
+  `M=1.0` when uncalibrated/stale/bucket-sparse (gated to the shared evidence
+  floor). 61 engine tests (the five §1 invariants, the four §5 worked examples,
+  outlier bounding, monotonicity, the three gates); `make check` green locally
+  and on the box. The live baseline + per-flow feature derivation come from the
+  eBPF path (M5/M7); until then `M=1` in the scoring path. Track A engine work
+  (M1+M2) done; remaining Track A: M3 canary, M6 attrition.

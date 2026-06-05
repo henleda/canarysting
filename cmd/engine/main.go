@@ -19,6 +19,7 @@ import (
 
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine"
+	"github.com/canarysting/canarysting/internal/engine/baseline"
 	"github.com/canarysting/canarysting/internal/engine/calibration"
 	"github.com/canarysting/canarysting/internal/engine/feedback"
 	"github.com/canarysting/canarysting/internal/engine/scope"
@@ -66,7 +67,14 @@ func build(boundary string, window time.Duration) (*engine.Service, *feedback.In
 	}
 
 	calib := calibration.New(calibration.Config{})
-	scorer := scoring.New(window, calib, scoring.NoExclusions{})
+	// The baseline multiplier is gated to the SAME evidence floor as the canary
+	// weights, so M and the learned weights go live together (never one without
+	// the other). Until the eBPF baseline accrues (M7), every scope is not-live
+	// and M stays 1.0 — touch-only scoring.
+	base := baseline.New(baseline.Config{
+		Calibrated: func(s contract.ScopeKey) bool { return calib.State(s).Calibrated },
+	})
+	scorer := scoring.New(window, calib, scoring.NoExclusions{}).UseMultiplier(base)
 
 	eng, err := engine.New(engine.Config{
 		Resolver:    resolver,

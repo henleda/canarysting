@@ -176,6 +176,42 @@ func TestNew_RefusesInvalidTierConfig(t *testing.T) {
 	}
 }
 
+// fixedMultiplier injects a constant baseline multiplier for the end-to-end
+// "abnormal flow escalates faster" test.
+type fixedMultiplier float64
+
+func (m fixedMultiplier) Multiplier(contract.ScopeKey, contract.FlowIdentity, time.Time) float64 {
+	return float64(m)
+}
+
+func TestSubmit_AbnormalFlowEscalatesOnFewerTouches(t *testing.T) {
+	resolver, _ := scope.NewStaticResolver(scope.Config{Boundary: "scope"})
+	calib := calibration.New(calibration.Config{EvidenceFloor: 1000})
+	// A strongly-abnormal flow (M ≈ 2.6) sharpens a real touch: one touch now
+	// scores 2.6, crossing the default Tag threshold (1.30) that a normal single
+	// touch (score 1.0) does not reach.
+	scorer := scoring.New(5*time.Minute, calib, nil).UseMultiplier(fixedMultiplier(2.6))
+	eng, err := New(Config{
+		Resolver: resolver,
+		Scorer:   scorer,
+		Decider:  tiers.StaticDecider{},
+		Tiers:    tiers.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := eng.Submit(touch("scope", 1, "a", time.Unix(1_000_000, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Score != 2.6 {
+		t.Fatalf("abnormal single touch score = %.2f, want 2.6 (base 1.0 × M 2.6)", v.Score)
+	}
+	if v.Tier != contract.TierTag {
+		t.Fatalf("abnormal single touch tier = %d, want %d (Tag) — baseline must sharpen escalation", v.Tier, contract.TierTag)
+	}
+}
+
 // badResolver always fails Validate and Resolve.
 type badResolver struct{}
 

@@ -53,6 +53,24 @@ type NoExclusions struct{}
 // Excluded always returns false.
 func (NoExclusions) Excluded(contract.FlowIdentity) bool { return false }
 
+// MultiplierSource yields the per-flow baseline multiplier M for a scope at
+// scoring time, so the score is Score = B × M (docs/BASELINE_MULTIPLIER.md).
+// M ∈ [1, M_max]; it is satisfied by baseline.Store. The scorer treats a value
+// below 1 as a bug and clamps it to 1 — the floor-of-one invariant holds even if
+// a source misbehaves.
+type MultiplierSource interface {
+	Multiplier(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) float64
+}
+
+// NeutralMultiplier always returns 1.0 — touch-only scoring. It is the explicit
+// default until a calibrated, live baseline (M7) is wired in.
+type NeutralMultiplier struct{}
+
+// Multiplier always returns 1.0.
+func (NeutralMultiplier) Multiplier(contract.ScopeKey, contract.FlowIdentity, time.Time) float64 {
+	return 1.0
+}
+
 // WindowedScorer is the windowed weighted-sum Scorer. For each (scope, flow) it
 // remembers the last touch time of each distinct canary type and, at score time,
 // sums the weights of the types touched within the trailing window. A type
@@ -63,16 +81,19 @@ func (NoExclusions) Excluded(contract.FlowIdentity) bool { return false }
 // join key. A real flow always carries a non-zero cookie once the kernel join
 // (M5) is in place; pure-Go tests set explicit cookies.
 type WindowedScorer struct {
-	mu       sync.Mutex
-	window   time.Duration
-	weights  Weights
-	excluder BenignExcluder
+	mu         sync.Mutex
+	window     time.Duration
+	weights    Weights
+	excluder   BenignExcluder
+	multiplier MultiplierSource
 	// state[scope][socketCookie][canaryType] = last touch time.
 	state map[contract.ScopeKey]map[uint64]map[contract.CanaryType]time.Time
 }
 
 // New returns a WindowedScorer. A zero window falls back to DefaultWindow; a nil
-// excluder falls back to NoExclusions. weights is required.
+// excluder falls back to NoExclusions. The baseline multiplier defaults to
+// NeutralMultiplier (M = 1, touch-only); use UseMultiplier to wire a baseline.
+// weights is required.
 func New(window time.Duration, weights Weights, excluder BenignExcluder) *WindowedScorer {
 	if window <= 0 {
 		window = DefaultWindow
@@ -81,11 +102,23 @@ func New(window time.Duration, weights Weights, excluder BenignExcluder) *Window
 		excluder = NoExclusions{}
 	}
 	return &WindowedScorer{
-		window:   window,
-		weights:  weights,
-		excluder: excluder,
-		state:    map[contract.ScopeKey]map[uint64]map[contract.CanaryType]time.Time{},
+		window:     window,
+		weights:    weights,
+		excluder:   excluder,
+		multiplier: NeutralMultiplier{},
+		state:      map[contract.ScopeKey]map[uint64]map[contract.CanaryType]time.Time{},
 	}
+}
+
+// UseMultiplier wires the baseline multiplier source. A nil source is ignored
+// (the scorer keeps its current source). Returns the scorer for chaining.
+func (s *WindowedScorer) UseMultiplier(m MultiplierSource) *WindowedScorer {
+	if m != nil {
+		s.mu.Lock()
+		s.multiplier = m
+		s.mu.Unlock()
+	}
+	return s
 }
 
 // Score records the event's touch and returns the flow's current windowed,
@@ -121,13 +154,23 @@ func (s *WindowedScorer) Score(scope contract.ScopeKey, ev contract.SignalEvent)
 	}
 	touches[ev.Canary] = ev.Timestamp
 
-	var sum float64
+	// B: the windowed weighted base over distinct touches in the window.
+	var base float64
 	for ct, last := range touches {
 		if last.Before(cutoff) {
 			delete(touches, ct) // expired out of the window; drop it
 			continue
 		}
-		sum += s.weights.Weight(scope, ct)
+		base += s.weights.Weight(scope, ct)
 	}
-	return sum, nil
+
+	// Score = B × M. M is a per-flow property (floored at one), so it multiplies
+	// the whole base. If base == 0, the product is 0 for any M — the guardrail in
+	// arithmetic (docs/BASELINE_MULTIPLIER.md §2). Clamp a misbehaving source up
+	// to the floor of one; never let M suppress the base.
+	m := s.multiplier.Multiplier(scope, ev.Flow, ev.Timestamp)
+	if m < 1 {
+		m = 1
+	}
+	return base * m, nil
 }
