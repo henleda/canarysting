@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored (it holds
+# your operator IP).
+region           = "us-east-1"
+instance_type    = "m7g.large"          # Graviton arm64, 2 vCPU / 8 GiB
+allowed_ssh_cidr = "YOUR.IP.ADDR.HERE/32" # curl -s https://checkip.amazonaws.com
+public_key_path  = "~/.ssh/canarysting-dev.pub"
+root_volume_gb   = 40

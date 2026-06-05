@@ -196,17 +196,19 @@ The brain runs end-to-end in-process — no proxy, no kernel.
 
 ### Track B — the kernel + proxy integration (AWS Linux)
 
-#### M0 — Repo + dev infrastructure  · 1 day · *together*  ← in progress
+#### M0 — Repo + dev infrastructure  · 1 day · *together*  ← **DONE (2026-06-05)**
 - [x] `git init`, baseline commit, tooling cruft ignored.
 - [x] Roadmap committed.
 - [x] Private remote created and pushed (`github.com/henleda/canarysting`).
-- [ ] `Makefile`: `build vet test proto bpf run-engine demo` targets.
-- [ ] Flesh out `.github/workflows/ci.yml` — add a clang/eBPF build job (ubuntu).
-- [ ] **Stand up the AWS dev box** (interactive): EC2 Ubuntu 24.04 with a BTF
-  kernel, Go + clang/llvm + bpftool + libbpf; security group; SSM or SSH access.
-  This is also the host for the persistent staged environment (M7).
-- **Exit:** `make test` green locally; AWS box reachable and eBPF-capable;
-  `go build ./...` on both.
+- [x] `Makefile`: `build vet test proto bpf run-engine demo` targets.
+- [x] `.github/workflows/ci.yml` — two-job CI (Go gate + clang/eBPF build, ubuntu).
+- [x] **AWS dev box stood up** via Terraform (`deploy/dev-box/`): `m7g.large`
+  Graviton arm64, Ubuntu 24.04 (kernel 6.17-aws, **BTF present**), Go 1.25.3,
+  clang 18.1.3, bpftool v7.7.0, libbpf, Docker; dedicated VPC/subnet, SG locked
+  to operator IP, SSH key auth, IMDSv2-only, encrypted gp3. Also the M7 host.
+- **Exit (met):** `make check` green locally; AWS box reachable and eBPF-capable
+  (BTF + bpftool verified); `go build ./...` green on **both** macOS/arm64 and the
+  box (Linux/arm64).
 
 #### M4 — Envoy adapter (real dataplane)  · 4–6 days
 - Real `adapters/envoy` via ext_proc/ext_authz (inline) + dynamic-metadata
@@ -437,7 +439,7 @@ real scope — fold that into the environment plan from the start.
 | 5 | First-demo persona | **Resolved** — enterprise CISOs + infra teams; kernel enforcement is core to demo #1. |
 | 6 | Demo data | **Resolved** — no placeholder/dummy data; real baseline + calibration from a persistent staged environment. |
 | 7 | First-demo footprint | **Resolved** — single-host containers; K8s/EKS is a follow-on (M11). |
-| 8 | AWS specifics | **Open** — account, region, instance type/size, access method (SSM vs SSH). Settled during M0. |
+| 8 | AWS specifics | **Resolved (2026-06-05)** — account `113938649684` (IAM user `canarysting-dev`, not root), region `us-east-1`, `m7g.large` Graviton arm64 Ubuntu 24.04, SSH-key access locked to operator IP, Terraform IaC in `deploy/dev-box/`. |
 | 9 | Intelligence scope for demo #1 | **Resolved (2026-06-05)** — the **full** intelligence track (Track D, D1–D7) is in demo #1, including the cross-customer network demonstrated with a real second deployment. Widens the M7 long pole (real adversary history during the window). |
 
 ---
@@ -553,3 +555,11 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   moat), and §4 re-sequenced — the M7 long pole now also requires real
   adversary-interaction history (M9 running inside the learning window) and a
   second real scope for D6. M0 still open on the **AWS dev box** (next action).
+- **2026-06-05** — **M0 complete.** AWS dev box stood up with Terraform
+  (`deploy/dev-box/`): `m7g.large` Graviton arm64, Ubuntu 24.04, kernel 6.17-aws
+  with BTF present; Go 1.25.3 + clang 18.1.3 + bpftool v7.7.0 + libbpf + Docker;
+  dedicated VPC, SG locked to operator IP, SSH-key auth, IMDSv2-only, encrypted
+  disk. `go build ./...` verified green on the box (Linux/arm64) and locally.
+  AWS access moved off root to IAM user `canarysting-dev`. Decision 8 resolved.
+  Track A (M1 engine core) and Track B (M4 Envoy) are now unblocked; M7 can begin
+  once the dataplane lands.

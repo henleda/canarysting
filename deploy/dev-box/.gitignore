@@ -1,0 +1,10 @@
+# Terraform local state and provider cache — never commit.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# tfvars holds the operator IP; keep the example only.
+terraform.tfvars
+!terraform.tfvars.example
+# The lock file IS committed (pins provider versions) — do not ignore it.
