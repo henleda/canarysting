@@ -17,7 +17,12 @@ on intent, the layer doc wins; this doc governs sequencing.
 touch triggers an automated, escalating, **kernel-enforced** response that imposes
 asymmetric economic cost on an automated/LLM attacker — with low false positives
 *by construction* (the guardrail), and learned state that never leaves the
-customer's boundary (scope isolation).
+customer's boundary (scope isolation). And on top of the control, the thing that
+makes it compound: a **proprietary adversary-intelligence asset** (`INTELLIGENCE.md`)
+that sharpens with every deployment — profiling, an attacker-cost KPI, an
+early-warning recon signal, and a cross-customer network — built so that only
+anonymized patterns ever cross a boundary and raw data never does. The control
+gets us in; the intelligence is the moat, and the demo shows both.
 
 ### Locked decisions (review on 2026-06-03)
 
@@ -41,8 +46,19 @@ These are settled and now drive the plan:
 6. **No time pressure. Quality over speed.** A 3–4 month horizon is acceptable.
    We do this right.
 7. **Single-host containers for the first demo; Kubernetes/EKS to follow.** K8s
-   feasibility is being researched (see §8); it is expected to be viable and is a
+   feasibility is being researched (see §7); it is expected to be viable and is a
    post-first-demo milestone.
+8. **The full intelligence layer is in demo #1** *(decided 2026-06-05)*. The
+   compounding adversary-intelligence asset (`INTELLIGENCE.md`) is not deferred:
+   the vantage-point event store, adversary profiling, the attacker-cost KPI, the
+   recon early-warning signal, in-deployment detection sharpening, the
+   cross-customer network (demonstrated with a real **second** deployment/scope,
+   not mock data), and the threat-feed read view are **all** in scope for the
+   first demo. Rationale: the intelligence is the asset investors price and the
+   durable moat; the demo must show it, not just the control. Consequence: the
+   M7 learning window must accrue **real adversary-interaction history** (the
+   attacker runs against the environment during the window), not benign baseline
+   traffic alone — this widens the long pole (see §4). Accepted under decision 6.
 
 We optimize for **a credible, real, polished demo** — not feature completeness,
 and not raw speed.
@@ -81,6 +97,24 @@ for the first demo):
      accrued baseline.
    - *Scope/calibration:* per-scope calibrated/uncalibrated state, surfaced
      honestly, reflecting **real** accrued evidence.
+7. **The moat — the compounding intelligence (the investor/CISO differentiator).**
+   Layered on the same live run, backed only by real accrued events:
+   - *Recon early-warning:* the quiet probing in the negative space surfaced
+     *before* the loud part — an early-warning feed, never an enforcement action
+     (the guardrail still holds). (Track D / D4.)
+   - *Adversary profile:* the system recognizes the actor by a **behavioral
+     fingerprint** — its probing order, its reaction to tagging and tarpitting,
+     its timing — derived from real interaction history. (D2.)
+   - *Attacker-cost KPI:* the cost meter from beat 4 rolled up into the
+     board-level number a CISO reports — time imposed, tokens/compute burned,
+     requests absorbed, per scope. (D3.)
+   - *The cross-customer money-shot:* a fingerprint learned in this deployment is
+     anonymized and passed through the **single default-deny egress filter** —
+     shown live **dropping** anything raw or environment-identifying — and then
+     sharpens detection in a **second** deployment/scope. The second scope is a
+     *real* second deployment, not mock data. This is the compounding loop and
+     the trust proof in one frame: the network gets smarter, raw data never
+     moves. (D6, with the threat-feed read view D7.)
 
 That screen *is* the product. The milestones below build its pieces.
 
@@ -227,12 +261,104 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   (`TECHNICAL_ARCHITECTURE.md` §4/§10).
 - **Exit:** we can run the demo for a prospect and leave them in observe-only.
 
-#### M11 — Kubernetes / EKS demo  · scoped after §8 research lands · *future*
+#### M11 — Kubernetes / EKS demo  · scoped after §7 research lands · *future*
 - Port the staged demo to Kubernetes (likely EKS): eBPF as a privileged
   DaemonSet, the Envoy integration as mesh-native or sidecar, scope key from
-  SPIFFE trust domain / cluster UID. Informed by the §8 research findings.
+  SPIFFE trust domain / cluster UID. Informed by the §7 research findings.
 - **Exit:** the same demo runs on a real K8s cluster — the form most enterprise
   prospects actually run.
+
+### Track D — the intelligence layer (the data-asset moat)
+
+The compounding asset. Specced in `INTELLIGENCE.md`; this track sequences its §8
+build order into the demo. Every tier obeys the three guardrails that never
+relax: the canary touch is the only trigger (`BASELINE_MULTIPLIER.md`), learned
+state is scope-isolated (`SCOPE.md`), and only anonymized patterns cross a
+deployment boundary (`INTELLIGENCE.md` §2). The derivation logic is pure Go
+(developed and unit-tested locally on synthetic event sequences); the *real*
+profiles, metrics, and patterns accrue from the running environment (M7), so
+this track's credible demo state rides on a learning window that now must include
+**real adversary-interaction history**, not just benign baseline (see §4).
+
+#### D1 — Vantage point: the event store  · 2–3 days · *foundation, everything depends on it*
+- Finish `internal/intelligence/event.go`: the `AdversaryInteractionEvent`
+  (already scaffolded) plus a real per-scope `EventStore` (in-memory + a durable
+  local backing), scope-keyed, deployment-local, never emitting across a boundary
+  (`INTELLIGENCE.md` §3.3).
+- Wire capture into the live path: M1 populates tier/verdict, M3 the canary type,
+  **M6 the sting outcome + cost proxies**, M5 the real socket-cookie `FlowID`.
+- **Tests as invariants:** store isolates by `ScopeKey`; `Query` never returns
+  cross-scope events; no raw payloads/addresses/identities recorded.
+- **Exit:** every canary interaction in the live run lands as a structured,
+  scope-keyed event the higher tiers consume. *(Starts after M1; completed as
+  M3/M6/M5 fill the remaining fields.)*
+
+#### D2 — Adversary profiling  · 5–8 days · *the moat input*
+- `internal/intelligence/profile/`: derive **behavioral fingerprints** from event
+  sequences (probing order, canary-type sequence, reaction to tag/tarpit, timing)
+  — built to carry **no** environment-identifying detail, because the fingerprint
+  is the unit the cross-customer network (D6) may share.
+- The **AI-attacker profiler** (`INTELLIGENCE.md` §4.2): structured, reaction-
+  labeled, cost-quantified output, shaped as a clean training signal for the
+  future bait model (Model 2; not built here, but the interface is). Keep the
+  profiler→bait→events loop an explicit, testable boundary (§4.3).
+- **Tests:** a fingerprint is reproducible from the same event sequence; a
+  fingerprint provably contains no scope-identifying field (gate for D6).
+- **Exit:** real interaction history yields reusable, shareable-safe profiles.
+  *(Needs D1 + real events from M7/M9.)*
+
+#### D3 — Attacker-cost metric  · 1–2 days · *the board-level KPI*
+- `internal/intelligence/cost/`: a clean reporting view over the event store —
+  time imposed, tokens/compute extracted, requests absorbed, per period, per
+  scope, aggregated. Derived entirely from the deployment's own events; leaves
+  the boundary only if the operator exports their own number.
+- This is the meter from the M6 attrition demo, operationalized into the renewal-
+  lever KPI the M8 dashboard surfaces.
+- **Exit:** a real, defensible attacker-cost number per scope. *(Needs D1 + M6
+  cost proxies; mostly aggregation.)*
+
+#### D4 — Reconnaissance early-warning signal  · 2–3 days
+- `internal/intelligence/recon/`: a distinct low-tier signal from canary touches
+  in the negative space combined with baseline deviation **as context only**
+  (never a trigger — `BASELINE_MULTIPLIER.md` §5 holds). Surface to the operator
+  as an early-warning feed, not an enforcement action.
+- **Exit:** quiet pre-attack probing is surfaced ahead of the loud part, without
+  ever tripping the guardrail. *(Needs D1 + the M7 baseline.)*
+
+#### D5 — In-deployment detection sharpening  · 3–4 days · *guardrail-critical*
+- A known fingerprint (D2) raises the weight of a *matching canary touch* — as
+  **weight context within the multiplier bounds** (`BASELINE_MULTIPLIER.md`),
+  **never** as an independent trigger. Integrates into the M1/M2 scoring path;
+  stays within the scope; obeys scope isolation.
+- **Tests:** a fingerprint match alone (no canary touch) takes **no** action;
+  the sharpened weight stays within `M ∈ [1, M_max]`.
+- **Exit:** local profiles sharpen local detection without weakening the
+  guardrail. *(Needs D2 + M1/M2.)*
+
+#### D6 — Cross-customer intelligence network  · 6–9 days · *the moat, the trust-critical chokepoint*
+- `internal/intelligence/network/`: build the **egress filter first and most
+  carefully** — the single **default-deny** chokepoint; a field leaves only if
+  explicitly marked safe and justified. Then anonymize/aggregate, then the
+  shared-set consumer (returns as detection context per D5, never as a trigger).
+  Participation (contribute / consume) is a per-deployment opt-in input.
+- **Demo truthfully:** stand up a **real second deployment/scope** so the network
+  has something to cross *to*. The demo shows a fingerprint leaving deployment A
+  through the filter (with raw/identifying candidates **dropped on screen**) and
+  sharpening detection in deployment B. No mock data — B is a real scope.
+- **Tests as invariants (this is the rule the whole product is sold on):** the
+  filter drops every raw/environment-identifying field by default; nothing but
+  cleared, anonymized patterns can cross; an un-opted-in scope neither contributes
+  nor is identifiable. One chokepoint, fully tested.
+- **Exit:** an anonymized pattern learned in A measurably sharpens B, and the
+  egress filter provably lets nothing else cross. *(Needs D2; the long pole of
+  this track.)*
+
+#### D7 — Threat-intelligence feed  · 3–5 days · *second product line*
+- `internal/intelligence/feed/`: a read view over the anonymized, aggregated set
+  (D6), with its own access control and rate limiting. Carries derived patterns
+  only, never customer data — inherits all D6 constraints.
+- **Exit:** an external consumer (SIEM/ISAC framing) reads the feed; it contains
+  patterns only, proven by the same egress discipline. *(Needs D6.)*
 
 ---
 
@@ -246,23 +372,39 @@ The brain runs end-to-end in-process — no proxy, no kernel.
 - **M7** (real baseline/calibration) must start as early as the environment can
   run, because a real learning window takes real time — it is the long pole and
   cannot be compressed without faking data, which we've ruled out.
-- **M8** (dashboard) starts as soon as M1 emits verdicts and runs in parallel.
-- **M9** (LLM attacker) lands last in the core demo; **M10** packages; **M11**
-  (K8s) follows the first demo.
+- **M8** (dashboard) starts as soon as M1 emits verdicts and runs in parallel;
+  its intelligence panels (D2/D3/D4/D6) come online as those tiers land.
+- **Intelligence track (D)** layers on the others: **D1** (event store) can begin
+  right after M1 and is completed as M3/M6/M5 fill its fields; **D2/D3/D4/D5** are
+  pure-Go derivations developed locally on synthetic events, then fed real data by
+  M7; **D6/D7** (cross-customer, feed) are the track's long pole and need a real
+  **second** deployment/scope to demo truthfully. D5 and D6 are guardrail/egress-
+  critical — built slowly, fully tested.
+- **M9** (LLM attacker) lands last in the core demo **and** runs *during* the M7
+  window so real adversary-interaction history accrues for D2/D3/D4; **M10**
+  packages; **M11** (K8s) follows the first demo.
 
 ```
-local  ──► M1 ─┬─► M2
-               ├─► M3 ─────────────┐
-               └─► M6 ─────────────┤
+local  ──► M1 ─┬─► M2 ───────────────────────────────┐
+               ├─► M3 ─────────────┐                  │ (weight ctx, bounded)
+               └─► M6 ─────────────┤                  │
 AWS(M0)──► M4 ──► M5 ──────────────┼─► (env live) ─► M9 ─► M10 ─► M11(K8s)
-                  M7  ◄── runs persistently from here, accruing REAL baseline/calibration
+                  M7  ◄── runs persistently, accruing REAL baseline + REAL adversary history
 local  ──► M8 (dashboard, parallel) ───────────────┘
+intel  ──► D1(events) ─► D2(profiles) ─┬─► D3(cost KPI)
+                                        ├─► D4(recon)  ├─► D5(sharpening ⮕ M1/M2)
+                                        └─► D6(egress+network, 2nd scope) ─► D7(feed)
+              ▲ D1 after M1; D2+ fed by REAL events from M7/M9
 ```
 
-**The long pole is M7**, not engineering effort: a real baseline + real
-calibration needs real elapsed time on a real environment. Standing up that
-environment early (right after M4/M5) is the single most schedule-sensitive move,
-precisely because we refuse to fake it.
+**The long pole is M7**, now wider: a real baseline + real calibration **and**
+real adversary-interaction history all need real elapsed time on a real
+environment — and the full-intelligence-track decision (§0.8) means the attacker
+(M9) has to be running *inside* that window, not just at demo time, so D2/D3/D4
+have genuine data. Standing up that environment early (right after M4/M5) and
+pointing the attacker at it continuously is the single most schedule-sensitive
+move, precisely because we refuse to fake it. D6 (cross-customer) adds a second
+real scope — fold that into the environment plan from the start.
 
 ---
 
@@ -296,6 +438,7 @@ precisely because we refuse to fake it.
 | 6 | Demo data | **Resolved** — no placeholder/dummy data; real baseline + calibration from a persistent staged environment. |
 | 7 | First-demo footprint | **Resolved** — single-host containers; K8s/EKS is a follow-on (M11). |
 | 8 | AWS specifics | **Open** — account, region, instance type/size, access method (SSM vs SSH). Settled during M0. |
+| 9 | Intelligence scope for demo #1 | **Resolved (2026-06-05)** — the **full** intelligence track (Track D, D1–D7) is in demo #1, including the cross-customer network demonstrated with a real second deployment. Widens the M7 long pole (real adversary history during the window). |
 
 ---
 
@@ -400,3 +543,13 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   calibration, M7), Next.js dashboard, phased LLM attacker, single-host-first
   with a K8s follow-on (M11). Kubernetes feasibility research kicked off (§7).
   Next: Makefile + CI eBPF job + AWS dev box.
+- **2026-06-05** — Repo reconciled after the local `.git` was lost and the tree
+  partly regenerated on a stale base (recovered ROADMAP, Makefile, two-job CI,
+  gofmt'd code, gitignore cruft entries; kept the new intelligence layer). The
+  **intelligence layer** landed: `INTELLIGENCE.md` + `internal/intelligence/`
+  (event type/store + recon/profile/cost/feed/network scaffolds), committed and
+  pushed to `main`. Plan **rebuilt** to fold it in: new **Track D (D1–D7)**,
+  decision 9 (full intelligence track in demo #1), demo narrative beat 7 (the
+  moat), and §4 re-sequenced — the M7 long pole now also requires real
+  adversary-interaction history (M9 running inside the learning window) and a
+  second real scope for D6. M0 still open on the **AWS dev box** (next action).
