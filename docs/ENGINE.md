@@ -79,3 +79,15 @@ The engine may consume a per-scope **baseline** of normal east-west traffic (bui
 The baseline is scope-isolated learned state with the standard uncalibrated-default + evidence-floor + feedback lifecycle.
 
 **Hard rule:** the baseline NEVER triggers a tier transition or a sting on its own. The canary touch is the sole entry condition for the response pipeline. Deviation from normal is not a trigger. Code that lets baseline deviation tag, contain, or attrit a flow is a bug. See `TECHNICAL_ARCHITECTURE.md` §5.
+
+## Implementation status (M1)
+
+The engine core is implemented and tested end-to-end in-process (`internal/engine`, ROADMAP M1):
+
+- **scope** — `StaticResolver`: the documented resolution order with deterministic zone precedence and a refuse-to-start (`ErrUnresolved`) path; never a global scope.
+- **scoring** — `WindowedScorer`: windowed weighted sum over *distinct* canary touches per (scope, flow), weights supplied by calibration, benign-exclusion as a first-class drop. Uniform weights = raw count (cold start), by construction.
+- **tiers** — `StaticDecider`: the static threshold map keyed by `confidence_required` over the §8 FP bands; async-only for tiers 0–1; `Config.Validate` encodes the async-only and Tier 1 fail-open / Tier 3 fail-closed rules so config cannot violate them.
+- **calibration** — `Store`: per-scope evidence counts, one floor gating uncalibrated→calibrated for all learned params, seed-prior-regularized learned canary weights, no cross-scope aggregation.
+- **engine / feedback** — `Service` (implements `contract.Engine`) composes the above and reports `Calibrated`; `Intake` is the single feedback seam into calibration.
+
+**Scoped for a later increment (documented, not done):** in calibrated mode M1 learns per-scope *weights* (which sharpen the score); it does not yet solve internal *thresholds* to hold an observed FP rate at the `confidence_required` target — thresholds remain the static map keyed by the knob. `Calibrated=true` therefore means "evidence floor met, learned weights active," which is accurate and surfaced honestly; it is not an FP-rate guarantee. The baseline multiplier `M` (`Score = base × M`) is M2; until then `M = 1`.

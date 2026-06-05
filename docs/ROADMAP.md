@@ -144,7 +144,7 @@ estimates size effort, not a deadline.
 
 ### Track A — the engine and sting libraries (pure Go, local)
 
-#### M1 — Engine core  · 3–5 days
+#### M1 — Engine core  · 3–5 days · ← **DONE (2026-06-05)**
 The brain runs end-to-end in-process — no proxy, no kernel.
 - `scope.Resolver` — resolution order (zone → derived cluster id → operator
   boundary → **hard fail**); never a global scope.
@@ -160,8 +160,10 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   `scope.ErrUnresolved`.
 - **Tests are a deliverable:** 0→1→2→3 escalation; scope A never affects scope B;
   cold-start raw-count; refuse-to-start; fail-open T1 / fail-closed T3.
-- **Exit:** a flow's signals drive a real verdict end-to-end; every core
-  invariant has a test that fails if violated.
+- **Exit (met):** a flow's signals drive a real verdict end-to-end
+  (`internal/engine`, `cmd/engine -selfcheck`); 43 tests, `make check` green,
+  each core invariant has a failing-if-violated test. See `docs/ENGINE.md`
+  "Implementation status (M1)".
 
 #### M2 — Baseline multiplier  · 2–3 days
 - Implement `M(d)` exactly per `BASELINE_MULTIPLIER.md`: per-feature caps →
@@ -563,3 +565,15 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   AWS access moved off root to IAM user `canarysting-dev`. Decision 8 resolved.
   Track A (M1 engine core) and Track B (M4 Envoy) are now unblocked; M7 can begin
   once the dataplane lands.
+- **2026-06-05** — **M1 (Engine core) complete.** `internal/engine` implements
+  the brain end-to-end in-process: `scope.StaticResolver` (resolution order +
+  refuse-to-start), `scoring.WindowedScorer` (windowed weighted sum over distinct
+  touches, benign-exclusion, uniform=raw-count cold start), `tiers.StaticDecider`
+  (static threshold map from the §8 FP bands, async-only 0–1, fail-open T1 /
+  fail-closed T3 enforced in config Validate), `calibration.Store` (per-scope
+  evidence floor gating uncalibrated→calibrated, seed-prior-regularized learned
+  weights, no cross-scope aggregation), `engine.Service` (implements
+  `contract.Engine`) and `feedback.Intake`. `cmd/engine` wires it with a real
+  refuse-to-start path. 43 tests, `make check` green. Calibrated-mode threshold-
+  FP-solving and the M2 baseline multiplier are documented as the next increments
+  (`docs/ENGINE.md`). Unblocks M2, M3, M6, and the D1 event store.
