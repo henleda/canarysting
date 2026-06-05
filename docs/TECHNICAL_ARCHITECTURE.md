@@ -210,6 +210,7 @@ The defensibility is layered, and each layer raises the cost of reproduction.
 - **The safety model.** The guardrail in Section 5, keeping the baseline as weight context and the canary touch as the sole trigger, is what lets us enforce automatically without the false-positive behavior that sank prior active-defense tools. That design judgment is part of the moat.
 - **The economic-attrition catalog.** Building fake structures that maximize an automated attacker's token and compute spend, while bounding the defender's own cost, is novel work with little prior art aimed at internal lateral movement. The web-edge tarpits that exist target crawlers, not east-west AI agents.
 - **Per-scope isolation as a property.** The promise that learned state, including the baseline that encodes a customer's traffic structure, never crosses a trust boundary is both a technical design and a trust asset that a fast follower cannot bolt on after the fact.
+- **The compounding intelligence asset.** The integration above is the wedge; what compounds is the proprietary adversary intelligence the wedge produces. We observe real attackers making real lateral-movement decisions against deception, in production, attributed to a flow — a vantage point no perimeter, endpoint, or honeypot tool has. Each deployment sharpens the intelligence, which improves detection and the bait model, which wins more deployments. That loop, built without ever moving raw data across a trust boundary, is the durable moat. See `docs/INTELLIGENCE.md`.
 
 ---
 

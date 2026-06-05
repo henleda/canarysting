@@ -38,3 +38,7 @@ Because state never crosses scopes, every scope cold-starts independently — th
 - Fall back to a global scope when identity cannot be resolved.
 - Let a single flow's signal accrue to more than one scope.
 - Treat the seed prior as learned state.
+
+## Relationship to the intelligence layer
+
+Scope isolation governs learned state *within* a deployment. A separate, stricter rule governs what may cross *between* deployments: only derived, anonymized adversary patterns, never raw data, baselines, or scope state, and only through the single default-deny egress filter in `internal/intelligence/network/`. See `docs/INTELLIGENCE.md` section 2. If you are touching anything that moves data across a deployment boundary, that rule and this one both apply, and the stricter one wins.

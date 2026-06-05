@@ -17,6 +17,10 @@ Two components:
   - `docs/SCOPE.md` — per-deployment isolation and the scope key
   - `docs/IDENTITY.md` — the socket-cookie join between L7 and the kernel
   - `docs/ADAPTERS.md` — writing a proxy adapter (Envoy first, nginx second)
+- **The differentiated tech (read before the engine, canary seeder, or eBPF layer):**
+  - `docs/TECHNICAL_ARCHITECTURE.md` — deep architecture, the eBPF baseline, the guardrail
+  - `docs/BASELINE_MULTIPLIER.md` — the exact bounded, floored, multiplicative scoring multiplier
+  - `docs/INTELLIGENCE.md` — the data-asset layer: adversary profiling, attacker-cost metric, cross-customer network, threat feed (build order in §8)
 
 ## Layout
 
@@ -27,6 +31,8 @@ internal/
   engine/       scoring, tiers, calibration, scope, feedback (proxy-agnostic)
   canary/       catalog (decoy types + seed weights), seeder (placement)
   sting/        containment (kernel-enforced), attrition (tarpit/token-burn)
+  intelligence/ the data asset: events, profiling, cost metric, cross-customer
+                network (egress filter = the one default-deny boundary chokepoint), feed
 adapters/       thin proxy adapters: envoy, nginx
 bpf/            enforce (eBPF C), loader (Go, cilium/ebpf)
 api/proto/      protobuf mirror of the contract for out-of-process boundaries
