@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine"
 	"github.com/canarysting/canarysting/internal/engine/baseline"
@@ -66,7 +67,12 @@ func build(boundary string, window time.Duration) (*engine.Service, *feedback.In
 		return nil, nil, err
 	}
 
-	calib := calibration.New(calibration.Config{})
+	// The composition root performs the one sanctioned coupling: the canary
+	// catalog's seed intent-strength weights feed calibration as a COLD-START
+	// PRIOR. The engine reads only live calibrated weights thereafter; the canary
+	// layer and the engine do not otherwise depend on each other.
+	cat := catalog.Default()
+	calib := calibration.New(calibration.Config{SeedWeights: cat.SeedWeights()})
 	// The baseline multiplier is gated to the SAME evidence floor as the canary
 	// weights, so M and the learned weights go live together (never one without
 	// the other). Until the eBPF baseline accrues (M7), every scope is not-live

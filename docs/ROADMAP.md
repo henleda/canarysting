@@ -178,16 +178,25 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   path (M5/M7); until then `M = 1` in the scoring path (documented in
   `BASELINE_MULTIPLIER.md` §10a).
 
-#### M3 — Canary layer  · 2–4 days
-- `catalog` — initial canary types (fake secret, fake bucket listing, planted
-  credential, decoy file, fake internal endpoint) with seed weights; generators
-  provably cannot emit a functional secret; canaries kept **independent** (no
-  chained-credential graph — IP caution, `ARCHITECTURE.md` §11).
-- `seeder` — minefield + active placement; automated freshness/rotation;
-  scope-aware. Baseline-informed negative-space placement once M7's baseline
-  exists.
-- **Exit:** the catalog and seeder produce real, harmless canaries and the
-  metadata an adapter needs to observe interactions.
+#### M3 — Canary layer  · 2–4 days · ← **DONE (2026-06-05)**
+- [x] `catalog` — the five canary types with seed-weight priors; generators
+  **provably** cannot emit a functional secret (reserved/EXAMPLE namespaces +
+  structural invalidity; per-type predicate + construction-time check + fail-
+  closed `Generate` gate + universal cross-scan); canaries kept **independent**
+  (flat registry, no chained-credential graph — `ARCHITECTURE.md` §11).
+- [x] `seeder` — minefield + active placement; automated jittered freshness/
+  rotation (`RunAutoRefresh`); scope-aware `MemRegistry`; the M7 negative-space
+  placement seam (`Planner`/`BroadPlanner`, no-op default).
+- [x] `signal` — the emission seam: `Builder` turns an observed touch into a
+  valid `contract.SignalEvent` with three guards (scope / socket cookie /
+  placement); never a partial event.
+- **Exit (met):** catalog + seeder produce real, harmless canaries and the
+  registry metadata an adapter needs; `cmd/engine` wires the seed-weights prior;
+  38 canary/integration tests (harmlessness with negative arms incl. encrypted/
+  OpenSSH keys, no-chained-credential, scope isolation, concurrency, bidirectional
+  import-graph, touch→Build→Submit). Designed + adversarially reviewed via
+  workflows (21 confirmed findings applied). `make check` green locally and on the
+  box. Real placement locations + live negative-space planner land with M4/M7.
 
 #### M6 — Sting: attrition  · 4–6 days · *the differentiator*
 - `attrition` — tarpit (slow-drip) + bounded fake-structure generators (deep
@@ -593,3 +602,16 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   and on the box. The live baseline + per-flow feature derivation come from the
   eBPF path (M5/M7); until then `M=1` in the scoring path. Track A engine work
   (M1+M2) done; remaining Track A: M3 canary, M6 attrition.
+- **2026-06-05** — **M3 (Canary layer) complete.** `internal/canary/{catalog,
+  seeder,signal}` is the detection surface: 5 provably-harmless decoy types
+  (reserved/EXAMPLE namespaces + structural invalidity, enforced at 3 layers + a
+  universal cross-scan), seed-weight priors fed once into calibration, a flat
+  scope-keyed placement registry (independent — no chained-credential graph), the
+  M7 negative-space `Planner` seam, automated jittered freshness, and the
+  `signal.Builder` emission seam (3 guards, never a partial event). Zero change to
+  `internal/contract` or the engine; both-directions import-graph guard. Built
+  via a design workflow (research + 3 lenses + judged synthesis) and hardened via
+  an adversarial review workflow (21 confirmed findings applied — incl. a catalog
+  RNG data race, encrypted/OpenSSH-key inertness gaps, and an Active-mode rotation
+  collapse). 99 repo tests, `make check` green locally and on the box. Remaining
+  Track A: **M6 attrition** (the differentiator).

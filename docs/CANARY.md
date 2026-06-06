@@ -52,3 +52,25 @@ The adapter is what physically observes the interaction at the proxy and emits t
 ## Baseline-informed placement
 
 When a per-scope baseline exists (see `TECHNICAL_ARCHITECTURE.md`), the seeder uses it to place canaries in the **negative space** of normal traffic — paths, ports, and workload adjacencies that legitimate flows never traverse. A canary in the negative space has an even lower false-positive rate by construction: benign traffic does not go there, so a touch is almost certainly hostile. The seeder also places decoys near the paths an attacker performing lateral movement would plausibly probe. Placement remains scope-aware. The baseline informs WHERE bait goes; it never decides whether a flow is stung — only a canary touch does that.
+
+**Layering note:** the seeder MUST NOT import `internal/engine`. The M7 negative-space planner receives the baseline-derived hint from the composition root as a `internal/contract` value (engine → contract → seeder), never by reading the engine directly. See `internal/canary/seeder/planner.go`.
+
+## Implementation status (M3)
+
+The canary layer is implemented and tested in `internal/canary/` (ROADMAP M3):
+
+- **catalog** — the five types with stable ids, seed-weight priors, generators, and a per-type `Harmless` predicate:
+
+  | Type (id) | Seed weight | Generator | Provably harmless because |
+  |---|---|---|---|
+  | `planted_credential` | 1.8 | AWS `~/.aws/credentials` stanza | id/secret are in the AWS-documented EXAMPLE namespace (authenticate to nothing) |
+  | `fake_secret` | 1.5 | inert PEM key or unsigned JWT | a real key parses → fails `isInertPrivateKey`; JWT is `alg:none` + empty signature |
+  | `decoy_file` | 1.2 | `.env` honeyfile | EXAMPLE keys + all hosts in RFC 2606 reserved domains |
+  | `fake_bucket` | 1.1 | S3 `ListBucketResult` XML | owner id `000000000000`, reserved endpoint host, no presigned signature |
+  | `fake_endpoint` | 1.0 | internal service locator | host is an RFC 2606 reserved domain or RFC 5737/3849 reserved IP |
+
+  Seed weights are cold-start **priors** (ordered by intent strength), exported only via `SeedWeights()` and fed once into `calibration.Config.SeedWeights`. Harmlessness is enforced three ways: a per-type predicate, a construction-time check in `catalog.New` (an unsafe entry never registers), and a fail-closed gate in `Catalog.Generate`. A universal `crossScan` runs on every check (no live AWS key / parseable-or-encrypted private key / routable host can be smuggled regardless of type). Generators are pure and concurrency-safe.
+- **seeder** — scope-keyed `MemRegistry`, `BroadPlanner` (the M7 negative-space seam; explicit no-op default), Minefield vs Active density, and automated jittered freshness/rotation (`RunAutoRefresh`) — contents rotate in place, preserving per-type cardinality.
+- **signal** — `Builder` is the only sanctioned path from an observed touch to a `contract.SignalEvent`, with three guards (no scope / no socket cookie / no placement) and never a partial event.
+
+Independence (ARCH §11) is structural: the placement registry is flat with no inter-placement reference field. The canary layer and the engine do not import each other (import-graph tests both directions). The eBPF-fed real placement locations and the live negative-space planner arrive with M4/M7.
