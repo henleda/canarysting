@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/pem"
 	"go/parser"
 	"go/token"
@@ -16,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/harmless"
 )
 
 func fixedCatalog(t *testing.T, seed int64) *Catalog {
@@ -57,8 +57,8 @@ func TestSecretPredicateRejectsRealKey(t *testing.T) {
 	}
 	der := x509.MarshalPKCS1PrivateKey(key)
 	realPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der})
-	if isInertPrivateKey(realPEM) {
-		t.Fatal("a real RSA key passed isInertPrivateKey — the predicate has no teeth")
+	if harmless.IsInertPrivateKey(realPEM) {
+		t.Fatal("a real RSA key passed harmless.IsInertPrivateKey — the predicate has no teeth")
 	}
 	// And it must be rejected if smuggled into a fake_secret instance.
 	bad := Instance{Type: TypeFakeSecret, Payload: append(realPEM, []byte("\n# "+canaryMarker+"X\n")...)}
@@ -68,43 +68,17 @@ func TestSecretPredicateRejectsRealKey(t *testing.T) {
 	}
 }
 
-func TestCredPredicateRejectsLiveShapedKey(t *testing.T) {
-	if !isExampleAWSKeyID("AKIAIOSFODNN7EXAMPLE") {
-		t.Fatal("AWS-documented EXAMPLE key id was rejected")
-	}
-	if isExampleAWSKeyID("AKIA1234567890ABCDEF") { // live-shaped, not EXAMPLE
-		t.Fatal("a live-shaped AKIA id outside the EXAMPLE namespace was accepted")
-	}
-	if !awsSecretRe.MatchString("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY") {
-		t.Fatal("AWS-documented EXAMPLE secret was rejected by the production matcher")
-	}
-	if awsSecretRe.MatchString("wJalrXUtnFEMI/K7MDENG/bPxRfiCYwJalrXUtnF") { // 40 chars, not EXAMPLE
-		t.Fatal("a non-EXAMPLE 40-char secret was accepted")
-	}
-}
-
 func TestSecretPredicateRejectsEncryptedAndOpenSSHKeys(t *testing.T) {
+	// The pure predicate teeth (encrypted/OpenSSH/inert) live in internal/harmless;
+	// here we prove the catalog's IsHarmless gate rejects such keys smuggled into a
+	// decoy instance — the catalog-integration half of the guarantee.
 	c := fixedCatalog(t, 5)
-	// An ENCRYPTED key is a real, passphrase-recoverable key — never "inert".
 	encrypted := []byte("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFDjBABg" +
 		"kqhkiG9w0BBQ0wMzAbBgkqhkiG9w0BBQwwDgQI\n-----END ENCRYPTED PRIVATE KEY-----\n# " + canaryMarker + "X\n")
-	if isInertPrivateKey(encrypted) {
-		t.Fatal("an ENCRYPTED private key was called inert")
-	}
 	if err := c.IsHarmless(Instance{Type: TypeFakeSecret, Payload: encrypted}); err == nil {
 		t.Fatal("an encrypted (real) key smuggled into a decoy was accepted")
 	}
-	// A legacy DEK-Info encrypted PEM is likewise real.
-	legacy := []byte("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,XYZ\n\nZmlsbGVy\n-----END RSA PRIVATE KEY-----\n# " + canaryMarker + "X\n")
-	if isInertPrivateKey(legacy) {
-		t.Fatal("a legacy DEK-Info encrypted key was called inert")
-	}
-	// An OpenSSH-format key cannot be parse-checked by the DER parsers; the
-	// conservative predicate must NOT call it inert.
 	openssh := []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n# " + canaryMarker + "X\n")
-	if isInertPrivateKey(openssh) {
-		t.Fatal("an OPENSSH PRIVATE KEY (unparseable label) was called inert")
-	}
 	if err := c.IsHarmless(Instance{Type: TypeFakeSecret, Payload: openssh}); err == nil {
 		t.Fatal("an OpenSSH-format key smuggled into a decoy was accepted")
 	}
@@ -132,26 +106,6 @@ func TestCrossScanIsUniversalBackstop(t *testing.T) {
 	}
 }
 
-func TestEndpointPredicateRejectsRoutableHost(t *testing.T) {
-	// Reject arms (the predicate must have teeth on every host form).
-	for _, bad := range []string{
-		"endpoint: https://8.8.8.8/admin\n",                    // routable IPv4
-		"endpoint: https://[2606:4700:4700::1111]:8443/x\n",    // routable IPv6 (guards the IPv6 branch)
-		"endpoint: https://example.evil.com/x\n",               // reserved-SLD lookalike
-		"endpoint: ssh://root@198.51.100.9.attacker.net:22/\n", // non-https scheme + suffix trick
-	} {
-		if err := allHostsReserved([]byte(bad + "# " + canaryMarker + "X\n")); err == nil {
-			t.Fatalf("a routable host was accepted: %q", bad)
-		}
-	}
-	// Accept arms (reserved namespaces).
-	for _, ok := range []string{"https://admin.internal.example/x", "https://192.0.2.5:8443/x", "https://[2001:db8::1]:8443/x"} {
-		if err := allHostsReserved([]byte(ok)); err != nil {
-			t.Fatalf("reserved host %q was rejected: %v", ok, err)
-		}
-	}
-}
-
 func TestFakeSecretJWTForkIsDeterministicAndHarmless(t *testing.T) {
 	// Find a seed that takes the JWT fork (the other tests' seed 99 hits PEM), so
 	// both branches' determinism + harmlessness are pinned.
@@ -172,7 +126,7 @@ func TestFakeSecretJWTForkIsDeterministicAndHarmless(t *testing.T) {
 	if string(a.Payload) != string(b.Payload) {
 		t.Fatal("JWT fork is not deterministic for a fixed seed")
 	}
-	if !isUnsignedJWT(jwtRe.FindString(string(a.Payload))) {
+	if !harmless.IsUnsignedJWT(jwtRe.FindString(string(a.Payload))) {
 		t.Fatal("JWT-fork instance does not carry an unsigned JWT")
 	}
 }
@@ -193,18 +147,6 @@ func TestGenerateIsConcurrencySafe(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-}
-
-func TestUnsignedJWTPredicate(t *testing.T) {
-	none := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x"}`))
-	if !isUnsignedJWT(none + "." + claims + ".") {
-		t.Fatal("a valid unsigned (alg:none, empty sig) JWT was rejected")
-	}
-	signed := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	if isUnsignedJWT(signed + "." + claims + ".sig") {
-		t.Fatal("a signed JWT (alg:HS256, non-empty sig) was accepted")
-	}
 }
 
 func TestCatalogNewProvesHarmlessAtConstruction(t *testing.T) {

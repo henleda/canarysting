@@ -42,6 +42,9 @@ type StingOutcome struct {
 	// TokenCostProxy estimates LLM tokens an agent would burn processing the
 	// bait. Research-direction; see docs/INTELLIGENCE.md §6 (Model 2).
 	TokenCostProxy float64
+	// DepthReached is the deepest maze/nesting level the attacker descended — a
+	// behavioral reaction signal for the D2 adversary profiler (docs/STING.md).
+	DepthReached int
 }
 
 // EventStore is the per-scope, deployment-local store of interaction events.

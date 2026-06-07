@@ -19,15 +19,33 @@ fail_closed:
   tier3: true
 
 # Attrition aggressiveness FLOOR. Default conservative; aggressive is explicit.
-# passive | moderate | aggressive
+# An unrecognized/empty value parses to passive (fail-safe), never to aggressive.
+#   passive    -> slow-drip tarpit only
+#   moderate   -> tarpit + plausible fake directory/config maze
+#   aggressive -> + token-maximizing bait (the brand ceiling; explicit only)
 sting_floor: passive
 
-# Sting self-cost budget (attrition must not burn the defender).
+# Sting self-cost budget (attrition must not burn the defender). A zero/missing
+# field normalizes to the documented conservative cap — never to "unbounded".
 sting_budget:
-  max_bytes_per_flow: 5242880   # 5 MiB
-  max_depth: 8
-  max_duration_seconds: 120
-  global_ceiling_bytes: 524288000  # 500 MiB host-wide
+  max_bytes_per_flow: 5242880      # 5 MiB per flow
+  max_depth: 8                     # maze / nested-structure depth cap (iterative)
+  max_duration_seconds: 120        # wall-time a single flow may be held
+  global_ceiling_bytes: 524288000  # 500 MiB host-wide, enforced by the shared Governor
+  max_concurrent_flows: 1024       # cap on simultaneously-tarpitted streams
+                                   # (fd/goroutine-exhaustion guard; bytes alone do not bound it)
+
+# Slow-drip pacing. The delay is returned to the driver as data (attrition never
+# sleeps). min bounds the floor so a drip always imposes cost; max stays under the
+# ~60s crawler-disconnect timeout so the attacker stays trapped, not released.
+sting_drip:
+  chunk_bytes: 64                  # per-drip chunk size for the tarpit
+  min_ms: 2000                     # 2s
+  max_ms: 45000                    # 45s
+
+# Runtime kill switch. true trips the shared Governor at load so attrition is a
+# no-op; canaryctl can flip it live, and the engine trips it on host pressure.
+sting_kill: false
 
 # Scope. Leave zones empty to use derived cluster identity. On environments with
 # no derivable cluster identity (e.g. standalone nginx), boundary is REQUIRED or

@@ -52,6 +52,65 @@ Treat unbounded generation as a bug, not a feature.
 - `bpf/loader/` is Go (cilium/ebpf): loads programs, manages maps, pushes per-flow verdict state keyed by socket cookie, reads counters back.
 - The map schema (keyed by socket cookie) is the contract between the loader and the kernel programs. Changing it is deliberate and reviewed.
 
+## Implementation status (M6 — attrition)
+
+`internal/sting/attrition` is implemented (M6, the differentiator). Containment is
+still deferred to M5 (it is kernel-enforced and cannot run on macOS). Attrition is
+pure Go, developed and tested locally.
+
+**Pull-based stream, delay-as-data.** Attrition is a stream, not a one-shot
+`Respond`: a driver calls `Stream.Next`, writes `Chunk.Data`, waits `Chunk.Delay`
+on its OWN timer, and repeats. Delay is data — attrition never sleeps and never
+spawns a goroutine, so it does O(1) work per chunk and structurally cannot burn
+the defender. The same `Stream` interface is driven by the local scripted-attacker
+harness today and by the real Envoy adapter (chunked transfer-encoding +
+`http.Flusher`) at M4, with zero attrition changes.
+
+- `Chunk{Data, Delay}` — bytes to flush now, then how long the driver waits.
+- `Stream.Next(ctx) (Chunk, DoneReason, error)` / `Outcome()` / `Close()`.
+- `Attritor.Open(verdict) Stream` — binds floor + budget at construction, never per
+  call; `Governor()` exposes the kill switch + counters.
+
+**Three generators, each provably bounded by an iterative depth counter (never
+recursion, so attrition can never become its own zip-bomb victim):**
+- `tarpit` (floor passive) — slow-drip inert filler; cost is duration.
+- `fake_tree` (floor moderate) — deterministic link-back directory/config maze;
+  `mazeNode(seed,path)` is a pure function so re-fetching a path is idempotent
+  (defeats crawler dedup), keyed by the per-flow seed (from the socket cookie).
+- `token_bait` (floor aggressive) — token-maximizing, parser-hostile bait
+  (multi-byte Unicode byte-fallback + BPE-merge-breaking + bounded nested JSON).
+  Defensive decoy text only — never prompt-injection or a beacon. See
+  `docs/AI_BAIT.md` for the FTO framing; the novelty is isolated behind this one
+  generator and the `FloorAggressive` gate.
+
+**Bounds.** Per-flow `Budget` (`MaxBytesPerFlow`, `MaxDepth`, `MaxDuration`) under
+a shared host-wide `Governor` (atomic byte ceiling + concurrent-stream cap + kill
+switch). A zero/missing budget field normalizes to the conservative cap, never to
+unbounded. Every emitted chunk passes `harmless.CrossScan` — the same shared
+safety predicates the canary catalog uses — proven over samples at construction
+(`New` errors / `Default` panics on a non-harmless or unbounded generator).
+
+**Aggressive is never the silent default**, enforced three structurally-independent
+ways: (1) `FloorPassive` is the zero value, so an unset config is passive; (2)
+generators above the floor are not even *constructed* (`token_bait` only at
+`FloorAggressive`); (3) generator selection is `min(tierIntensity, floorMax)` with
+no `default` arm that lands on a higher generator, so no Tier value alone raises
+the floor.
+
+**The attacker-cost meter** (`Outcome`) maps its cost fields (mechanism, time
+held, bytes served, requests absorbed, est. tokens, depth reached) onto
+`intelligence.StingOutcome`, copied at the composition root — attrition imports
+neither intelligence nor engine (enforced by an import-graph test). `Outcome.Reason`
+is attrition-internal control flow (why the stream ended), recorded by D1 as event
+metadata rather than on `StingOutcome`. This is what feeds the D1 event store and
+the D3 attacker-cost KPI.
+
+**Verification.** A scripted-attacker test suite proves the exit bar locally: the
+cost meter climbs while per-chunk defender allocations stay flat (a benchmark
+asserts O(1) allocs/op). `cmd/sting-selfcheck` prints the attacker-vs-defender
+ledger (the demo beat-4 numbers) and exits non-zero on any invariant violation, so
+it doubles as a CI gate.
+
 ## What the sting layer must never do
 
 - Make an aggressive attrition level the silent default.

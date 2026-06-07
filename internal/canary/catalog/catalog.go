@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/harmless"
 )
 
 // lockedRand makes a *rand.Rand safe for concurrent generator calls. The seeder
@@ -181,7 +182,7 @@ func (c *Catalog) IsHarmless(i Instance) error {
 	if err := e.Harmless(i); err != nil {
 		return err
 	}
-	return crossScan(i.Payload)
+	return harmless.CrossScan(i.Payload)
 }
 
 // SeedWeights returns the cold-start intent-strength priors per type. This is the

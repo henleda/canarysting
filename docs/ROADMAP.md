@@ -198,17 +198,30 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   workflows (21 confirmed findings applied). `make check` green locally and on the
   box. Real placement locations + live negative-space planner land with M4/M7.
 
-#### M6 — Sting: attrition  · 4–6 days · *the differentiator*
-- `attrition` — tarpit (slow-drip) + bounded fake-structure generators (deep
-  fake directory trees, recursive fake config, token-bait that triggers
-  expensive parsing).
-- Hard **budget per flow** + **global ceiling** + **kill switch**. Floors
-  passive / moderate / aggressive; conservative default; aggressive only by
-  explicit config.
-- An "attacker cost" meter (bytes served, estimated tokens, wall-time wasted).
-- **Exit:** an automated client gets stuck in bounded, endless, cheap-to-us
-  deception; the cost meter climbs; defender cost stays flat. (Verified against
-  the scripted attacker; the real-agent run is M9.)
+#### M6 — Sting: attrition  · 4–6 days · *the differentiator* · ← **DONE (2026-06-07)**
+- [x] `attrition` — pull-based **stream** (delay-as-data; the driver owns the
+  timer, attrition never sleeps) over three provably-bounded generators: `tarpit`
+  (slow-drip), `fake_tree` (deterministic link-back directory/config maze,
+  idempotent per path), and `token_bait` (token-maximizing parser-hostile bait —
+  the patent-flagged novelty; full version shipped, isolated behind the
+  `FloorAggressive` gate; FTO framing in `docs/AI_BAIT.md`).
+- [x] Hard **per-flow budget** + host-wide **`Governor`** (atomic global byte
+  ceiling + concurrent-stream cap + **kill switch** tripped by operator AND
+  engine). Floors passive / moderate / aggressive; conservative default enforced
+  three structural ways (aggressive never silent; no tier alone raises the floor).
+- [x] Attacker-cost meter (`Outcome`: bytes served, time held, est. tokens,
+  requests absorbed, depth) whose cost fields map onto `intelligence.StingOutcome`,
+  copied at the composition root (attrition imports neither engine nor
+  intelligence — import-graph test enforced). Feeds D1/D3.
+- [x] **Harmlessness factored out:** new stdlib-only `internal/harmless` package
+  is the single source of truth for the reserved/EXAMPLE + structural-invalidity
+  predicates; both the M3 canary catalog and attrition bait depend on it. Every
+  emitted chunk passes `harmless.CrossScan`, proven at construction.
+- **Exit (met):** a scripted attacker gets stuck in bounded, endless, cheap-to-us
+  deception; the cost meter climbs while per-chunk defender allocations stay flat
+  (benchmark-proven). `cmd/sting-selfcheck` prints the attacker-vs-defender ledger
+  and gates CI. The real-agent run is M9. **Track A (engine + canary + attrition)
+  complete.**
 
 ### Track B — the kernel + proxy integration (AWS Linux)
 
@@ -615,3 +628,23 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   RNG data race, encrypted/OpenSSH-key inertness gaps, and an Active-mode rotation
   collapse). 99 repo tests, `make check` green locally and on the box. Remaining
   Track A: **M6 attrition** (the differentiator).
+- **2026-06-07** — **M6 (Sting: attrition) complete.** `internal/sting/attrition`
+  implements the differentiator as a pull-based, clock-free **stream** (delay is
+  data; the driver owns the timer, attrition never sleeps → O(1) work per chunk,
+  the defender is never burned). Three provably-bounded generators built iteratively
+  (never recursion): `tarpit` (slow-drip duration cost), `fake_tree` (deterministic
+  idempotent maze), and the patent-flagged `token_bait` (multi-byte byte-fallback +
+  BPE-merge-breaking + bounded nested JSON — full version, isolated behind
+  `FloorAggressive`; FTO framing in new `docs/AI_BAIT.md`). Per-flow `Budget` under a
+  shared host-wide `Governor` (atomic byte ceiling + concurrent-stream cap + dual-trip
+  kill switch). Aggressive-never-silent enforced three structural ways. Attacker-cost
+  `Outcome` mirrors `intelligence.StingOutcome` (copied at the composition root; an
+  import-graph test proves attrition imports only contract + harmless). **Harmlessness
+  factored out** into a new stdlib-only `internal/harmless` package — single source of
+  truth for the safety predicates, now shared by the M3 catalog and attrition bait
+  (M3 refactored onto it; its adversarial-review coverage preserved). New
+  `cmd/sting-selfcheck` prints the attacker-vs-defender ledger and gates CI. Built via
+  a design workflow (3 research strands + 3 lenses + judged synthesis); decisions:
+  full token_bait now, harmlessness factored out (both founder-approved). Full repo
+  green under `-race` + `vet`. **Track A (engine M1+M2 + canary M3 + attrition M6)
+  done.** Next: Track B (M4 Envoy / M5 eBPF on the box) or Track D (D1 event store).

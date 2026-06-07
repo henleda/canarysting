@@ -10,11 +10,11 @@ package catalog
 import (
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/harmless"
 )
 
 // rng is the minimal entropy interface the generators need. It is satisfied by
@@ -79,20 +79,20 @@ func genPlantedCredential(r rng) (Instance, error) {
 }
 
 func plantedCredentialHarmless(i Instance) error {
-	ids := awsKeyIDRe.FindAllString(string(i.Payload), -1)
+	ids := harmless.FindAWSKeyIDs(i.Payload)
 	if len(ids) == 0 {
-		return &HarmlessError{Reason: "planted_credential: no AWS key id present"}
+		return &harmless.Error{Reason: "planted_credential: no AWS key id present"}
 	}
 	for _, id := range ids {
-		if !isExampleAWSKeyID(id) {
-			return &HarmlessError{Reason: "planted_credential: key id outside EXAMPLE namespace"}
+		if !harmless.IsExampleAWSKeyID(id) {
+			return &harmless.Error{Reason: "planted_credential: key id outside EXAMPLE namespace"}
 		}
 	}
-	if secs := awsSecretRe.FindAllString(string(i.Payload), -1); len(secs) == 0 {
-		return &HarmlessError{Reason: "planted_credential: no EXAMPLE secret present"}
+	if !harmless.HasExampleAWSSecret(i.Payload) {
+		return &harmless.Error{Reason: "planted_credential: no EXAMPLE secret present"}
 	}
 	if !carriesCanaryMarker(i.Payload) {
-		return &HarmlessError{Reason: "planted_credential: missing marker"}
+		return &harmless.Error{Reason: "planted_credential: missing marker"}
 	}
 	return nil
 }
@@ -144,15 +144,15 @@ var jwtRe = regexp.MustCompile(`[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.`)
 
 func fakeSecretHarmless(i Instance) error {
 	switch {
-	case isInertPrivateKey(i.Payload): // pem.Decode finds the block despite comments
+	case harmless.IsInertPrivateKey(i.Payload): // pem.Decode finds the block despite comments
 		// ok
-	case isUnsignedJWT(jwtRe.FindString(string(i.Payload))):
+	case harmless.IsUnsignedJWT(jwtRe.FindString(string(i.Payload))):
 		// ok
 	default:
-		return &HarmlessError{Reason: "fake_secret: neither an inert private key nor an unsigned JWT"}
+		return &harmless.Error{Reason: "fake_secret: neither an inert private key nor an unsigned JWT"}
 	}
 	if !carriesCanaryMarker(i.Payload) {
-		return &HarmlessError{Reason: "fake_secret: missing marker"}
+		return &harmless.Error{Reason: "fake_secret: missing marker"}
 	}
 	return nil
 }
@@ -166,13 +166,13 @@ func genDecoyFile(r rng) (Instance, error) {
 }
 
 func decoyFileHarmless(i Instance) error {
-	// AWS keys and PEM blocks are validated by the universal crossScan; here we
-	// assert every embedded host is reserved and the marker is present.
-	if err := allHostsReserved(i.Payload); err != nil {
+	// AWS keys and PEM blocks are validated by the universal harmless.CrossScan;
+	// here we assert every embedded host is reserved and the marker is present.
+	if err := harmless.AllHostsReserved(i.Payload); err != nil {
 		return err
 	}
 	if !carriesCanaryMarker(i.Payload) {
-		return &HarmlessError{Reason: "decoy_file: missing marker"}
+		return &harmless.Error{Reason: "decoy_file: missing marker"}
 	}
 	return nil
 }
@@ -198,16 +198,16 @@ func genFakeBucket(r rng) (Instance, error) {
 func fakeBucketHarmless(i Instance) error {
 	s := string(i.Payload)
 	if !strings.Contains(s, "<ID>000000000000</ID>") {
-		return &HarmlessError{Reason: "fake_bucket: owner id is not the reserved 000000000000"}
+		return &harmless.Error{Reason: "fake_bucket: owner id is not the reserved 000000000000"}
 	}
 	if strings.Contains(s, "X-Amz-Signature") {
-		return &HarmlessError{Reason: "fake_bucket: listing carries a presigned URL signature"}
+		return &harmless.Error{Reason: "fake_bucket: listing carries a presigned URL signature"}
 	}
-	if err := allHostsReserved(i.Payload); err != nil {
+	if err := harmless.AllHostsReserved(i.Payload); err != nil {
 		return err
 	}
 	if !carriesCanaryMarker(i.Payload) {
-		return &HarmlessError{Reason: "fake_bucket: missing marker"}
+		return &harmless.Error{Reason: "fake_bucket: missing marker"}
 	}
 	return nil
 }
@@ -223,34 +223,11 @@ func genFakeEndpoint(r rng) (Instance, error) {
 }
 
 func fakeEndpointHarmless(i Instance) error {
-	if err := allHostsReserved(i.Payload); err != nil {
+	if err := harmless.AllHostsReserved(i.Payload); err != nil {
 		return err
 	}
 	if !carriesCanaryMarker(i.Payload) {
-		return &HarmlessError{Reason: "fake_endpoint: missing marker"}
-	}
-	return nil
-}
-
-// --- shared host scan ---
-
-// urlRe is scheme-agnostic: any scheme://… (https, postgres, ssh, ldap, ftp,
-// redis, mongodb, …) so a routable host cannot be smuggled behind an unlisted
-// scheme.
-var urlRe = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
-
-// allHostsReserved asserts every URL host in a payload is an RFC 2606 reserved
-// domain or an RFC 5737/3849 reserved IP — so nothing in the decoy points at a
-// routable asset. url.Hostname() handles IPv6 brackets, ports, and userinfo.
-func allHostsReserved(payload []byte) error {
-	for _, raw := range urlRe.FindAllString(string(payload), -1) {
-		u, err := url.Parse(raw)
-		if err != nil || u.Hostname() == "" {
-			return &HarmlessError{Reason: "payload contains an unparseable URL: " + raw}
-		}
-		if !isReservedHostOrIP(u.Hostname()) {
-			return &HarmlessError{Reason: "payload references a routable host: " + u.Hostname()}
-		}
+		return &harmless.Error{Reason: "fake_endpoint: missing marker"}
 	}
 	return nil
 }
