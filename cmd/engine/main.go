@@ -33,6 +33,7 @@ func main() {
 		boundary  = flag.String("scope-boundary", "", "operator-defined scope boundary; required where no cluster identity is derivable (standalone). Empty => refuse to start.")
 		window    = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
 		selfcheck = flag.Bool("selfcheck", false, "submit one synthetic signal event, print the verdict, and exit")
+		grpcAddr  = flag.String("grpc-addr", "", "if set, serve the Engine over gRPC at this address for an out-of-process adapter (M4)")
 	)
 	flag.Parse()
 
@@ -49,7 +50,15 @@ func main() {
 		return
 	}
 
-	log.Printf("engine: ready (scope boundary %q, window %s). Awaiting transport (M4); in-process engine live.", *boundary, *window)
+	if *grpcAddr != "" {
+		// Out-of-process transport (M4): serve the engine over gRPC. Blocks.
+		if err := serveGRPC(*grpcAddr, eng); err != nil {
+			log.Fatalf("engine: gRPC server: %v", err)
+		}
+		return
+	}
+
+	log.Printf("engine: ready (scope boundary %q, window %s). In-process engine live; pass -grpc-addr to serve the M4 transport.", *boundary, *window)
 	waitForSignal()
 	log.Printf("engine: shutting down")
 }

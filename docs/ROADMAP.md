@@ -239,14 +239,23 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   (BTF + bpftool verified); `go build ./...` green on **both** macOS/arm64 and the
   box (Linux/arm64).
 
-#### M4 — Envoy adapter (real dataplane)  · 4–6 days
-- Real `adapters/envoy` via ext_proc/ext_authz (inline) + dynamic-metadata
-  (async); **socket-cookie stamping on every event**; per-tier fail behavior
-  (fail-open T1, fail-closed T3).
-- A small set of demo microservices behind Envoy, with canaries (M3) reachable
-  in the traffic.
+#### M4 — Envoy adapter (real dataplane)  · 4–6 days · ← **LOCAL HALF DONE (2026-06-07)**
+- [x] Real `adapters/envoy` via **ext_proc** (decision: ext_proc, not ext_authz —
+  only it can stream the future attrition body) + a `canarysting` dynamic-metadata
+  suspicious tag; per-tier fail behavior (fail-open T1, fail-closed T3) via a
+  contract-typed `FailPolicy`; socket-cookie stamping behind a `CookieResolver`
+  seam; out-of-process engine over the existing `api/proto` gRPC boundary
+  (`api/enginegrpc`). Pure-Go, ~85% of M4, all unit-tested with a `FakeResolver` +
+  fake ext_proc stream; `cmd/envoy-selfcheck` gates CI. `make check` green (go 1.22).
+- [ ] **ON-BOX (remaining):** the sockops eBPF program (`bpf/sockops`) + bpf2go +
+  the real `bpf/loader` `MapResolver` (the socket-cookie bridge — the §7 de-risk);
+  a small set of demo microservices behind a host-networked Envoy with canaries
+  (M3) reachable; the exit-bar integration test.
 - **Exit:** a real HTTP attacker through real Envoy produces a real verdict, with
-  the socket cookie carried end-to-end.
+  the socket cookie carried end-to-end (the on-box test).
+- **Dep correction (2026-06-07):** the §7 plan assumed the ext_proc protos sit in
+  go-control-plane's root module; they don't — they're a separately-versioned
+  submodule `.../go-control-plane/envoy`, pinned to `v1.32.4` to hold go 1.22.
 
 #### M5 — eBPF identity join + containment  · 5–8 days · *together* · *the CISO proof*
 - `bpf/loader` (cilium/ebpf) + `bpf/enforce/enforce.bpf.c` — cgroup/TC hook,

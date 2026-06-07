@@ -37,3 +37,44 @@ Adapters connect a specific proxy to CanarySting. **Envoy first, nginx second.**
 - Import the engine or hold engine-only state.
 - Emit an event without a socket cookie or a resolvable scope.
 - Apply an aggressive sting on their own — the sting layer and operator config own response level.
+
+## Implementation status (M4 — Envoy adapter, local half)
+
+The Envoy ext_proc adapter is implemented in pure Go (`adapters/envoy`); the
+kernel socket-cookie resolver is the on-box half (sockops eBPF + `bpf/loader`),
+still to land. The full local stack passes `make check` (go 1.22).
+
+**ext_proc, one stream per request.** `Adapter.Process` (the `ExternalProcessor`
+gRPC server) handles the request-headers phase (M4 uses `body_mode: NONE`,
+`response: SKIP`) and CONTINUEs every other phase. Per request it: maps the path
+to a candidate `seeder.Location` (a non-deciding transform), builds the
+host-canonical 4-tuple from the `source.address`/`destination.address` ext_proc
+attributes, resolves the socket cookie via a `CookieResolver` (with a bounded
+re-lookup that absorbs the establish-vs-first-byte race), and calls
+`signal.Builder.Build`. The three sentinels drive the branch: `ErrNoPlacement` →
+not a canary, CONTINUE (the common path, no engine round-trip); `ErrNoSocketCookie`
+→ unattributable, CONTINUE observe-only (never enforce); `nil` → a real touch.
+
+**Inline vs async.** `Config.Inline=false` (default) fires the signal and CONTINUEs
+— the kernel (M5) enforces; Tiers 0-1 are trivially never on the hot path.
+`Config.Inline=true` holds a canary-touched request for the verdict and acts at the
+proxy: Tier 0/1 → CONTINUE (+ a `canarysting` dynamic-metadata suspicious tag at
+T1); Tier 2/3 async → CONTINUE (kernel enforces); Tier 2 inline → 429; Tier 3
+inline → 403. Per-tier inline fail behavior is a contract-typed `FailPolicy`
+injected at the composition root (fail-open T1, fail-closed T3) so the adapter
+imports no engine; on a Submit error the tier is unknown, so the conservative
+inline posture (fail-closed) applies.
+
+**Attrition seam (M6):** the `Attritor` injection point exists; M4 ships the seam,
+not the live streamed-deception pump (the exit bar needs a real verdict). It flips
+on with a composition-root change (M5/M9).
+
+**Out-of-process.** The adapter speaks only to `contract.Engine`; in the demo that
+is a gRPC client (`api/enginegrpc`) to a separate engine process (`cmd/engine
+-grpc-addr`). `cmd/envoy-selfcheck` proves the whole local path end-to-end against
+a real in-process engine + a `FakeResolver`, and gates CI.
+
+**Dependency note:** the ext_proc protos live in the *separately-versioned*
+`github.com/envoyproxy/go-control-plane/envoy` submodule (not the root module);
+`v1.32.4` is the newest that holds the repo on go 1.22 and is wire-compatible with
+a newer patched Envoy binary in the demo.

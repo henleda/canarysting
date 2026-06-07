@@ -2,6 +2,12 @@
 /bin/
 *.test
 *.out
+# stray root-level cmd binaries (use `make bin` -> ./bin/ instead)
+/engine
+/canaryctl
+/envoy-adapter
+/envoy-selfcheck
+/sting-selfcheck
 # eBPF build artifacts
 *.bpf.o
 # editor / OS

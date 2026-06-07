@@ -68,9 +68,15 @@ fmt-check:
 tidy:
 	$(GO) mod tidy
 
-## check: the full local gate (fmt-check + vet + build + test)
+## selfcheck: run the end-to-end self-check gates (no kernel/proxy needed)
+.PHONY: selfcheck
+selfcheck:
+	$(GO) run ./cmd/sting-selfcheck
+	$(GO) run ./cmd/envoy-selfcheck
+
+## check: the full local gate (fmt-check + vet + build + test + selfcheck)
 .PHONY: check
-check: fmt-check vet build test
+check: fmt-check vet build test selfcheck
 
 ## proto: regenerate Go from api/proto (requires protoc + protoc-gen-go)
 .PHONY: proto
