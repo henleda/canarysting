@@ -352,6 +352,36 @@ func TestProcessInlineContextCancelFailsClosed(t *testing.T) {
 	}
 }
 
+func TestOnVerdictHookFiresOnlyForCanaryTouches(t *testing.T) {
+	eng := &recEngine{out: contract.Verdict{Tier: contract.TierContain, Mode: contract.ModeAsync}}
+	reg := seeder.NewMemRegistry()
+	_ = reg.Put(seeder.Placement{Scope: "scope-a", Type: "decoy_file", Location: canaryPath})
+	res := identity.NewFakeResolver()
+	ft, _ := identity.TupleFromAddrs("203.0.113.7", 54321, "10.0.0.2", 8443)
+	res.Set(ft, identity.Resolution{Cookie: 0xC0FFEE})
+	var gotEv contract.SignalEvent
+	var gotV contract.Verdict
+	called := 0
+	a, err := New(Config{
+		Engine: eng, Registry: reg, Resolver: res, Scope: "scope-a", Inline: true,
+		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) { gotEv, gotV, called = ev, v, called+1 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, a, headersReq(canaryPath, srcAddr, dstAddr))
+	if called != 1 {
+		t.Fatalf("OnVerdict called %d times for a canary touch, want 1", called)
+	}
+	if gotEv.Flow.SocketCookie != 0xC0FFEE || gotV.Tier != contract.TierContain {
+		t.Fatalf("OnVerdict got ev cookie=%#x verdict tier=%d", gotEv.Flow.SocketCookie, gotV.Tier)
+	}
+	run(t, a, headersReq("/orders", srcAddr, dstAddr)) // non-canary
+	if called != 1 {
+		t.Fatal("OnVerdict fired for a non-canary request")
+	}
+}
+
 func TestResolveCookieBoundedRetryAbsorbsRace(t *testing.T) {
 	eng := &recEngine{out: contract.Verdict{Tier: contract.TierObserve}}
 	reg := seeder.NewMemRegistry()

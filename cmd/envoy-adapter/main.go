@@ -19,9 +19,38 @@ import (
 
 	"github.com/canarysting/canarysting/adapters/envoy"
 	"github.com/canarysting/canarysting/api/enginegrpc"
+	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/canary/seeder"
 	"github.com/canarysting/canarysting/internal/contract"
 )
+
+// demoCanaryPaths pins canary types to negative-space HTTP paths — paths a
+// legitimate flow never requests, so a touch is almost certainly hostile
+// (docs/ROADMAP §1). The M3 seeder places real harmless decoys at these
+// locations; the adapter recognizes a touch by the path.
+var demoCanaryPaths = map[contract.CanaryType][]seeder.Location{
+	catalog.TypePlantedCredential: {"/.aws/credentials"},
+	catalog.TypeFakeSecret:        {"/.env"},
+	catalog.TypeDecoyFile:         {"/backup/db.sql"},
+	catalog.TypeFakeBucket:        {"/internal/buckets"},
+	catalog.TypeFakeEndpoint:      {"/admin/metrics"},
+}
+
+// seedCanaries places the demo canaries in the negative space and returns the
+// registry the adapter looks up against.
+func seedCanaries(scope contract.ScopeKey) (seeder.Registry, error) {
+	sd, err := seeder.New(seeder.Config{
+		Catalog: catalog.Default(),
+		Planner: seeder.BroadPlanner{Locations: demoCanaryPaths},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := sd.Seed(scope, seeder.Minefield); err != nil {
+		return nil, err
+	}
+	return sd.Registry(), nil
+}
 
 func main() {
 	var (
@@ -42,9 +71,11 @@ func main() {
 	defer cc.Close()
 	eng := enginegrpc.NewClient(cc, 200*time.Millisecond)
 
-	// The placement registry is shared with the canary seeder in the full demo
-	// (M4 on-box / M7 continuous seeding); here it is the live lookup surface.
-	reg := seeder.NewMemRegistry()
+	// Seed the negative-space canaries into the registry the adapter looks up.
+	reg, err := seedCanaries(contract.ScopeKey(*scopeFlag))
+	if err != nil {
+		log.Fatalf("envoy-adapter: seeding canaries: %v", err)
+	}
 
 	resolver, err := newResolver()
 	if err != nil {
@@ -58,6 +89,10 @@ func main() {
 		Resolver: resolver,
 		Scope:    contract.ScopeKey(*scopeFlag),
 		Inline:   *inline,
+		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
+			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
+				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)
+		},
 	})
 	if err != nil {
 		log.Fatalf("envoy-adapter: %v", err)

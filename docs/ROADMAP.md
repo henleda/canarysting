@@ -239,23 +239,31 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   (BTF + bpftool verified); `go build ./...` green on **both** macOS/arm64 and the
   box (Linux/arm64).
 
-#### M4 — Envoy adapter (real dataplane)  · 4–6 days · ← **LOCAL HALF DONE (2026-06-07)**
+#### M4 — Envoy adapter (real dataplane)  · 4–6 days · ← **DONE (2026-06-08)**
 - [x] Real `adapters/envoy` via **ext_proc** (decision: ext_proc, not ext_authz —
   only it can stream the future attrition body) + a `canarysting` dynamic-metadata
   suspicious tag; per-tier fail behavior (fail-open T1, fail-closed T3) via a
   contract-typed `FailPolicy`; socket-cookie stamping behind a `CookieResolver`
   seam; out-of-process engine over the existing `api/proto` gRPC boundary
   (`api/enginegrpc`). Pure-Go, ~85% of M4, all unit-tested with a `FakeResolver` +
-  fake ext_proc stream; `cmd/envoy-selfcheck` gates CI. `make check` green (go 1.22).
-- [ ] **ON-BOX (remaining):** the sockops eBPF program (`bpf/sockops`) + bpf2go +
-  the real `bpf/loader` `MapResolver` (the socket-cookie bridge — the §7 de-risk);
-  a small set of demo microservices behind a host-networked Envoy with canaries
-  (M3) reachable; the exit-bar integration test.
-- **Exit:** a real HTTP attacker through real Envoy produces a real verdict, with
-  the socket cookie carried end-to-end (the on-box test).
+  fake ext_proc stream; `cmd/envoy-selfcheck` gates CI. (Adversarial review: 20
+  findings applied.)
+- [x] **ON-BOX:** `bpf/sockops` — the sockops eBPF program + bpf2go + the
+  `MapResolver` (the socket-cookie bridge, the §7 de-risk) **proven on the box**
+  via a `SO_COOKIE` oracle + delete-on-close test; `deploy/m4-demo/` — backend
+  behind a host-networked Envoy (v1.34.1) with the ext_proc filter, the engine +
+  adapter as host processes, a scripted attacker, and `run-demo.sh` as the
+  end-to-end exit-bar gate.
+- **Exit (met):** `run-demo.sh` on the box — a real HTTP attacker through real
+  Envoy produces real verdicts, each carrying a non-zero **kernel-resolved socket
+  cookie carried end-to-end** (kernel → sockops map → ext_proc 4-tuple →
+  SignalEvent → engine → verdict); legit traffic produces no signal.
 - **Dep correction (2026-06-07):** the §7 plan assumed the ext_proc protos sit in
   go-control-plane's root module; they don't — they're a separately-versioned
-  submodule `.../go-control-plane/envoy`, pinned to `v1.32.4` to hold go 1.22.
+  submodule `.../go-control-plane/envoy`, pinned to `v1.32.x` to hold go 1.22.
+- **eBPF notes (2026-06-08):** verifier forbids `&skops->field` (read ctx ip fields
+  by value); `remote_port` carries the port in the high 16 bits, network order
+  (`bpf_ntohl`). Both found + fixed empirically on the box.
 
 #### M5 — eBPF identity join + containment  · 5–8 days · *together* · *the CISO proof*
 - `bpf/loader` (cilium/ebpf) + `bpf/enforce/enforce.bpf.c` — cgroup/TC hook,
@@ -657,3 +665,20 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   full token_bait now, harmlessness factored out (both founder-approved). Full repo
   green under `-race` + `vet`. **Track A (engine M1+M2 + canary M3 + attrition M6)
   done.** Next: Track B (M4 Envoy / M5 eBPF on the box) or Track D (D1 event store).
+- **2026-06-07** — **M4 (Envoy adapter) LOCAL HALF.** Built the pure-Go ~85% of the
+  ext_proc adapter (`adapters/envoy`), the gRPC engine boundary (`api/gen` /
+  `api/convert` / `api/enginegrpc`), the `CookieResolver` seam + `FakeResolver`, and
+  `cmd/{engine -grpc-addr, envoy-adapter, envoy-selfcheck}`. First external deps
+  (go-control-plane/envoy, grpc, protobuf, cilium/ebpf) added and pinned to hold go
+  1.22. Design + adversarial-review workflows (20 findings applied). Pushed
+  (`9699ab3`, `c49165c`).
+- **2026-06-08** — **M4 COMPLETE (on-box).** `bpf/sockops` socket-cookie bridge —
+  sockops eBPF (PASSIVE_ESTABLISHED capture + delete-on-close) + bpf2go + the
+  `MapResolver` — **proven on the box** (`SO_COOKIE` oracle + delete-on-close). Two
+  eBPF gotchas fixed live (ctx-ptr deref; `remote_port` high-16/`bpf_ntohl`).
+  `deploy/m4-demo/` (host-networked Envoy v1.34.1 + backend + scripted attacker +
+  `run-demo.sh`) demonstrates and gates the exit bar: **real attacker → real Envoy →
+  real verdict, socket cookie carried end-to-end** — confirmed on the box.
+  **Track B M4 done; M5 (eBPF jail) is now unblocked** (the same cookie keys the
+  enforcement map). Next: M5, or the M7 learning window (this demo is its substrate),
+  or Track D (D1).

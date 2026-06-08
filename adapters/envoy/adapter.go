@@ -71,7 +71,19 @@ type Config struct {
 	// record and no signal, so it must never be silently discarded.
 	OnAsyncError func(error)
 
+	// OnVerdict, if set, is called for every canary touch that produced a verdict
+	// (the event carries the resolved socket cookie). Observability/demo hook; the
+	// adapter takes no action based on it.
+	OnVerdict func(contract.SignalEvent, contract.Verdict)
+
 	sleep func(time.Duration)
+}
+
+// observe reports a canary-touch verdict to the OnVerdict hook if set.
+func (a *Adapter) observe(ev contract.SignalEvent, v contract.Verdict) {
+	if a.cfg.OnVerdict != nil {
+		a.cfg.OnVerdict(ev, v)
+	}
 }
 
 // Normalized fills defaults (house idiom). It does not mutate required fields.
@@ -206,6 +218,7 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 		}
 		return immediateDeny(typev3.StatusCode_Forbidden, "forbidden\n")
 	}
+	a.observe(ev, v)
 	return responseForVerdict(v)
 }
 
@@ -218,9 +231,12 @@ func (a *Adapter) fireAsync(ev contract.SignalEvent) {
 	case a.sem <- struct{}{}:
 		go func() {
 			defer func() { <-a.sem }()
-			if _, err := a.cfg.Engine.Submit(ev); err != nil {
+			v, err := a.cfg.Engine.Submit(ev)
+			if err != nil {
 				a.cfg.OnAsyncError(fmt.Errorf("submit failed: %w", err))
+				return
 			}
+			a.observe(ev, v)
 		}()
 	default:
 		a.cfg.OnAsyncError(errAsyncSaturated)
