@@ -17,3 +17,5 @@
 # local agent tooling (not product code)
 .claude-flow/
 .swarm/
+# generated CO-RE kernel header (regenerate per kernel)
+bpf/**/vmlinux.h
