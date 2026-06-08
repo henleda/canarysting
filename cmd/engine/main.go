@@ -30,14 +30,15 @@ import (
 
 func main() {
 	var (
-		boundary  = flag.String("scope-boundary", "", "operator-defined scope boundary; required where no cluster identity is derivable (standalone). Empty => refuse to start.")
-		window    = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
-		selfcheck = flag.Bool("selfcheck", false, "submit one synthetic signal event, print the verdict, and exit")
-		grpcAddr  = flag.String("grpc-addr", "", "if set, serve the Engine over gRPC at this address for an out-of-process adapter (M4)")
+		boundary   = flag.String("scope-boundary", "", "operator-defined scope boundary; required where no cluster identity is derivable (standalone). Empty => refuse to start.")
+		window     = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
+		selfcheck  = flag.Bool("selfcheck", false, "submit one synthetic signal event, print the verdict, and exit")
+		grpcAddr   = flag.String("grpc-addr", "", "if set, serve the Engine over gRPC at this address for an out-of-process adapter (M4)")
+		aggressive = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence so a flow escalates to Jail on fewer distinct touches (uncalibrated cold-start)")
 	)
 	flag.Parse()
 
-	eng, intake, err := build(*boundary, *window)
+	eng, intake, err := build(*boundary, *window, *aggressive)
 	if err != nil {
 		// The refuse-to-start contract: never default to a global scope. A
 		// standalone deployment with no boundary fails loud here.
@@ -66,7 +67,7 @@ func main() {
 // build wires the engine from operator config and returns the engine and the
 // feedback intake. It returns scope.ErrUnresolved (wrapped) if no scope can be
 // resolved — the caller must treat that as fatal.
-func build(boundary string, window time.Duration) (*engine.Service, *feedback.Intake, error) {
+func build(boundary string, window time.Duration, aggressive bool) (*engine.Service, *feedback.Intake, error) {
 	resolver, err := scope.NewStaticResolver(scope.Config{
 		// M1: no mesh/k8s cluster identity source yet, so a standalone
 		// deployment must set an operator boundary or we refuse to start.
@@ -91,11 +92,23 @@ func build(boundary string, window time.Duration) (*engine.Service, *feedback.In
 	})
 	scorer := scoring.New(window, calib, scoring.NoExclusions{}).UseMultiplier(base)
 
+	tierCfg := tiers.DefaultConfig()
+	if aggressive {
+		// Demo/eval posture: minimum per-tier confidence so a single flow reaches
+		// Jail on fewer distinct touches (Jail threshold drops from ~5.10 to ~3.03).
+		// Modes/fail behavior unchanged. NOT for production (this widens FP bands).
+		tierCfg.ConfidenceRequired = map[contract.Tier]float64{
+			contract.TierTag:     tiers.MinConfidence,
+			contract.TierContain: tiers.MinConfidence,
+			contract.TierJail:    tiers.MinConfidence,
+		}
+	}
+
 	eng, err := engine.New(engine.Config{
 		Resolver:    resolver,
 		Scorer:      scorer,
 		Decider:     tiers.StaticDecider{},
-		Tiers:       tiers.DefaultConfig(),
+		Tiers:       tierCfg,
 		Calibration: calib,
 	})
 	if err != nil {

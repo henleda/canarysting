@@ -265,14 +265,44 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   by value); `remote_port` carries the port in the high 16 bits, network order
   (`bpf_ntohl`). Both found + fixed empirically on the box.
 
-#### M5 — eBPF identity join + containment  · 5–8 days · *together* · *the CISO proof*
-- `bpf/loader` (cilium/ebpf) + `bpf/enforce/enforce.bpf.c` — cgroup/TC hook,
-  verdict map keyed by **socket cookie**, actions rate-limit / hard-deny / jail.
-- The real identity join: socket cookie read at both the Envoy adapter and the
-  kernel; Tier-3 jail of the exact flow; bystander on the same host unaffected.
-- `sting/containment` drives the loader; refuses to act on unattributable flows.
-- **Exit:** Tier 3 jails the attacker socket in-kernel on AWS; a bystander keeps
-  working (the precision proof) — the moment that lands the CISO.
+#### M5 — eBPF identity join + containment  · 5–8 days · *together* · *the CISO proof* · ← **DONE (2026-06-08)**
+- [x] `bpf/loader` (the Loader contract) + `bpf/enforce/enforce.bpf.c` —
+  **`cgroup_skb/egress`** hook, verdict map keyed by **socket cookie**, actions
+  rate-limit (in-kernel token-bucket throttle) / hard-deny / jail (DROP). Per-packet
+  **fail-open by construction** (cookie 0 / map-miss → PASS). A dedicated
+  **`cgroup/sock_release`** program delete-on-closes the entry (strict map-owned
+  lifecycle).
+- [x] The real identity join, on-box proven: the socket cookie read at the Envoy
+  adapter (M4 sockops bridge) AND the kernel (`bpf_get_socket_cookie(skb)`) are the
+  SAME value (one cookie, three touchpoints — `docs/IDENTITY.md`). Tier-3 jail of the
+  exact flow; bystander on the same host unaffected.
+- [x] `internal/sting/containment` (pure-Go over the loader interface) drives it;
+  refuses to act on unattributable (cookie-0) flows. Wired from `cmd/envoy-adapter`
+  via the `OnVerdict` seam (async Tier 2/3) — the thin adapter imports no
+  cilium/ebpf (guard holds).
+- **Exit (met):** the root oracle (`bpf/enforce/loader_linux_test.go`) and
+  `deploy/m5-demo/run-demo.sh` both prove on the box: a real attacker escalating on
+  one connection is **jailed in-kernel by its socket cookie** while a bystander keeps
+  working — the moment that lands the CISO. (`-aggressive` engine posture makes a
+  single flow reach Jail at cold start for the demo.)
+- **eBPF note (2026-06-08):** `ebpf.AttachCgroupInetSockRelease` (lowercase g) vs
+  `AttachCGroupInetEgress`; loopback skbs are ~64 KiB so the rate-limit burst must
+  exceed that. Found on the box.
+- **Adversarial review (2026-06-08, 13 confirmed / 5 dismissed) applied:** fixed a
+  token-bucket starvation bug (sub-ms refill truncation collapsed Tier-2 throttle into
+  a jail; now carries the remainder + a sustained-throughput regression test), made
+  `loader.Program` preserve live bucket/counter state on re-program, hardened the demo
+  gate to require real escalation 200s + positive `KERNEL CONTAINMENT applied` evidence
+  (not mere silence), added the `containment` import to the thin-adapter guard, extracted
+  + unit-tested the `OnVerdict` seam, and added sibling-safety / hard-deny / deterministic
+  rate-limit oracle tests.
+- **M5 review follow-ups (LOW, deferred):** (a) route a kernel-containment Apply failure
+  through a dedicated `OnContainmentError` hook (today it logs prominently as
+  `KERNEL CONTAINMENT FAILED`); (b) wire `containment.Release` (de-escalation / operator
+  clear) to a control surface — exercised by the oracle but not reachable from the running
+  binary yet (lands with the operator control plane, M8/M10). The token-bucket RMW race is
+  accepted best-effort (documented in `enforce.bpf.c`: only ever affects the offending
+  flow, never a bystander).
 
 ### Track C — the real environment + the visible product
 
@@ -308,6 +338,22 @@ The brain runs end-to-end in-process — no proxy, no kernel.
   **observe-only baseline pilot** framing as the leave-behind
   (`TECHNICAL_ARCHITECTURE.md` §4/§10).
 - **Exit:** we can run the demo for a prospect and leave them in observe-only.
+
+> **Follow-up (operator config loading) — tracked debt, do before a real handoff.**
+> The operator strictness knob exists end-to-end in the type system but is not yet
+> wired from config: `tiers.Config.ConfidenceRequired` is the per-tier
+> **`confidence_required` ∈ [0.01, 1.00]** dial (0.01 permissive → escalate on fewer
+> distinct canary touches; 1.00 strict → more), range-validated by `Config.Validate`
+> and documented in `config/canarysting.example.yaml`, but **`cmd/engine` still uses
+> the hardcoded `tiers.DefaultConfig()`** (Tag 0.30 / Contain 0.50 / Jail 0.70) plus
+> the M5 **`-aggressive`** stopgap (pins all three to 0.01). Wire a config-file loader
+> that reads `confidence_required` (and the other `config/` keys: `mode`,
+> `fail_closed`, `scope`, `scoring`, `baseline`, `sting_floor`/`sting_budget`/
+> `sting_drip`) into `cmd/engine` (and the adapter), and **reconcile** the example
+> YAML (`tier2: 0.60, tier3: 0.90`) with the code defaults (`0.50 / 0.70`). Until
+> then operators cannot set strictness without a rebuild. Small, but it gates a
+> credible operator-config story; naturally lands here (or earlier if a partner needs
+> to tune strictness).
 
 #### M11 — Kubernetes / EKS demo  · scoped after §7 research lands · *future*
 - Port the staged demo to Kubernetes (likely EKS): eBPF as a privileged
@@ -682,3 +728,18 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   **Track B M4 done; M5 (eBPF jail) is now unblocked** (the same cookie keys the
   enforcement map). Next: M5, or the M7 learning window (this demo is its substrate),
   or Track D (D1).
+- **2026-06-08** — **M5 COMPLETE (eBPF containment, the CISO proof).** `bpf/enforce`
+  ships a `cgroup_skb/egress` jail + token-bucket throttle keyed by the socket cookie
+  (one LRU_HASH verdict_map), with a dedicated `cgroup/sock_release` delete-on-close;
+  per-packet fail-open by construction. `bpf/loader` Loader contract + cilium/ebpf
+  `KernelLoader`; pure-Go `internal/sting/containment` over it; wired from
+  `cmd/envoy-adapter` `OnVerdict` (async T2/T3) so the adapter stays ebpf-free
+  (guard holds). Founder calls: Tier-2 in-kernel rate-limit INCLUDED, close-delete
+  via a DEDICATED sock_release program. **Proven on the box**: a root oracle
+  (jail-precise + bystander-untouched, fail-open, cookie-0-refused, close-delete,
+  throttle-not-jail) and `deploy/m5-demo` e2e (an attacker escalates on one
+  keepalive connection to Tier 3 and is jailed in-kernel; a bystander keeps 200-ing).
+  Added a `-aggressive` engine demo posture (lower tier confidence). Built
+  design-workflow → implement → on-box → adversarial-review. **Track B complete (M4
+  + M5).** Next: M7 (learning window; m4/m5-demo is the substrate), M9 (LLM attacker
+  + the live attrition pump), M8 (dashboard), or Track D.

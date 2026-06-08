@@ -20,6 +20,9 @@ func TestAdapterImportsAreThin(t *testing.T) {
 		"canarysting/internal/engine",
 		"github.com/cilium/ebpf",
 		"canarysting/internal/intelligence",
+		"canarysting/internal/sting/containment", // enforcement is the composition root's job
+		"canarysting/bpf/loader",
+		"canarysting/bpf/enforce",
 	}
 	out, err := exec.Command("go", "list", "-deps", ".", "./identity").Output()
 	if err != nil {

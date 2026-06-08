@@ -18,6 +18,35 @@ Goal: prevent exfiltration and lateral progress.
 - **Precision is mandatory.** Containment acts only on a flow attributable by socket cookie / cgroup / PID (see `docs/IDENTITY.md`). A jailed bystander is a critical failure. If attribution is uncertain, do not contain.
 - Containment at Tier 2 is the gentler form (rate-limit / tarpit-by-throttle) so the actor stays unaware; Tier 3 is hard deny / jail.
 
+### Implementation status (M5 — containment)
+
+Implemented and proven on the box. `bpf/enforce/enforce.bpf.c` holds ONE
+`LRU_HASH` `verdict_map` keyed by the `__u64` socket cookie → `{action, drop
+counters, token-bucket}`, with two programs sharing it: `cgroup_skb/egress`
+(`enforce_egress`: hard-deny/jail → DROP; rate-limit → per-cookie token-bucket
+throttle) and `cgroup/sock_release` (`enforce_release`: delete the entry on socket
+close — the dedicated, strictly-map-owned lifecycle, so a stale jail can never
+outlive its socket). The datapath is **fail-OPEN by construction**: cookie 0 →
+PASS, map-miss → PASS, only an explicitly-programmed deny/jail drops; the verdict
+path stays fail-closed at Tier 3.
+
+`bpf/loader` is the `Loader` contract (a `KernelLoader` over cilium/ebpf on Linux,
+a `NoopLoader` elsewhere). `internal/sting/containment` is pure-Go over that
+interface: `ActionForTier` (Tier 2 → rate-limit, Tier 3 → jail), refuses cookie 0,
+`Release` to de-escalate. It is driven from the composition root
+(`cmd/envoy-adapter`) via the adapter's `OnVerdict` hook for **async** Tier 2/3
+only (inline tiers were actioned at the proxy) — so the thin adapter imports no
+cilium/ebpf or containment (the import-graph guard holds). Enforcement keys on the
+**same** socket cookie the M4 sockops bridge resolves.
+
+Scope: **egress-only** jail (drops the offending socket's outbound bytes — stops
+exfil / Envoy's responses to the attacker); an ingress-hold is a documented
+follow-on (`skb->sk` is frequently NULL on cgroup ingress). The in-kernel Tier-2
+rate-limit ships now; the L7 token-wasting attrition (M6) is the other, richer
+Tier-2 response. Proven by a root oracle (`bpf/enforce/loader_linux_test.go`:
+jail-precise + bystander-untouched, fail-open, cookie-0-refused, close-delete,
+throttle-not-jail) and the `deploy/m5-demo` end-to-end run.
+
 ## Attrition (`attrition/`)
 
 Goal: raise the attacker's cost per operation. This is the platform's differentiator.

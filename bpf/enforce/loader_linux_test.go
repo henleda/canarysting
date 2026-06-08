@@ -263,3 +263,100 @@ func TestRateLimitThrottlesNotJails(t *testing.T) {
 		t.Fatal("rate-limit behaved as a full jail (let nothing through)")
 	}
 }
+
+// TestRateLimitSustainedThroughput proves the throttle delivers SUSTAINED bytes at
+// roughly the configured rate over a multi-second window — not just the one-time
+// burst. It is the regression test for the sub-millisecond refill-truncation bug
+// (the bucket starved to ~one burst then ~0 under sub-ms-spaced loopback traffic).
+func TestRateLimitSustainedThroughput(t *testing.T) {
+	l := newLoader(t)
+	defer l.Close()
+	s := newEchoServer(t)
+	defer s.close()
+	cl, srv := s.dialPair(t)
+	defer cl.Close()
+	cookie := cookieOf(t, srv)
+	const rate = 256 << 10  // 256 KiB/s
+	const burst = 128 << 10 // one burst
+	if err := l.Program(cookie, loader.ActionRateLimit, rate, burst); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = cl.Write(bytes.Repeat([]byte("x"), 4<<20)) }() // plenty to throttle
+	buf := make([]byte, 64<<10)
+	got := 0
+	overall := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(overall) {
+		_ = cl.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := cl.Read(buf)
+		got += n
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue // keep draining until the overall window closes
+			}
+			break
+		}
+	}
+	// The refill fix sustains ~burst + rate*window (~512 KiB); the truncation bug
+	// starves to ~one burst (~128 KiB). 2*burst cleanly separates the two.
+	if got < 2*burst {
+		t.Fatalf("sustained throughput only %d B over 1.5s (<= 2*burst=%d): refill starved (finding #1)", got, 2*burst)
+	}
+}
+
+// TestHardDenyDrops: ActionHardDeny drops the socket's egress like a jail (both are
+// hard drops in enforce_egress); covers the otherwise-untested deny action.
+func TestHardDenyDrops(t *testing.T) {
+	l := newLoader(t)
+	defer l.Close()
+	s := newEchoServer(t)
+	defer s.close()
+	cl, srv := s.dialPair(t)
+	defer cl.Close()
+	cookie := cookieOf(t, srv)
+	if !roundTrips(cl, time.Second) {
+		t.Fatal("baseline round-trip failed before hard-deny")
+	}
+	if err := l.Program(cookie, loader.ActionHardDeny, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrips(cl, 400*time.Millisecond) {
+		t.Fatal("hard-deny did not drop the socket's egress")
+	}
+}
+
+// TestCloseDeletePreservesSibling: sock_release deletes EXACTLY the closed socket's
+// cookie — a live sibling jailed on the same host keeps its entry (the precision of
+// the close-delete lifecycle).
+func TestCloseDeletePreservesSibling(t *testing.T) {
+	l := newLoader(t)
+	defer l.Close()
+	s := newEchoServer(t)
+	defer s.close()
+	clA, srvA := s.dialPair(t)
+	clB, srvB := s.dialPair(t)
+	defer clB.Close()
+	cookieA := cookieOf(t, srvA)
+	cookieB := cookieOf(t, srvB)
+	if err := l.Program(cookieA, loader.ActionJail, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Program(cookieB, loader.ActionJail, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	clA.Close()
+	srvA.Close() // only A closes
+	deleted := false
+	for i := 0; i < 200; i++ {
+		if _, ok := l.Counters(cookieA); !ok {
+			deleted = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !deleted {
+		t.Fatal("A's entry not deleted on close")
+	}
+	if _, ok := l.Counters(cookieB); !ok {
+		t.Fatal("sibling B's entry was wrongly deleted — sock_release hit the wrong cookie")
+	}
+}

@@ -58,11 +58,23 @@ func (l *KernelLoader) Load() error {
 
 // Program writes the verdict for a cookie. For rate-limit, rate/burst size the
 // token bucket; for deny/jail they are zero. Refuses cookie 0.
+//
+// Re-programming a cookie that is already present PRESERVES the kernel-owned state
+// (the live token-bucket tokens/last_ns and the drop counters) and only updates
+// the loader-owned fields (action/rate/burst). Otherwise a periodically-re-emitted
+// verdict for the same flow would keep resetting the bucket to a full burst and
+// defeat the throttle (and wipe the counters).
 func (l *KernelLoader) Program(cookie uint64, action uint32, rate, burst uint64) error {
 	if cookie == 0 {
 		return errors.New("enforce: refusing to program cookie 0 (unattributable)")
 	}
-	v := enforceVerdictVal{Action: action, Rate: rate, Burst: burst}
+	var v enforceVerdictVal
+	if err := l.objs.VerdictMap.Lookup(&cookie, &v); err != nil {
+		// Not present: fresh entry (kernel zeroes tokens/last_ns -> first packet
+		// fills the bucket; counters start at 0).
+		v = enforceVerdictVal{}
+	}
+	v.Action, v.Rate, v.Burst = action, rate, burst // loader-owned fields only
 	return l.objs.VerdictMap.Update(&cookie, &v, ebpf.UpdateAny)
 }
 

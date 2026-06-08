@@ -1,0 +1,23 @@
+# M4 demo stack: a host-networked Envoy in front of a trivial backend service.
+# The CanarySting engine (gRPC) and the ext_proc adapter run as HOST processes
+# (the adapter needs CAP_BPF/CAP_NET_ADMIN + the host cgroup-v2 for the sockops
+# socket-cookie bridge), so they are NOT in this compose — run-demo.sh starts them.
+#
+# Host networking is deliberate: it puts the accepted downstream socket in the
+# host netns the host-cgroup sockops program observes, and avoids docker-proxy NAT
+# rewriting the source tuple — the two biggest "cookies don't line up" footguns.
+services:
+  backend:
+    image: traefik/whoami:latest
+    network_mode: host
+    command: ["--port", "8000"]
+    restart: unless-stopped
+
+  envoy:
+    image: envoyproxy/envoy:v1.34.1
+    network_mode: host
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    restart: unless-stopped
+    depends_on: [backend]

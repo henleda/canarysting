@@ -29,6 +29,23 @@ Because enforcement can jail a flow, attribution must be exact:
 - `internal/sting/` consumes verdicts that already carry the socket cookie; it never re-derives identity.
 - `internal/contract/` defines the flow-identity type that carries the socket cookie alongside L7 identity.
 
+## One cookie, three touchpoints (M4 + M5, on-box proven)
+
+The same 8-byte cookie is observed at three points with **no second join**:
+1. **Capture (M4, `bpf/sockops`)** — a `sockops` program captures the cookie for the
+   accepted downstream socket on `PASSIVE_ESTABLISHED`, keyed by the 4-tuple, so the
+   Envoy adapter (which has the tuple from ext_proc but not the cookie) can resolve
+   it. A MISS means unattributable → observe-only, never enforce.
+2. **Verdict (`internal/contract`)** — the resolved cookie rides
+   `Verdict.Flow.SocketCookie` across the contract.
+3. **Enforce (M5, `bpf/enforce`)** — `enforce_egress` reads the cookie directly via
+   `bpf_get_socket_cookie(skb)` on the offending socket's **egress** and looks it up
+   in the verdict map. Enforcement is egress-only: on cgroup **ingress** `skb->sk` is
+   frequently NULL (cookie 0 → unattributable → PASS), so an ingress-hold is a
+   deliberate follow-on; egress (dropping the socket's outbound bytes) stops exfil
+   and is reliably attributable. The cookie is per-socket and host-local — capture
+   and enforcement are node-local (K8s inherits this per ROADMAP §7).
+
 ## What identity handling must never do
 
 - Enforce against a flow with no socket cookie.

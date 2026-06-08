@@ -33,6 +33,22 @@ type enforcer interface {
 	Close() error
 }
 
+// enforceVerdict is the testable core of the OnVerdict->kernel seam. It programs
+// kernel containment ONLY for an async (kernel-enforced) Tier-2/3 verdict on an
+// attributable flow: inline tiers were actioned at the proxy, Tiers 0-1 never
+// contain, and a cookie-0 flow is unattributable. It returns the action it
+// applied (applied=true) so the caller can emit positive containment evidence.
+func enforceVerdict(enf enforcer, v contract.Verdict) (act containment.Action, applied bool, err error) {
+	if v.Mode != contract.ModeAsync || v.Flow.SocketCookie == 0 {
+		return 0, false, nil
+	}
+	a, ok := containment.ActionForTier(v.Tier)
+	if !ok {
+		return 0, false, nil
+	}
+	return a, true, enf.Apply(v, a)
+}
+
 // demoCanaryPaths pins canary types to negative-space HTTP paths — paths a
 // legitimate flow never requests, so a touch is almost certainly hostile
 // (docs/ROADMAP §1). The M3 seeder places real harmless decoys at these
@@ -107,18 +123,18 @@ func main() {
 		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
 			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
 				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)
-			// The verdict->kernel seam lives HERE (not in the thin adapter). Async
-			// Tier 2/3 is enforced in the kernel keyed by the SAME socket cookie;
-			// inline tiers were already actioned at the proxy (verdict.go).
-			if v.Mode != contract.ModeAsync || v.Flow.SocketCookie == 0 {
+			// The verdict->kernel seam lives HERE (not in the thin adapter).
+			act, applied, err := enforceVerdict(enf, v)
+			if err != nil {
+				// A confirmed Tier-2/3 verdict that we FAILED to program is a
+				// containment miss — surface it prominently, never swallow it.
+				log.Printf("KERNEL CONTAINMENT FAILED action=%s cookie=%#x tier=%d: %v", act, v.Flow.SocketCookie, v.Tier, err)
 				return
 			}
-			act, ok := containment.ActionForTier(v.Tier)
-			if !ok {
-				return
-			}
-			if err := enf.Apply(v, act); err != nil {
-				log.Printf("containment: %v", err)
+			if applied {
+				// Positive evidence that the kernel verdict_map was programmed (the
+				// demo gate keys on this — silence alone is not proof of a jail).
+				log.Printf("KERNEL CONTAINMENT applied action=%s cookie=%#x tier=%d", act, v.Flow.SocketCookie, v.Tier)
 			}
 		},
 	})

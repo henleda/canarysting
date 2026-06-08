@@ -24,6 +24,19 @@ const (
 	Jail                    // Tier 3: drop the offending socket's egress
 )
 
+func (a Action) String() string {
+	switch a {
+	case RateLimit:
+		return "rate-limit"
+	case HardDeny:
+		return "hard-deny"
+	case Jail:
+		return "jail"
+	default:
+		return "unknown"
+	}
+}
+
 // ErrUnattributable is returned (and nothing is applied) when a flow has no
 // socket cookie — containment never acts on an unattributable flow.
 var ErrUnattributable = errors.New("containment: flow has no socket cookie; refusing to contain (unattributable)")

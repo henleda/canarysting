@@ -67,17 +67,29 @@ int enforce_egress(struct __sk_buff *skb)
 	}
 
 	if (v->action == ACTION_RATE_LIMIT && v->rate > 0) {
+		// Best-effort token bucket: the read-modify-write of tokens/last_ns is not
+		// atomic across CPUs, so concurrent egress for ONE socket can mis-credit
+		// slightly. That only ever affects the offending flow (a different cookie has
+		// its own entry, never a bystander) and TCP tolerates spurious drops, so we
+		// accept the race rather than pay a per-packet bpf_spin_lock.
 		__u64 now = bpf_ktime_get_ns();
 		if (v->last_ns == 0) {
 			v->tokens = v->burst; // first packet: full bucket
+			v->last_ns = now;
 		} else if (now > v->last_ns) {
-			// refill = elapsed_ms * rate / 1000 (bytes). ms-scaling avoids u64
-			// overflow on long idle gaps; tokens are capped at burst.
-			__u64 refill = ((now - v->last_ns) / 1000000ULL) * v->rate / 1000ULL;
-			__u64 t = v->tokens + refill;
-			v->tokens = t > v->burst ? v->burst : t;
+			// Credit whole elapsed milliseconds (ms-scaling avoids u64 overflow on
+			// long idle gaps; tokens cap at burst) and advance last_ns ONLY by the
+			// ms consumed — the sub-millisecond remainder must accrue, not be
+			// discarded, or sub-1ms-spaced east-west traffic refills 0 forever after
+			// the initial burst and the throttle starves into a full jail.
+			__u64 ms = (now - v->last_ns) / 1000000ULL;
+			if (ms > 0) {
+				__u64 refill = ms * v->rate / 1000ULL;
+				__u64 t = v->tokens + refill;
+				v->tokens = t > v->burst ? v->burst : t;
+				v->last_ns += ms * 1000000ULL;
+			}
 		}
-		v->last_ns = now;
 		__u64 cost = skb->len;
 		if (v->tokens >= cost) {
 			v->tokens -= cost;
