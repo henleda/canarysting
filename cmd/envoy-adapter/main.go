@@ -22,7 +22,16 @@ import (
 	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/canary/seeder"
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/sting/containment"
 )
+
+// enforcer programs kernel containment for an attributed flow. Its construction
+// is build-tagged (real on Linux, no-op elsewhere) so cilium/ebpf stays out of
+// the adapter's import closure — only this composition root touches it.
+type enforcer interface {
+	Apply(contract.Verdict, containment.Action) error
+	Close() error
+}
 
 // demoCanaryPaths pins canary types to negative-space HTTP paths — paths a
 // legitimate flow never requests, so a touch is almost certainly hostile
@@ -83,6 +92,12 @@ func main() {
 	}
 	defer resolver.Close()
 
+	enf, err := newEnforcer()
+	if err != nil {
+		log.Fatalf("envoy-adapter: kernel enforcer: %v", err)
+	}
+	defer enf.Close()
+
 	a, err := envoy.New(envoy.Config{
 		Engine:   eng,
 		Registry: reg,
@@ -92,6 +107,19 @@ func main() {
 		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
 			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
 				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)
+			// The verdict->kernel seam lives HERE (not in the thin adapter). Async
+			// Tier 2/3 is enforced in the kernel keyed by the SAME socket cookie;
+			// inline tiers were already actioned at the proxy (verdict.go).
+			if v.Mode != contract.ModeAsync || v.Flow.SocketCookie == 0 {
+				return
+			}
+			act, ok := containment.ActionForTier(v.Tier)
+			if !ok {
+				return
+			}
+			if err := enf.Apply(v, act); err != nil {
+				log.Printf("containment: %v", err)
+			}
 		},
 	})
 	if err != nil {
