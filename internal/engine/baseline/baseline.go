@@ -132,9 +132,58 @@ func MFromFeatures(f Features, p Params) float64 {
 // week × hour.
 type Bucketer func(time.Time) string
 
-// DefaultBucketer keys on day-of-week crossed with the hour.
+// DefaultBucketer keys on day-of-week crossed with the hour. This is the
+// PRODUCTION default: 168 buckets give full diurnal/weekly resolution.
 func DefaultBucketer(t time.Time) string {
 	return fmt.Sprintf("%s-%02d", t.UTC().Weekday(), t.UTC().Hour())
+}
+
+// WindowBucketer is the COARSE bucketer used to run a bounded learning window
+// (docs/ROADMAP.md M7, decision D6): {weekday,weekend} × {night,morning,
+// afternoon,evening} = 8 buckets. With only 8 buckets a bucket is revisited
+// many times per week, so bucket-sufficiency is reachable within a ≤2-week
+// window — whereas the 168-bucket DefaultBucketer revisits each (weekday,hour)
+// only ~once/week and would leave most buckets sparse (and M neutral) for the
+// whole window. An operator graduates from WindowBucketer to DefaultBucketer as
+// more weeks of real data accrue; granularity is operator config, not a hidden
+// constant. Time conditioning is preserved either way (a 3am batch job is not
+// flagged anomalous merely because the baseline ignored time).
+func WindowBucketer(t time.Time) string {
+	t = t.UTC()
+	day := "weekday"
+	if wd := t.Weekday(); wd == time.Saturday || wd == time.Sunday {
+		day = "weekend"
+	}
+	var part string
+	switch h := t.Hour(); {
+	case h < 6:
+		part = "night" // 00:00–05:59 UTC
+	case h < 12:
+		part = "morning" // 06:00–11:59
+	case h < 18:
+		part = "afternoon" // 12:00–17:59
+	default:
+		part = "evening" // 18:00–23:59
+	}
+	return day + "-" + part
+}
+
+// FeatureSource derives a flow's deviation feature vector against the live
+// per-scope baseline for the current time bucket. It is the M7 seam: the
+// observe-path aggregator (internal/engine/observebaseline) implements it,
+// reading the flow's kernel-observed stats and comparing them to the accrued
+// baseline slice. Keeping it an interface here means internal/engine/baseline
+// takes NO dependency on the eBPF/observe packages (no import cycle; the engine
+// stays proxy-agnostic).
+//
+// ok=false means no features could be derived (no observed stats for the
+// cookie, or the baseline slice is not ready), in which case the Store falls
+// back to neutral features — and the same three gates still force M to 1.0
+// unless the scope is calibrated, live, and bucket-sufficient. A FeatureSource
+// can never make M trigger anything: it only shapes the multiplier on a base
+// that is zero without a canary touch.
+type FeatureSource interface {
+	Features(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) (f Features, ok bool)
 }
 
 // Store owns the per-scope baseline state and produces M for a flow, gating to a
@@ -151,6 +200,7 @@ type Store struct {
 	params     Params
 	bucketer   Bucketer
 	calibrated func(contract.ScopeKey) bool // ties M to the SAME evidence floor as weights
+	features   FeatureSource                // M7: derives per-flow Features; nil => neutral
 	scopes     map[contract.ScopeKey]*scopeBaseline
 }
 
@@ -183,6 +233,19 @@ func New(cfg Config) *Store {
 		calibrated: cfg.Calibrated,
 		scopes:     map[contract.ScopeKey]*scopeBaseline{},
 	}
+}
+
+// UseFeatureSource wires the M7 per-flow feature derivation. A nil source is
+// ignored (the Store keeps its current source; default is none → neutral
+// features → touch-only scoring). Returns the Store for chaining. Safe to call
+// once at composition time.
+func (s *Store) UseFeatureSource(fs FeatureSource) *Store {
+	if fs != nil {
+		s.mu.Lock()
+		s.features = fs
+		s.mu.Unlock()
+	}
+	return s
 }
 
 // SetLive marks a scope's baseline as accrued-and-fresh (live=true) or stale
@@ -237,15 +300,29 @@ func (s *Store) M(scope contract.ScopeKey, f Features, t time.Time) float64 {
 	return MFromFeatures(f, s.params)
 }
 
-// Multiplier implements scoring.MultiplierSource. In M2 the per-flow Features are
-// not yet derivable without the eBPF baseline, so this returns the gated M for
-// neutral features — which is 1.0 in every case until M5/M7 supply both a live
-// baseline and real per-flow feature derivation. The gating and the math are
-// already exercised through M.
-//
-// TODO(M5/M7): derive Features for the flow from the live per-scope baseline
-// slice (adjacency/identity/port/volume/cadence vs the time-bucketed baseline),
-// then return s.M(scope, derived, at).
-func (s *Store) Multiplier(scope contract.ScopeKey, _ contract.FlowIdentity, at time.Time) float64 {
-	return s.M(scope, Features{}, at)
+// Multiplier implements scoring.MultiplierSource. It derives the flow's Features
+// from the wired FeatureSource (the M7 observe-path aggregator) and returns the
+// gated multiplier s.M(scope, derived, at). With no source wired, or when the
+// source cannot derive features for this flow, it falls back to neutral Features
+// — and the gating in M still forces 1.0 unless the scope is calibrated, live,
+// and bucket-sufficient. Either way M ∈ [1, M_max] and multiplies a base that is
+// zero without a canary touch, so this can never trigger anything (rule 8).
+func (s *Store) Multiplier(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) float64 {
+	// LOCK ORDER (do not "simplify" to a deferred unlock): release this Store's
+	// mutex (B) BEFORE calling fs.Features(), which takes the aggregator's mutex
+	// (A). The aggregator's fold loop holds A while calling SetLive/
+	// SetBucketSufficient, which take B (order A→B). Holding B across fs.Features()
+	// would make this path B→A and deadlock. So: snapshot the source under B,
+	// unlock, then call out.
+	s.mu.Lock()
+	fs := s.features
+	s.mu.Unlock()
+
+	f := Features{} // neutral by default
+	if fs != nil {
+		if derived, ok := fs.Features(scope, flow, at); ok {
+			f = derived
+		}
+	}
+	return s.M(scope, f, at)
 }

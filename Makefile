@@ -11,8 +11,10 @@ CLANG     ?= clang
 BIN_DIR   := bin
 GOBIN     := $(abspath $(BIN_DIR))
 
-# eBPF sources -> objects. *.bpf.o is gitignored.
-BPF_SRC   := $(wildcard bpf/enforce/*.bpf.c)
+# eBPF sources -> objects. *.bpf.o is gitignored. Covers the enforcement path
+# (bpf/enforce) and the M7 OBSERVE-ONLY baseline path (bpf/observe); the observe
+# source lands in the on-box phase, the glob picks it up automatically.
+BPF_SRC   := $(wildcard bpf/enforce/*.bpf.c bpf/observe/*.bpf.c)
 BPF_OBJ   := $(BPF_SRC:.bpf.c=.bpf.o)
 BPF_CFLAGS ?= -O2 -g -target bpf -Wall -Wno-unused-function
 

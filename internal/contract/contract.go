@@ -32,6 +32,14 @@ type FlowIdentity struct {
 	L7Attributes map[string]string
 }
 
+// AttrSourceAddress is the well-known L7Attributes key under which an adapter MAY
+// stamp the observed source address (the caller's IP) of a flow. It is context,
+// never the cross-boundary join key (that is always SocketCookie — rule 4). The
+// M7 staged ground-truth labeler reads it to attribute a canary-touch decision
+// to a declared legit/attacker identity; production scoring does not depend on
+// it, and it is never persisted as a raw address (rule 9).
+const AttrSourceAddress = "canarysting.source_address"
+
 // ScopeKey is the isolation boundary for all learned state. Every store of
 // learned state is partitioned by it. See docs/SCOPE.md. A flow belongs to
 // exactly one scope.

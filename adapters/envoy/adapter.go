@@ -186,6 +186,13 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 
 	flow := contract.FlowIdentity{SPIFFEID: spiffeFromAttributes(req.GetAttributes())}
 	if ft, ok := tupleFromAttributes(req.GetAttributes()); ok {
+		// Stamp the observed source address as scoring context (never the join
+		// key — that stays the socket cookie, rule 4). The M7 staged labeler reads
+		// it to attribute a canary touch to a declared identity; production scoring
+		// ignores it. It is context, not a second join.
+		if src, ok := ft.SourceAddr(); ok {
+			flow.L7Attributes = map[string]string{contract.AttrSourceAddress: src.String()}
+		}
 		if res, hit := a.resolveCookie(ft); hit {
 			flow.SocketCookie = res.Cookie
 			flow.CgroupID = res.CgroupID

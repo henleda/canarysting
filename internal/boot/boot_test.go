@@ -1,0 +1,79 @@
+package boot_test
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/canarysting/canarysting/bpf/observe"
+	"github.com/canarysting/canarysting/internal/boot"
+	"github.com/canarysting/canarysting/internal/contract"
+)
+
+// Refuse-to-start: with no resolvable scope, Build fails (never a global scope).
+func TestBuildRefusesEmptyBoundary(t *testing.T) {
+	if _, err := boot.Build(boot.Options{}, observe.NoopObserver{}); err == nil {
+		t.Fatal("Build accepted an empty boundary; must refuse to start")
+	}
+}
+
+// Without the observe path wired, the engine runs touch-only: M is a forced 1.0
+// and an uncalibrated scope scores the raw distinct-touch count.
+func TestTouchOnlyWithoutObserve(t *testing.T) {
+	built, err := boot.Build(boot.Options{Boundary: "scopeA", Window: time.Minute}, observe.NoopObserver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.Close()
+	if built.Aggregator != nil {
+		t.Fatal("aggregator wired without an observe cgroup")
+	}
+	v, err := built.Engine.Submit(contract.SignalEvent{
+		Flow: contract.FlowIdentity{SocketCookie: 0xABCD}, Scope: "scopeA",
+		Canary: "aws.key", Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Calibrated {
+		t.Error("scope reported calibrated with no feedback")
+	}
+	if v.Score != 1.0 {
+		t.Errorf("single touch score = %v, want 1.0 (M=1 touch-only)", v.Score)
+	}
+}
+
+// With a durable DB, the engine captures Tier≥Tag interactions into the durable
+// EventStore — and drops a sub-Tag (Observe) touch.
+func TestCaptureWiringRecordsInteractions(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "baseline.db")
+	built, err := boot.Build(boot.Options{Boundary: "scopeA", Window: time.Minute, BaselineDBPath: db}, observe.NoopObserver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.Close()
+	if built.Events == nil {
+		t.Fatal("EventStore not wired with a DB path")
+	}
+
+	now := time.Now()
+	flow := contract.FlowIdentity{SocketCookie: 0xBEEF}
+	// First touch: base 1.0 → Observe tier → not captured.
+	if _, err := built.Engine.Submit(contract.SignalEvent{Flow: flow, Scope: "scopeA", Canary: "aws.key", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Second distinct touch on the same flow within the window: base 2.0 → Tag → captured.
+	if _, err := built.Engine.Submit(contract.SignalEvent{Flow: flow, Scope: "scopeA", Canary: "ssh.key", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := built.Events.Query("scopeA", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("captured %d interaction events, want 1 (Observe dropped, Tag kept)", len(got))
+	}
+	if got[0].Tier < int(contract.TierTag) {
+		t.Errorf("captured an Observe-tier event: tier=%d", got[0].Tier)
+	}
+}

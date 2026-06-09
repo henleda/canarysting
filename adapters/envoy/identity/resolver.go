@@ -44,6 +44,21 @@ type FourTuple struct {
 	DstIP   [16]byte
 }
 
+// SourceAddr reconstructs the caller's IP from the tuple's family + bytes. It is
+// the (real, kernel-observed) source identity an adapter may stamp into
+// contract.AttrSourceAddress for the M7 staged labeler. ok=false if the family
+// is unset (a zero tuple).
+func (t FourTuple) SourceAddr() (netip.Addr, bool) {
+	switch t.Family {
+	case AFInet:
+		return netip.AddrFrom4([4]byte{t.SrcIP[0], t.SrcIP[1], t.SrcIP[2], t.SrcIP[3]}), true
+	case AFInet6:
+		return netip.AddrFrom16(t.SrcIP), true
+	default:
+		return netip.Addr{}, false
+	}
+}
+
 // Resolution is the kernel-side value for a FourTuple: the socket cookie plus the
 // coarse identifiers (cgroup/pid) and a generation that lets the resolver treat a
 // stale or ambiguous entry as a MISS rather than risk a misattributed verdict.

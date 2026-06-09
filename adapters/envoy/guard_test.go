@@ -23,6 +23,7 @@ func TestAdapterImportsAreThin(t *testing.T) {
 		"canarysting/internal/sting/containment", // enforcement is the composition root's job
 		"canarysting/bpf/loader",
 		"canarysting/bpf/enforce",
+		"canarysting/bpf/observe", // the M7 observe path is engine-side; the thin adapter never reaches it
 	}
 	out, err := exec.Command("go", "list", "-deps", ".", "./identity").Output()
 	if err != nil {

@@ -71,3 +71,31 @@ baseline:
   c_max: 1.0              # per-feature contribution cap (bounded influence)
   time_bucket: dow_hour   # baseline conditioning: day-of-week × hour
   learning_window_days: 14 # must span a full weekly cycle (>= 2 weeks)
+
+# M7 learning window (the persistent baseline-accrual path). The OBSERVE-ONLY
+# eBPF flow-stats path feeds a per-(scope,bucket) baseline that drives M. These
+# are the two gates M7 owns; M only amplifies when the scope is BOTH calibrated
+# (analyst-feedback evidence floor) AND live+bucket-sufficient (this data floor).
+observe:
+  db_path: /var/lib/canarysting/baseline.db   # bbolt durable store; survives reboot
+  cgroup: /sys/fs/cgroup                        # cgroup v2 mount to attach the observe programs; empty => observe disabled
+  # Window bucketer: coarse (8 buckets = {weekday,weekend}×{night,morning,
+  # afternoon,evening}) makes bucket-sufficiency reachable within a 2-week window;
+  # graduate to the 168-bucket production default as more weeks accrue (D6).
+  window_bucketer: true
+  # The eBPF DATA FLOOR — how much REAL observed traffic a scope/bucket needs.
+  # Distinct from the analyst evidence floor; neither gate can launder the other.
+  # NOTE (M7): only max_coverage_gap_seconds is wired from config today (via the
+  # engine -max-coverage-gap flag). The other fields below are the BUILT-IN
+  # defaults documented for transparency; a YAML loader that reads them lands with
+  # the operator control plane (ROADMAP M10). To tune them before then, change the
+  # defaults in internal/engine/observebaseline/floor.go (DefaultDataFloor).
+  data_floor:
+    min_flows_per_bucket: 100        # completed flows a bucket needs
+    min_identities_per_bucket: 2     # distinct source identities (a population, not one source)
+    min_days_per_bucket: 3           # distinct calendar days a bucket must span
+    min_p2_samples: 50               # min observations per continuous distribution summary
+    min_sufficient_buckets: 4        # sufficient buckets a scope needs to go live
+    min_calendar_days: 7             # distinct days the scope's data must span
+    freshness_ttl_seconds: 900       # no fold within this => stale (M forced to 1.0)
+    max_coverage_gap_seconds: 3600   # a downtime gap larger than this forces re-accrual on boot
