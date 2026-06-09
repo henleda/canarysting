@@ -86,6 +86,7 @@ func main() {
 		inline     = flag.Bool("inline", true, "inline enforcement (hold canary touches for the verdict)")
 		stingFloor = flag.Int("sting-floor", 0, "attrition floor for inline Tier 2/3: 0=passive(tarpit), 1=moderate(fake_tree), 2=aggressive(token_bait). 0 => no fake-resource deception (tarpit only)")
 		bodyCap    = flag.Int("attrition-body-cap", 64<<10, "max deception-body bytes assembled into the single ext_proc ImmediateResponse")
+		maxHold    = flag.Duration("attrition-max-hold", 8*time.Second, "max wall-time to hold ONE inline attrition flow before returning the deception body. MUST be < the proxy's ext_proc message_timeout (Envoy's is 10s here) so the body is actually delivered (else the proxy returns a gateway timeout) and the imposed-time number reflects what the attacker really waited")
 	)
 	flag.Parse()
 	if *scopeFlag == "" {
@@ -117,9 +118,17 @@ func main() {
 	// The attritor imposes the real inline hold at Tier 2/3 (the operator picks the
 	// FLOOR; a higher tier never raises it). It PROVES every active generator is
 	// bounded + harmless at construction, so a bad floor refuses to start here.
+	// Bound the per-flow hold to fit the inline transport: the deception body is
+	// returned as ONE ext_proc ImmediateResponse, so the whole hold must complete
+	// inside the proxy's ext_proc message_timeout or the proxy times the stream out
+	// and the attacker gets a gateway error instead of the bait (and TimeHeldSec
+	// over-reports the hold). DefaultBudget's MaxDuration (120s) is for an async/
+	// streamed transport; cap it to -attrition-max-hold for the inline path.
+	budget := attrition.DefaultBudget()
+	budget.MaxDuration = *maxHold
 	attr, err := attrition.New(attrition.Config{
 		Floor:  contract.StingFloor(*stingFloor),
-		Budget: attrition.DefaultBudget(),
+		Budget: budget,
 		Drip:   attrition.DefaultDrip(),
 	})
 	if err != nil {
