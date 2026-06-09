@@ -1,0 +1,10 @@
+{
+  "_comment": "STAGING-ONLY ground truth for the M7 window. Consumed by cmd/staged-range -ground-truth-registry to auto-label canary-touch verdicts: the three legit generator identities are confirmed-benign, the prober identity is confirmed-malicious. These are REAL confirmations of an environment we built, fed through the same feedback seam an analyst uses (see internal/intelligence/stagedlabel). This file must never reach a production engine — cmd/engine cannot even import the labeler.",
+  "scopes": [
+    {
+      "scope": "m7-window",
+      "legit": ["10.20.1.101", "10.20.1.102", "10.20.1.103"],
+      "attacker": ["10.20.1.111"]
+    }
+  ]
+}

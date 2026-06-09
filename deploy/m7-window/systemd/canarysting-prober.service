@@ -1,0 +1,21 @@
+[Unit]
+Description=CanarySting M7 scripted attacker / calibration prober (client box)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target canarysting-secondary-ips.service
+Wants=network-online.target
+Requires=canarysting-secondary-ips.service
+
+[Service]
+# Touches the negative-space canaries from the attacker secondary IP, producing
+# the real ground-truth labels that cross the calibration floor and the adversary-
+# interaction history. M9 replaces this with a real LLM agent.
+EnvironmentFile=/etc/canarysting/m7.env
+ExecStart=/opt/canarysting/bin/prober \
+  -target ${ENVOY_TARGET} \
+  -src-ip ${ATTACKER_IP} \
+  -interval 12s
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -19,3 +19,9 @@
 .swarm/
 # generated CO-RE kernel header (regenerate per kernel)
 bpf/**/vmlinux.h
+
+# Terraform working dirs / state / local vars (the .lock.hcl IS committed for reproducible providers)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+**/terraform.tfvars

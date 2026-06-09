@@ -1,0 +1,63 @@
+# M7 window — server-box service mesh behind host-networked Envoy.
+#
+# Five mesh services form a real east-west graph: frontend -> api -> {auth, db,
+# cache}. Each call is a genuine service-to-service flow the observe path sees, so
+# the baseline learns real internal adjacencies (not one flat hop). Envoy fronts
+# them on :8080 and runs every request through the ext_proc adapter.
+#
+# ALL services use host networking (like m5-demo): it keeps the accepted sockets
+# in the host netns/cgroup the observe + sockops + enforce programs watch, and
+# avoids docker-proxy NAT rewriting the source tuple (the "cookies don't line up"
+# footgun). The engine (cmd/staged-range) and the adapter run as host systemd
+# units (they need CAP_BPF + the host cgroup-v2), not in this compose.
+#
+# restart: unless-stopped + the docker service enabled on boot keeps the mesh up
+# across a server reboot, for the >=2-week window.
+services:
+  frontend:
+    build: { context: ../.., dockerfile: deploy/m7-window/mesh/Dockerfile }
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: frontend
+      LISTEN: "127.0.0.1:8001"
+      DOWNSTREAMS: "http://127.0.0.1:8002"
+    restart: unless-stopped
+    depends_on: [api]
+
+  api:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: api
+      LISTEN: "127.0.0.1:8002"
+      DOWNSTREAMS: "http://127.0.0.1:8003,http://127.0.0.1:8004,http://127.0.0.1:8005"
+    restart: unless-stopped
+    depends_on: [auth, db, cache]
+
+  auth:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment: { SVC_NAME: auth, LISTEN: "127.0.0.1:8003" }
+    restart: unless-stopped
+
+  db:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment: { SVC_NAME: db, LISTEN: "127.0.0.1:8004" }
+    restart: unless-stopped
+
+  cache:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment: { SVC_NAME: cache, LISTEN: "127.0.0.1:8005" }
+    restart: unless-stopped
+
+  envoy:
+    image: envoyproxy/envoy:v1.34.1
+    network_mode: host
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    restart: unless-stopped
+    depends_on: [frontend]

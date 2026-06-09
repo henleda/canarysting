@@ -1,0 +1,64 @@
+resource "aws_key_pair" "client" {
+  key_name   = var.name
+  public_key = file(pathexpand(var.public_key_path))
+}
+
+resource "aws_security_group" "client" {
+  name        = "${var.name}-sg"
+  description = "M7 client box: SSH from operator; all egress (reaches the server Envoy over private IPs)."
+  vpc_id      = data.aws_vpc.dev.id
+
+  ingress {
+    description = "SSH from operator IP"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.allowed_ssh_cidr]
+  }
+  egress {
+    description = "All egress"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = { Name = "${var.name}-sg", Project = "canarysting", Role = "m7-client" }
+}
+
+# Open the server box's Envoy port to the client SG only — PRIVATE, no public CIDR.
+# This rule is added to the dev/server SG (found by tag); destroy removes it.
+resource "aws_security_group_rule" "server_envoy_from_client" {
+  type                     = "ingress"
+  from_port                = var.envoy_port
+  to_port                  = var.envoy_port
+  protocol                 = "tcp"
+  security_group_id        = data.aws_security_group.dev.id
+  source_security_group_id = aws_security_group.client.id
+  description              = "M7 client generator and prober to server Envoy (private only)"
+}
+
+resource "aws_instance" "client" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = aws_key_pair.client.key_name
+  subnet_id                   = data.aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.client.id]
+  associate_public_ip_address = true
+  user_data                   = file("${path.module}/user_data.sh")
+
+  # The legit generator identities + the attacker identity, as real secondary
+  # private IPs the OS configures on boot (user_data) so outbound connections can
+  # bind them — the server then observes a real population of distinct sources.
+  secondary_private_ips = concat(var.legit_ips, [var.attacker_ip])
+
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = var.root_volume_gb
+    encrypted   = true
+  }
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+  tags = { Name = var.name, Project = "canarysting", Role = "m7-client" }
+}

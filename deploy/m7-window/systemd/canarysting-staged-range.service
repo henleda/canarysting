@@ -1,0 +1,26 @@
+[Unit]
+Description=CanarySting M7 staged-range engine (observe baseline + ground-truth labeler)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs as root: the OBSERVE-ONLY eBPF path loads + attaches cgroup_skb programs at
+# the host cgroup-v2 root (CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON). StateDirectory gives
+# a durable /var/lib/canarysting for the bbolt baseline + event store that survives
+# reboot (the >=2-week window).
+EnvironmentFile=/etc/canarysting/m7.env
+StateDirectory=canarysting
+ExecStart=/opt/canarysting/bin/staged-range \
+  -scope-boundary ${SCOPE} \
+  -grpc-addr 127.0.0.1:50052 \
+  -observe-cgroup /sys/fs/cgroup \
+  -baseline-db ${BASELINE_DB} \
+  -window-bucketer \
+  -ground-truth-registry ${GROUND_TRUTH} \
+  -i-am-running-a-staged-range
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=CanarySting M7 benign east-west traffic generator (client box)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target canarysting-secondary-ips.service
+Wants=network-online.target
+Requires=canarysting-secondary-ips.service
+
+[Service]
+# Drives the diurnal/weekly benign load from the legit secondary IPs. Restart=always
+# + Requires the secondary-IP configurator so the window survives a client reboot.
+EnvironmentFile=/etc/canarysting/m7.env
+ExecStart=/opt/canarysting/bin/client-generator \
+  -target ${ENVOY_TARGET} \
+  -identities ${LEGIT_IPS} \
+  -base-rpm 30
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
