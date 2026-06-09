@@ -126,7 +126,7 @@ func main() {
 		*boundary, *registryPath, *observeCgroup != "", *baselineDB)
 
 	eng := labelingEngine{inner: built.Engine, labeler: labeler}
-	if err := serveGRPC(*grpcAddr, eng); err != nil {
+	if err := serveGRPC(*grpcAddr, eng, built.OutcomeReporter); err != nil {
 		log.Fatalf("staged-range: gRPC server: %v", err)
 	}
 }
@@ -147,13 +147,13 @@ func (e labelingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, error
 	return v, err
 }
 
-func serveGRPC(addr string, eng contract.Engine) error {
+func serveGRPC(addr string, eng contract.Engine, reporter contract.OutcomeReporter) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	s := grpc.NewServer()
-	enginegrpc.Register(s, eng)
+	enginegrpc.Register(s, eng, reporter)
 	log.Printf("staged-range: gRPC Engine service listening on %s", addr)
 	return s.Serve(lis)
 }

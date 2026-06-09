@@ -66,7 +66,7 @@ func main() {
 	}
 
 	if *grpcAddr != "" {
-		if err := serveGRPC(*grpcAddr, built.Engine); err != nil {
+		if err := serveGRPC(*grpcAddr, built.Engine, built.OutcomeReporter); err != nil {
 			log.Fatalf("engine: gRPC server: %v", err)
 		}
 		return

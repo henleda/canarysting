@@ -34,6 +34,41 @@ message Verdict {
   bool calibrated = 6;
 }
 
+// StingOutcome mirrors the cost fields of internal/contract.StingOutcome (and
+// intelligence.StingOutcome / attrition.Outcome): mechanism, time_held_sec,
+// bytes_served, requests_absrb, token_cost_proxy, depth_reached. It ALSO carries
+// done_reason, which intelligence.StingOutcome intentionally omits — done_reason
+// is attrition-internal control flow (why the stream ended) and is NOT persisted
+// to the durable store. It is the attacker-cost meter for one attrition session,
+// carried back to the engine for durable capture.
+message StingOutcome {
+  string mechanism = 1;
+  double time_held_sec = 2;
+  int64 bytes_served = 3;
+  int64 requests_absrb = 4;
+  double token_cost_proxy = 5;
+  int32 depth_reached = 6;
+  int32 done_reason = 7; // attrition.DoneReason int value
+}
+
+// OutcomeRecord is the adapter's post-attrition report. socket_cookie is the
+// L7<->kernel join key (rule 4); scope partitions the durable store (rule 5);
+// timestamp_unix_ms matches the originating SignalEvent so the engine amends the
+// right event under a reused cookie.
+message OutcomeRecord {
+  uint64 socket_cookie = 1;
+  string scope = 2;
+  StingOutcome sting_outcome = 3;
+  int64 timestamp_unix_ms = 4;
+}
+
+// Empty is the ReportOutcome ack (outcome reporting is fire-and-forget; the
+// adapter does not act on the reply).
+message Empty {}
+
 service Engine {
   rpc Submit(SignalEvent) returns (Verdict);
+  // ReportOutcome carries an adapter-side attrition outcome back to the engine
+  // for durable capture against the matching interaction event.
+  rpc ReportOutcome(OutcomeRecord) returns (Empty);
 }

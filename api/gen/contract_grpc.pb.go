@@ -24,7 +24,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Engine_Submit_FullMethodName = "/canarysting.v1.Engine/Submit"
+	Engine_Submit_FullMethodName        = "/canarysting.v1.Engine/Submit"
+	Engine_ReportOutcome_FullMethodName = "/canarysting.v1.Engine/ReportOutcome"
 )
 
 // EngineClient is the client API for Engine service.
@@ -32,6 +33,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type EngineClient interface {
 	Submit(ctx context.Context, in *SignalEvent, opts ...grpc.CallOption) (*Verdict, error)
+	// ReportOutcome carries an adapter-side attrition outcome back to the engine
+	// for durable capture against the matching interaction event.
+	ReportOutcome(ctx context.Context, in *OutcomeRecord, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type engineClient struct {
@@ -52,11 +56,24 @@ func (c *engineClient) Submit(ctx context.Context, in *SignalEvent, opts ...grpc
 	return out, nil
 }
 
+func (c *engineClient) ReportOutcome(ctx context.Context, in *OutcomeRecord, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Engine_ReportOutcome_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EngineServer is the server API for Engine service.
 // All implementations must embed UnimplementedEngineServer
 // for forward compatibility.
 type EngineServer interface {
 	Submit(context.Context, *SignalEvent) (*Verdict, error)
+	// ReportOutcome carries an adapter-side attrition outcome back to the engine
+	// for durable capture against the matching interaction event.
+	ReportOutcome(context.Context, *OutcomeRecord) (*Empty, error)
 	mustEmbedUnimplementedEngineServer()
 }
 
@@ -69,6 +86,9 @@ type UnimplementedEngineServer struct{}
 
 func (UnimplementedEngineServer) Submit(context.Context, *SignalEvent) (*Verdict, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Submit not implemented")
+}
+func (UnimplementedEngineServer) ReportOutcome(context.Context, *OutcomeRecord) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportOutcome not implemented")
 }
 func (UnimplementedEngineServer) mustEmbedUnimplementedEngineServer() {}
 func (UnimplementedEngineServer) testEmbeddedByValue()                {}
@@ -109,6 +129,24 @@ func _Engine_Submit_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Engine_ReportOutcome_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OutcomeRecord)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EngineServer).ReportOutcome(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Engine_ReportOutcome_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EngineServer).ReportOutcome(ctx, req.(*OutcomeRecord))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Engine_ServiceDesc is the grpc.ServiceDesc for Engine service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -119,6 +157,10 @@ var Engine_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Submit",
 			Handler:    _Engine_Submit_Handler,
+		},
+		{
+			MethodName: "ReportOutcome",
+			Handler:    _Engine_ReportOutcome_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

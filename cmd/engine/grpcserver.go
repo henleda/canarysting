@@ -13,15 +13,17 @@ import (
 // serveGRPC exposes the engine over the api/proto Engine service so an
 // out-of-process adapter (the Envoy ext_proc adapter, M4) can submit signals and
 // receive verdicts. It wraps the UNCHANGED engine via the contract — the engine
-// package itself gains no transport code (CLAUDE.md rule 2). Blocks until the
-// listener errors.
-func serveGRPC(addr string, eng contract.Engine) error {
+// package itself gains no transport code (CLAUDE.md rule 2). reporter is the
+// optional adapter-side attrition-outcome intake (nil when no EventStore is
+// wired; the server acks without durable capture). Blocks until the listener
+// errors.
+func serveGRPC(addr string, eng contract.Engine, reporter contract.OutcomeReporter) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	s := grpc.NewServer()
-	enginegrpc.Register(s, eng)
+	enginegrpc.Register(s, eng, reporter)
 	log.Printf("engine: gRPC Engine service listening on %s", addr)
 	return s.Serve(lis)
 }

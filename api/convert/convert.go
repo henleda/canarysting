@@ -91,3 +91,59 @@ func VerdictFromProto(v *pb.Verdict) contract.Verdict {
 		Calibrated: v.GetCalibrated(),
 	}
 }
+
+// StingOutcomeToProto converts a contract.StingOutcome to its proto form. The
+// int fields narrow to int32 on the wire; attrition's depth/done-reason are small
+// bounded enums/counters, never near the int32 ceiling.
+func StingOutcomeToProto(s contract.StingOutcome) *pb.StingOutcome {
+	return &pb.StingOutcome{
+		Mechanism:      s.Mechanism,
+		TimeHeldSec:    s.TimeHeldSec,
+		BytesServed:    s.BytesServed,
+		RequestsAbsrb:  s.RequestsAbsrb,
+		TokenCostProxy: s.TokenCostProxy,
+		DepthReached:   int32(s.DepthReached),
+		DoneReason:     int32(s.DoneReason),
+	}
+}
+
+// StingOutcomeFromProto converts a proto StingOutcome (possibly nil) to the
+// contract type.
+func StingOutcomeFromProto(s *pb.StingOutcome) contract.StingOutcome {
+	if s == nil {
+		return contract.StingOutcome{}
+	}
+	return contract.StingOutcome{
+		Mechanism:      s.GetMechanism(),
+		TimeHeldSec:    s.GetTimeHeldSec(),
+		BytesServed:    s.GetBytesServed(),
+		RequestsAbsrb:  s.GetRequestsAbsrb(),
+		TokenCostProxy: s.GetTokenCostProxy(),
+		DepthReached:   int(s.GetDepthReached()),
+		DoneReason:     int(s.GetDoneReason()),
+	}
+}
+
+// OutcomeToProto converts a contract.OutcomeRecord to its proto form.
+func OutcomeToProto(o contract.OutcomeRecord) *pb.OutcomeRecord {
+	return &pb.OutcomeRecord{
+		SocketCookie:    o.SocketCookie,
+		Scope:           string(o.Scope),
+		StingOutcome:    StingOutcomeToProto(o.Outcome),
+		TimestampUnixMs: o.TimestampUnixMs,
+	}
+}
+
+// OutcomeFromProto converts a proto OutcomeRecord (possibly nil) to the contract
+// type.
+func OutcomeFromProto(o *pb.OutcomeRecord) contract.OutcomeRecord {
+	if o == nil {
+		return contract.OutcomeRecord{}
+	}
+	return contract.OutcomeRecord{
+		SocketCookie:    o.GetSocketCookie(),
+		Scope:           contract.ScopeKey(o.GetScope()),
+		Outcome:         StingOutcomeFromProto(o.GetStingOutcome()),
+		TimestampUnixMs: o.GetTimestampUnixMs(),
+	}
+}

@@ -58,15 +58,16 @@ type Options struct {
 // Built holds the composed engine and the handles a binary wires further or
 // closes.
 type Built struct {
-	Engine     contract.Engine // possibly wrapped to capture interaction events
-	Intake     *feedback.Intake
-	Calib      *calibration.Store
-	Baseline   *baseline.Store
-	Resolver   scope.Resolver
-	Persist    *persist.Store                // nil if no DB
-	Aggregator *observebaseline.Aggregator   // nil if observe disabled
-	Malicious  *observebaseline.MaliciousSet // nil if observe disabled
-	Events     *boltevents.Store             // nil if no DB
+	Engine          contract.Engine // possibly wrapped to capture interaction events
+	Intake          *feedback.Intake
+	Calib           *calibration.Store
+	Baseline        *baseline.Store
+	Resolver        scope.Resolver
+	Persist         *persist.Store                // nil if no DB
+	Aggregator      *observebaseline.Aggregator   // nil if observe disabled
+	Malicious       *observebaseline.MaliciousSet // nil if observe disabled
+	Events          *boltevents.Store             // nil if no DB
+	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
 
 	observer observe.Observer
 }
@@ -178,7 +179,9 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		b.Engine = &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator}
+		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator}
+		b.Engine = ce
+		b.OutcomeReporter = ce // the same capturing layer amends the durable store
 	} else {
 		b.Engine = eng
 	}
@@ -243,4 +246,13 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 	}
 	_ = e.events.CaptureVerdict(ev, v, feats)
 	return v, err
+}
+
+// ReportOutcome amends the durable interaction event with a real attrition
+// outcome reported by the adapter after a Tier 2/3 inline verdict (the verdict-
+// time Submit stored a zero outcome; attrition runs later, adapter-side). It
+// satisfies contract.OutcomeReporter so the gRPC server can route ReportOutcome
+// here without importing intelligence.
+func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
+	return e.events.AmendOutcome(rec)
 }

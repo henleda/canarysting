@@ -60,4 +60,41 @@ func TestNilProtoIsZeroValue(t *testing.T) {
 	// Must not panic on nil messages.
 	_ = SignalFromProto(nil)
 	_ = VerdictFromProto(nil)
+	_ = StingOutcomeFromProto(nil)
+	_ = OutcomeFromProto(nil)
+}
+
+func TestStingOutcomeRoundTrip(t *testing.T) {
+	s := contract.StingOutcome{
+		Mechanism:      "fake_tree",
+		TimeHeldSec:    12.5,
+		BytesServed:    4096,
+		RequestsAbsrb:  17,
+		TokenCostProxy: 1024.0,
+		DepthReached:   9,
+		DoneReason:     5, // DoneComplete
+	}
+	if got := StingOutcomeFromProto(StingOutcomeToProto(s)); !reflect.DeepEqual(got, s) {
+		t.Fatalf("sting-outcome round-trip lost data:\n got %+v\nwant %+v", got, s)
+	}
+}
+
+func TestOutcomeRecordRoundTrip(t *testing.T) {
+	o := contract.OutcomeRecord{
+		SocketCookie:    0xC0FFEE,
+		Scope:           "scope-a",
+		TimestampUnixMs: 1_700_000_000_123,
+		Outcome: contract.StingOutcome{
+			Mechanism:      "tarpit",
+			TimeHeldSec:    2.0,
+			BytesServed:    64,
+			RequestsAbsrb:  1,
+			TokenCostProxy: 16.0,
+			DepthReached:   0,
+			DoneReason:     2, // DoneFlowBudget
+		},
+	}
+	if got := OutcomeFromProto(OutcomeToProto(o)); !reflect.DeepEqual(got, o) {
+		t.Fatalf("outcome-record round-trip lost data:\n got %+v\nwant %+v", got, o)
+	}
 }

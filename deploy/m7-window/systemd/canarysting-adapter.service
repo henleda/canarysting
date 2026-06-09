@@ -8,11 +8,19 @@ Wants=network-online.target
 # Runs as root: attaches the sockops cookie bridge + the enforce cgroup programs
 # and seeds the negative-space canaries. Talks to the engine over gRPC.
 EnvironmentFile=/etc/canarysting/m7.env
+# -sting-floor 1 = FloorModerate (fake_tree): inline Tier 2/3 touches get a real
+# attrition hold with a plausible fake config/maze deception body, not a plain
+# deny. The cost meter (held-time, bytes, token-proxy) is reported back to the
+# engine and lands in the M8 dashboard. NOTE (on-box deploy tuning, NOT a code
+# change): a multi-second tarpit hold can exceed Envoy's ext_proc
+# grpc_service.timeout / message_timeout in envoy.yaml — raise it on-box if the
+# hold gets cut short before the deception body is returned.
 ExecStart=/opt/canarysting/bin/envoy-adapter \
   -listen 127.0.0.1:50051 \
   -engine 127.0.0.1:50052 \
   -scope ${SCOPE} \
-  -inline
+  -inline \
+  -sting-floor 1
 Restart=always
 RestartSec=3
 

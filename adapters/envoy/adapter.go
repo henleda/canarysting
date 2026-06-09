@@ -58,6 +58,15 @@ type Config struct {
 	// kernel enforces. In async mode Tiers 0-1 are trivially never on the hot path.
 	Inline bool
 
+	// InlineTimeout bounds an inline Submit hold; default 50ms. ORDERING NOTE:
+	// InlineTimeout must be <= the engine gRPC client's per-call timeout so the
+	// engine call resolves (success or its own deadline) before the inline timeout
+	// fires — i.e. the contract.Engine.Submit the adapter calls should carry a
+	// deadline no looser than this. The submit goroutine is buffered (chan cap 1)
+	// and exits whenever the engine responds, so a violation is NOT a goroutine
+	// leak; but if InlineTimeout fires first, the adapter falls closed on a flow the
+	// engine would have decided, so the ordering still matters. The composition root
+	// (cmd/envoy-adapter) is responsible for keeping these in step.
 	InlineTimeout time.Duration    // max hold for an inline Submit; default 50ms
 	ResolveRetry  time.Duration    // bounded cookie re-lookup window; default 5ms
 	Clock         func() time.Time // injectable; default time.Now
@@ -76,7 +85,26 @@ type Config struct {
 	// adapter takes no action based on it.
 	OnVerdict func(contract.SignalEvent, contract.Verdict)
 
+	// OnOutcome, if set, is called (fire-and-forget, in a goroutine) after a Tier
+	// 2/3 inline verdict's attrition hold completes, carrying the attacker-cost
+	// meter. The composition root uses it to report the outcome to the engine for
+	// durable capture. It carries attrition.Outcome (NOT intelligence.StingOutcome)
+	// so the adapter never imports internal/intelligence (rule 1); the copy to the
+	// contract type happens in cmd/envoy-adapter. The adapter takes NO action based
+	// on it, and never blocks the response on it.
+	OnOutcome func(contract.SignalEvent, contract.Verdict, attrition.Outcome)
+
+	// AttritionBodyCap is the maximum deception-body size assembled into the single
+	// ext_proc ImmediateResponse. Zero normalizes to defaultAttritionBodyCap
+	// (64 KiB). Past the cap the hold continues but the body is frozen, so the
+	// attacker still pays full time/tokens while the defender's buffer stays small.
+	AttritionBodyCap int
+
 	sleep func(time.Duration)
+	// attritionSleep is the injectable hold timer for the attrition pump. Default
+	// realSleep (a real, ctx-cancellable timer that imposes the actual tarpit
+	// wall-time). Tests inject a fake that records-but-does-not-wait.
+	attritionSleep sleepFunc
 }
 
 // observe reports a canary-touch verdict to the OnVerdict hook if set.
@@ -102,6 +130,12 @@ func (c Config) Normalized() Config {
 	}
 	if c.sleep == nil {
 		c.sleep = time.Sleep
+	}
+	if c.attritionSleep == nil {
+		c.attritionSleep = realSleep
+	}
+	if c.AttritionBodyCap <= 0 {
+		c.AttritionBodyCap = defaultAttritionBodyCap
 	}
 	if c.Fail.FailClosed == nil {
 		c.Fail = DefaultFailPolicy()
@@ -226,7 +260,28 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 		return immediateDeny(typev3.StatusCode_Forbidden, "forbidden\n")
 	}
 	a.observe(ev, v)
-	return responseForVerdict(v)
+	return a.responseWithAttrition(ctx, ev, v)
+}
+
+// responseWithAttrition applies the verdict, substituting a live attrition hold
+// for the plain deny at Tier 2/3 inline when an Attritor is configured. It is the
+// only place in the adapter that routes into attrition (rule 1: thin proxy — it
+// makes no tiering decision, only ACTS on the tier the engine already chose).
+//
+// Tiers 0/1 and async verdicts NEVER reach the pump (CLAUDE.md rule 6): they take
+// the unchanged responseForVerdict path (CONTINUE +/- tag, or kernel-enforced
+// async). Only inline Tier 2/3 reach attritionOrDeny.
+func (a *Adapter) responseWithAttrition(ctx context.Context, ev contract.SignalEvent, v contract.Verdict) *extprocv3.ProcessingResponse {
+	if v.Tier <= contract.TierTag || v.Mode == contract.ModeAsync {
+		return responseForVerdict(v)
+	}
+	code := typev3.StatusCode_TooManyRequests
+	fallback := "rate limited\n"
+	if v.Tier >= contract.TierJail {
+		code = typev3.StatusCode_Forbidden
+		fallback = "forbidden\n"
+	}
+	return a.attritionOrDeny(ctx, ev, v, code, fallback)
 }
 
 // fireAsync submits a signal off the request path, bounded by AsyncMaxInflight so
@@ -269,6 +324,11 @@ func (a *Adapter) resolveCookie(ft identity.FourTuple) (identity.Resolution, boo
 // submit runs an inline Submit bounded by InlineTimeout and the stream context.
 // contract.Engine.Submit has no context, so the call runs in a goroutine (its
 // buffered channel lets it finish and exit even after a timeout — no leak).
+//
+// ORDERING (see Config.InlineTimeout): InlineTimeout should be <= the engine
+// client's own per-call timeout so the engine call returns (a verdict or its own
+// deadline) before the select below times out. The buffered channel means even a
+// late engine reply is received and discarded, never leaked.
 func (a *Adapter) submit(ctx context.Context, ev contract.SignalEvent) (contract.Verdict, error) {
 	type result struct {
 		v   contract.Verdict

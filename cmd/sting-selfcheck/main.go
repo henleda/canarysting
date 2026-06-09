@@ -52,6 +52,19 @@ func main() {
 
 		// Invariant checks (the CI-gate teeth):
 		budget := attrition.DefaultBudget()
+		// A Tier-3 flow MUST accumulate real attacker cost: positive bytes served and
+		// positive time on the meter. NOTE: this selfcheck is CLOCK-FREE (delay is
+		// data — the run never sleeps; see the package doc). So TimeHeldSec > 0 here
+		// proves the attrition meter ACCUMULATES time from the stream's chunk delays,
+		// NOT that a physical wall-clock hold was imposed. The real-hold guarantee —
+		// that the pump actually SLEEPS each chunk's delay so the attacker pays real
+		// wall-time — is proven separately by TestPumpStreamImposesRealHold in
+		// adapters/envoy/pump_test.go. A regression that served an empty body or a
+		// zero-delay meter would zero these and be caught here.
+		if out.BytesServed <= 0 || out.TimeHeldSec <= 0 {
+			fmt.Fprintf(os.Stderr, "FAIL: %s imposed no cost (bytes=%d held=%.1fs); a Tier-3 flow must serve bytes and hold time\n", f.name, out.BytesServed, out.TimeHeldSec)
+			failed = true
+		}
 		if out.BytesServed > budget.MaxBytesPerFlow {
 			fmt.Fprintf(os.Stderr, "FAIL: %s served %d bytes over the per-flow cap %d\n", f.name, out.BytesServed, budget.MaxBytesPerFlow)
 			failed = true

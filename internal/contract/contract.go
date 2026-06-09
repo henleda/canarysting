@@ -116,6 +116,47 @@ type Engine interface {
 	Submit(SignalEvent) (Verdict, error)
 }
 
+// StingOutcome is the cost-meter record of one attrition session, carried over
+// the OutcomeRecord path back to the engine for durable capture. Its cost fields
+// (Mechanism, TimeHeldSec, BytesServed, RequestsAbsrb, TokenCostProxy,
+// DepthReached) mirror intelligence.StingOutcome and attrition.Outcome; it ALSO
+// carries DoneReason, which intelligence.StingOutcome intentionally omits —
+// DoneReason is attrition-internal control flow (why the stream ended) used on
+// the adapter/engine path and is NOT persisted to the durable store. The
+// composition root copies between these types WITHOUT any of those packages
+// importing each other (dependencies point inward, toward this contract). This
+// package imports only "time", so it never reaches outward to
+// intelligence/attrition.
+type StingOutcome struct {
+	Mechanism      string  // one of the attrition Mech* labels
+	TimeHeldSec    float64 // attacker wall-time imposed (real elapsed hold)
+	BytesServed    int64   // real fake bytes served
+	RequestsAbsrb  int64   // requests absorbed (Next calls that returned data)
+	TokenCostProxy float64 // estimated attacker tokens imposed
+	DepthReached   int     // deepest maze/nesting level reached
+	DoneReason     int     // attrition.DoneReason int value (why the stream ended)
+}
+
+// OutcomeRecord is the post-attrition report the adapter sends to the engine so
+// the durable interaction event gains a real StingOutcome (the verdict-time
+// Submit committed the event with a zero outcome; attrition runs later, adapter-
+// side). It travels over the rpc ReportOutcome. The join key is SocketCookie
+// (rule 4); Scope partitions the durable store (rule 5); TimestampUnixMs matches
+// the originating SignalEvent so the engine amends the right event under a cookie.
+type OutcomeRecord struct {
+	SocketCookie    uint64
+	Scope           ScopeKey
+	Outcome         StingOutcome
+	TimestampUnixMs int64
+}
+
+// OutcomeReporter is the engine-side intake for adapter-side attrition outcomes.
+// The engine's capturing layer implements it and amends the durable event store;
+// the adapter never implements it (it only reports, over the gRPC client).
+type OutcomeReporter interface {
+	ReportOutcome(OutcomeRecord) error
+}
+
 // FeedbackLabel is an analyst confirmation that a Tier 2/3 action was correct
 // or wrong. It is the single calibration signal. See docs/ENGINE.md.
 type FeedbackLabel struct {

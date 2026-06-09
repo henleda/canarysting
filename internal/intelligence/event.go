@@ -27,8 +27,9 @@ type AdversaryInteractionEvent struct {
 	// Structured deviations only; not raw traffic.
 	Features map[string]float64
 
-	Tier    int    // engine tier reached (0..3)
-	Verdict string // engine verdict
+	Tier    int     // engine tier reached (0..3)
+	Verdict string  // engine verdict
+	Score   float64 // engine suspicion score that produced the tier (contract.Verdict.Score)
 	Sting   StingOutcome
 }
 

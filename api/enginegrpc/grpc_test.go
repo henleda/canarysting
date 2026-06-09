@@ -30,11 +30,33 @@ func (f *fakeEngine) Submit(e contract.SignalEvent) (contract.Verdict, error) {
 	return f.out, f.err
 }
 
+// fakeReporter records the last reported outcome (or returns a scripted error),
+// so the ReportOutcome transport + conversion is exercised end to end.
+type fakeReporter struct {
+	last contract.OutcomeRecord
+	got  bool
+	err  error
+}
+
+func (r *fakeReporter) ReportOutcome(rec contract.OutcomeRecord) error {
+	r.last = rec
+	r.got = true
+	return r.err
+}
+
 func dial(t *testing.T, eng contract.Engine) (contract.Engine, func()) {
+	t.Helper()
+	cli, _, done := dialFull(t, eng, nil)
+	return cli, done
+}
+
+// dialFull wires both the engine client and the outcome client over one bufconn,
+// registering the optional reporter on the server.
+func dialFull(t *testing.T, eng contract.Engine, reporter contract.OutcomeReporter) (contract.Engine, *enginegrpc.OutcomeClient, func()) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
-	enginegrpc.Register(srv, eng)
+	enginegrpc.Register(srv, eng, reporter)
 	go func() { _ = srv.Serve(lis) }()
 	cc, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) { return lis.DialContext(context.Background()) }),
@@ -42,7 +64,7 @@ func dial(t *testing.T, eng contract.Engine) (contract.Engine, func()) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	return enginegrpc.NewClient(cc, 2*time.Second), func() { _ = cc.Close(); srv.Stop() }
+	return enginegrpc.NewClient(cc, 2*time.Second), enginegrpc.NewOutcomeClient(cc, 2*time.Second), func() { _ = cc.Close(); srv.Stop() }
 }
 
 func TestRoundTripPreservesFields(t *testing.T) {
@@ -91,5 +113,56 @@ func TestEngineErrorPropagates(t *testing.T) {
 	defer done()
 	if _, err := cli.Submit(contract.SignalEvent{Timestamp: time.UnixMilli(1)}); err == nil {
 		t.Fatal("engine error did not propagate across the gRPC boundary")
+	}
+}
+
+func TestReportOutcomeRoundTrip(t *testing.T) {
+	fr := &fakeReporter{}
+	_, oc, done := dialFull(t, &fakeEngine{}, fr)
+	defer done()
+
+	rec := contract.OutcomeRecord{
+		SocketCookie:    0xC0FFEE,
+		Scope:           "scope-a",
+		TimestampUnixMs: 1_700_000_000_123,
+		Outcome: contract.StingOutcome{
+			Mechanism:      "fake_tree",
+			TimeHeldSec:    2.5,
+			BytesServed:    4096,
+			RequestsAbsrb:  9,
+			TokenCostProxy: 1024,
+			DepthReached:   3,
+			DoneReason:     5,
+		},
+	}
+	if err := oc.ReportOutcome(rec); err != nil {
+		t.Fatalf("ReportOutcome: %v", err)
+	}
+	if !fr.got {
+		t.Fatal("server never received the outcome")
+	}
+	// DoneReason is attrition control flow, not durable cost — the amend path drops
+	// it, so the engine-side reporter sees it (round-trip) but the store ignores it.
+	if !reflect.DeepEqual(fr.last, rec) {
+		t.Fatalf("outcome mismatch across gRPC:\n got %+v\nwant %+v", fr.last, rec)
+	}
+}
+
+// A nil reporter (engine without an EventStore) acks ReportOutcome without error,
+// so the adapter's fire-and-forget report never fails against such an engine.
+func TestReportOutcomeNilReporterAcks(t *testing.T) {
+	_, oc, done := dialFull(t, &fakeEngine{}, nil)
+	defer done()
+	if err := oc.ReportOutcome(contract.OutcomeRecord{Scope: "scope-a"}); err != nil {
+		t.Fatalf("nil-reporter ReportOutcome should ack, got %v", err)
+	}
+}
+
+func TestReportOutcomeErrorPropagates(t *testing.T) {
+	fr := &fakeReporter{err: errors.New("amend failed")}
+	_, oc, done := dialFull(t, &fakeEngine{}, fr)
+	defer done()
+	if err := oc.ReportOutcome(contract.OutcomeRecord{Scope: "scope-a"}); err == nil {
+		t.Fatal("reporter error did not propagate across the gRPC boundary")
 	}
 }
