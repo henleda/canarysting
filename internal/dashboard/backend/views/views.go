@@ -1,0 +1,681 @@
+// Package views holds the pure derivation logic that turns the engine tap's
+// RAW read-only state (calibration + baseline gates + observe folds) and the
+// scope's anonymized interaction events into the typed Overview the CISO
+// dashboard renders. It is read-only by construction: it imports only the
+// engine's exported READ types and pure functions (calibration.State,
+// baseline.GateState/Features/MFromFeatures, observebaseline.AggStats,
+// intelligence.AdversaryInteractionEvent, cost.Rollup). It NEVER imports any
+// store/persist/contract/adapter/bpf package and NEVER writes anything.
+//
+// Honesty rules baked in here (docs/INTELLIGENCE.md):
+//   - FlowView.Score is the flow's latest real engine suspicion score (carried on
+//     the event since M8); SparkSeries is the real per-event score progression
+//     normalized to the flow's peak. Pre-M8 records decode Score=0, and the spark
+//     then falls back to the tier ladder rather than a flat zero line.
+//   - boltevents only stores Tier>=1, so the ladder's T0 (Observe) count comes
+//     from observebaseline.AggStats.CompletedFolds, never from events; the caption
+//     notes T0 is cumulative observed-normal traffic.
+//   - Recon is labeled "recon"/"surfaced", never "detected" (early-warning, not
+//     enforcement).
+//   - Flow identity is the socket-cookie hex only; no fabricated IPs/roles.
+package views
+
+import (
+	"fmt"
+	"sort"
+	"time"
+
+	"github.com/canarysting/canarysting/internal/engine/baseline"
+	"github.com/canarysting/canarysting/internal/engine/calibration"
+	"github.com/canarysting/canarysting/internal/engine/observebaseline"
+	"github.com/canarysting/canarysting/internal/intelligence"
+	"github.com/canarysting/canarysting/internal/intelligence/cost"
+)
+
+// Feature-map keys written into AdversaryInteractionEvent.Features. These mirror
+// the baseline.Features struct fields (docs/BASELINE_MULTIPLIER.md §3).
+const (
+	featAdjacency = "adjacency_novelty"
+	featIdentity  = "identity_novelty"
+	featPort      = "port_novelty"
+	featVolume    = "volume_deviation"
+	featCadence   = "cadence_deviation"
+)
+
+const (
+	// tarpitPersistSec is the TimeHeldSec threshold above which a flow is judged
+	// to have "persisted through the tarpit" (a behavioral fingerprint signal).
+	tarpitPersistSec = 30.0
+	// reconAdjacencyThreshold escalates a recon row from "recon" to "surfaced".
+	reconAdjacencyThreshold = 0.8
+	// reconClusterWindowSec / reconClusterMin define a recon cluster: this many
+	// Tier-1 touches from one flow within this window are all "surfaced".
+	reconClusterWindowSec = 90.0
+	reconClusterMin       = 3
+	maxReconItems         = 10
+	maxOKFlows            = 3
+)
+
+// TapState mirrors tap.State (internal/dashboard/tap). It embeds the same
+// read-only engine types so the JSON the tap emits round-trips exactly (those
+// engine types carry no json tags, so the wire keys are the Go field names).
+// Kept as a local mirror to avoid importing the tap package (which pulls in the
+// boltevents store).
+type TapState struct {
+	Scope       string                   `json:"scope"`
+	Calibration calibration.State        `json:"calibration"`
+	Baseline    baseline.GateState       `json:"baseline"`
+	Observe     observebaseline.AggStats `json:"observe"`
+	At          time.Time                `json:"at"`
+}
+
+// Overview is the complete JSON payload served by GET /api/overview and pushed
+// over GET /api/stream. It IS the contract the Next.js frontend consumes.
+// Every field traces to a real engine source or is honestly absent/zero.
+type Overview struct {
+	// Topbar pills.
+	Env          string    `json:"env"`
+	Scope        string    `json:"scope"`
+	At           time.Time `json:"at"`
+	TapReachable bool      `json:"tap_reachable"`
+	Calibration  CalibView `json:"calibration"`
+	BaselineLive bool      `json:"baseline_live"`
+
+	// Hero left: live escalation + tier ladder.
+	Escalation EscalationView `json:"escalation"`
+
+	// Hero right: attacker cost.
+	AttackerCost AttackerCostView `json:"attacker_cost"`
+
+	// Secondary band.
+	KernelContainment KernelContainmentView `json:"kernel_containment"`
+	Credibility       CredibilityView       `json:"credibility"`
+	AdversaryIntel    AdversaryIntelView    `json:"adversary_intel"`
+}
+
+// CalibView is the topbar calibration pill.
+type CalibView struct {
+	Calibrated    bool `json:"calibrated"`
+	EvidenceSeen  int  `json:"evidence_seen"`
+	EvidenceFloor int  `json:"evidence_floor"`
+}
+
+// EscalationView is the hero-left panel: the current attacker flow + tier ladder.
+type EscalationView struct {
+	// Flow is the current attacker (highest-tier, recency tie-break). Nil if none.
+	Flow *FlowView `json:"flow,omitempty"`
+
+	// TierLadder is always length 4 (T0..T3). T0 uses CompletedFolds; T1-3 use
+	// windowed event counts.
+	TierLadder [4]TierStep `json:"tier_ladder"`
+
+	// LadderDenominator = CompletedFolds + T1 + T2 + T3.
+	LadderDenominator int `json:"ladder_denominator"`
+
+	// LadderCaption is the honest note that T0 is cumulative observed-normal
+	// traffic while T1-3 are windowed canary-interacting flows.
+	LadderCaption string `json:"ladder_caption"`
+}
+
+// FlowView is the currently-tracked attacker flow shown in the live panel.
+type FlowView struct {
+	FlowID        uint64    `json:"flow_id"`      // socket cookie
+	FlowIDHex     string    `json:"flow_id_hex"`  // "0x%x"
+	SourceLabel   string    `json:"source_label"` // empty for now (future registry join)
+	Tier          int       `json:"tier"`
+	Verdict       string    `json:"verdict"`
+	Score         float64   `json:"score"`          // latest real engine suspicion score for this flow
+	BaseM         float64   `json:"base_m"`         // max M across this flow's events
+	CanaryTouches []string  `json:"canary_touches"` // ordered unique CanaryType sequence
+	TouchCount    int       `json:"touch_count"`    // total events for this flow
+	LastSeen      time.Time `json:"last_seen"`
+	SparkSeries   []float64 `json:"spark_series"` // per-event score progression normalized to peak (0..1), timestamp order
+}
+
+// TierStep is one rung of the horizontal tier ladder.
+type TierStep struct {
+	Tier        int     `json:"tier"`
+	Label       string  `json:"label"`
+	Description string  `json:"description"`
+	Count       int     `json:"count"`
+	Fraction    float64 `json:"fraction"`     // count / LadderDenominator; 0 if denom=0
+	HasResponse bool    `json:"has_response"` // T2+: active response
+	RespLabel   string  `json:"resp_label"`   // "counter-attacked" / "kernel-jailed" / ""
+	IsActive    bool    `json:"is_active"`    // highest occupied tier
+}
+
+// AttackerCostView is the hero-right panel.
+type AttackerCostView struct {
+	ActiveResponseCount  int     `json:"active_response_count"` // T2+T3
+	Jailed               int     `json:"jailed"`                // T3
+	CounterAttacked      int     `json:"counter_attacked"`      // T2
+	TimeImposedSec       float64 `json:"time_imposed_sec"`
+	TokensBurned         float64 `json:"tokens_burned"`
+	RequestsAbsorbed     int64   `json:"requests_absorbed"`
+	BytesServed          int64   `json:"bytes_served"`
+	AttackerCostFraction float64 `json:"attacker_cost_fraction"` // active / total interactions
+	DefenderCostFlat     bool    `json:"defender_cost_flat"`     // structural invariant: always true
+}
+
+// KernelContainmentView is the secondary-band left panel.
+type KernelContainmentView struct {
+	JailedFlows []ContainedFlow `json:"jailed_flows"`
+	OKFlows     []ContainedFlow `json:"ok_flows"` // sample of non-jailed flows (max 3)
+}
+
+// ContainedFlow is one row in the kernel-containment panel.
+type ContainedFlow struct {
+	FlowIDHex string `json:"flow_id_hex"`
+	Tier      int    `json:"tier"`
+	Verdict   string `json:"verdict"`
+}
+
+// CredibilityView is the secondary-band middle panel.
+type CredibilityView struct {
+	GuardrailActive     bool             `json:"guardrail_active"`      // architectural invariant: always true
+	BaselineMultiplierM float64          `json:"baseline_multiplier_m"` // max M across window; 1.0 if none
+	FeatureBars         []FeatureBar     `json:"feature_bars"`
+	Calibration         CalibView        `json:"calibration"`
+	BaselineGates       BaselineGateView `json:"baseline_gates"`
+}
+
+// FeatureBar is one bar in the baseline-multiplier feature display.
+type FeatureBar struct {
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+}
+
+// BaselineGateView surfaces the three gates the multiplier ANDs.
+type BaselineGateView struct {
+	Live             bool `json:"live"`
+	BucketSufficient bool `json:"bucket_sufficient"`
+	Calibrated       bool `json:"calibrated"`
+}
+
+// AdversaryIntelView is the secondary-band right panel (three facets).
+type AdversaryIntelView struct {
+	KPI         IntelKPIView     `json:"kpi"`
+	ReconFeed   []ReconEvent     `json:"recon_feed"`            // T1, newest first, max 10
+	Fingerprint *FlowFingerprint `json:"fingerprint,omitempty"` // nil if no current flow
+}
+
+// IntelKPIView is the attacker-cost KPI card.
+type IntelKPIView struct {
+	TokensBurned      float64 `json:"tokens_burned"`
+	TimeImposedSec    float64 `json:"time_imposed_sec"`
+	RequestsAbsorbed  int64   `json:"requests_absorbed"`
+	BytesServed       int64   `json:"bytes_served"`
+	DefenderCostLabel string  `json:"defender_cost_label"` // "flat" (structural)
+}
+
+// ReconEvent is one row in the recon early-warning feed.
+type ReconEvent struct {
+	FlowIDHex   string  `json:"flow_id_hex"`
+	OffsetSec   float64 `json:"offset_sec"`   // negative seconds (in the past)
+	OffsetLabel string  `json:"offset_label"` // "−m:ss"
+	CanaryType  string  `json:"canary_type"`
+	Description string  `json:"description"`
+	Severity    string  `json:"severity"` // "recon" | "surfaced"
+}
+
+// Derive turns raw tap state + the events window into the Overview. Pure: no I/O,
+// no goroutines, no clock except the passed-in now.
+func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now time.Time) Overview {
+	summary := cost.Rollup(events)
+
+	calib := CalibView{
+		Calibrated:    state.Calibration.Calibrated,
+		EvidenceSeen:  state.Calibration.EvidenceSeen,
+		EvidenceFloor: state.Calibration.EvidenceFloor,
+	}
+	if calib.EvidenceFloor == 0 {
+		calib.EvidenceFloor = calibration.DefaultEvidenceFloor
+	}
+
+	flow := selectCurrentFlow(events)
+	ladder, denom := buildLadder(summary, state.Observe.CompletedFolds)
+
+	ov := Overview{
+		Scope:        state.Scope,
+		At:           state.At,
+		TapReachable: true,
+		Calibration:  calib,
+		BaselineLive: state.Baseline.Live,
+		Escalation: EscalationView{
+			Flow:              flow,
+			TierLadder:        ladder,
+			LadderDenominator: denom,
+			LadderCaption:     "Two windows, not one denominator: T0 = cumulative observed-normal traffic (eBPF folds since start, pinned to the full bar); T1-3 fractions are of the attacker subtotal within the events window only. The two are intentionally not mixed.",
+		},
+		AttackerCost:      buildAttackerCost(summary),
+		KernelContainment: buildKernelContainment(events),
+		Credibility:       buildCredibility(state, events, calib),
+		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now),
+	}
+	return ov
+}
+
+// selectCurrentFlow picks the "current attacker": the flow with the highest max
+// tier, tie-broken by most-recent timestamp. Returns nil for no events.
+func selectCurrentFlow(events []intelligence.AdversaryInteractionEvent) *FlowView {
+	if len(events) == 0 {
+		return nil
+	}
+	groups := groupByFlow(events)
+
+	var bestID uint64
+	var bestTier int
+	var bestRecent time.Time
+	first := true
+	for id, grp := range groups {
+		maxTier, recent := 0, time.Time{}
+		for _, e := range grp {
+			if e.Tier > maxTier {
+				maxTier = e.Tier
+			}
+			if e.Timestamp.After(recent) {
+				recent = e.Timestamp
+			}
+		}
+		if first || maxTier > bestTier ||
+			(maxTier == bestTier && recent.After(bestRecent)) ||
+			(maxTier == bestTier && recent.Equal(bestRecent) && id > bestID) {
+			bestID, bestTier, bestRecent = id, maxTier, recent
+			first = false
+		}
+	}
+	return buildFlowView(bestID, groups[bestID])
+}
+
+func buildFlowView(flowID uint64, grp []intelligence.AdversaryInteractionEvent) *FlowView {
+	ordered := append([]intelligence.AdversaryInteractionEvent(nil), grp...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Timestamp.Before(ordered[j].Timestamp) })
+
+	maxTier := 0
+	verdict := ""
+	var lastSeen time.Time
+	var latestScore float64 // the latest event's suspicion score (timestamp order)
+	touches := make([]string, 0, len(ordered))
+	rawScores := make([]float64, 0, len(ordered))
+	seen := map[string]bool{}
+	for _, e := range ordered {
+		if e.Tier >= maxTier { // >= so the verdict tracks the latest highest-tier event
+			maxTier = e.Tier
+			verdict = e.Verdict
+		}
+		if e.Timestamp.After(lastSeen) {
+			lastSeen = e.Timestamp
+		}
+		if e.CanaryType != "" && !seen[e.CanaryType] {
+			seen[e.CanaryType] = true
+			touches = append(touches, e.CanaryType)
+		}
+		latestScore = e.Score // ordered ascending => last assignment is the newest
+		rawScores = append(rawScores, e.Score)
+	}
+
+	return &FlowView{
+		FlowID:        flowID,
+		FlowIDHex:     fmt.Sprintf("0x%x", flowID),
+		Tier:          maxTier,
+		Verdict:       verdict,
+		Score:         latestScore, // the flow's latest real suspicion score
+		BaseM:         computeMaxM(ordered),
+		CanaryTouches: touches,
+		TouchCount:    len(ordered),
+		LastSeen:      lastSeen,
+		SparkSeries:   normalizeSpark(rawScores, ordered),
+	}
+}
+
+// normalizeSpark turns the per-event suspicion-score progression (timestamp
+// order) into a 0..1 sparkline shape by dividing by the flow's peak score, so the
+// sparkline shows the real escalation curve. When no event carries a score (old
+// pre-M8 gob records decode Score=0), it falls back to the tier ladder (0..3
+// scaled to 0..1) so the spark is never a flat line of zeros for legacy data.
+func normalizeSpark(scores []float64, ordered []intelligence.AdversaryInteractionEvent) []float64 {
+	peak := 0.0
+	for _, s := range scores {
+		if s > peak {
+			peak = s
+		}
+	}
+	spark := make([]float64, len(scores))
+	if peak > 0 {
+		for i, s := range scores {
+			spark[i] = s / peak
+		}
+		return spark
+	}
+	// Fallback: no real scores (legacy data) — use the tier progression, /3.
+	for i, e := range ordered {
+		spark[i] = float64(e.Tier) / 3.0
+	}
+	return spark
+}
+
+// buildLadder builds the 4-rung tier ladder. T0 count = completedFolds (real
+// observed-normal traffic, never from events); T1-3 = windowed event counts.
+func buildLadder(summary cost.Summary, completedFolds uint64) ([4]TierStep, int) {
+	counts := [4]int{
+		int(completedFolds), // T0: from observe, NOT events (boltevents never stores T0)
+		summary.TierCounts[1],
+		summary.TierCounts[2],
+		summary.TierCounts[3],
+	}
+	denom := counts[0] + counts[1] + counts[2] + counts[3]
+
+	// highest occupied tier (for IsActive)
+	active := -1
+	for t := 3; t >= 0; t-- {
+		if counts[t] > 0 {
+			active = t
+			break
+		}
+	}
+
+	labels := [4]string{"Observe", "Tag", "Contain", "Jail"}
+	descs := [4]string{"normal traffic · eBPF", "suspicious · tagged", "contained · attrition", "kernel-jailed"}
+	hasResp := [4]bool{false, false, true, true}
+	respLabel := [4]string{"", "", "counter-attacked", "kernel-jailed"}
+
+	var ladder [4]TierStep
+	for t := 0; t < 4; t++ {
+		ladder[t] = TierStep{
+			Tier:        t,
+			Label:       labels[t],
+			Description: descs[t],
+			Count:       counts[t],
+			HasResponse: hasResp[t],
+			RespLabel:   respLabel[t],
+			IsActive:    t == active,
+		}
+	}
+
+	// Fractions live in TWO windows that must not be mixed in one denominator:
+	// T0 is the cumulative observed-normal fold count (huge, unbounded over the
+	// learning window) while T1-3 are windowed canary-interacting counts. Mixing
+	// them collapses the T1-3 bars to ~0. So T1-3 fractions are computed over the
+	// ATTACKER SUBTOTAL only, and T0's fraction is pinned to 1.0 (it is always the
+	// full observed base, the bar the attacker climbs out of).
+	attackerTotal := counts[1] + counts[2] + counts[3]
+	for t := 1; t <= 3; t++ {
+		f := 0.0
+		if attackerTotal > 0 {
+			f = float64(counts[t]) / float64(attackerTotal)
+		}
+		ladder[t].Fraction = f
+	}
+	// T0 is the full observed base => fraction 1.0, but stays 0 when the ladder is
+	// entirely empty (no folds and no attacker activity) so an empty Overview
+	// reports honest zeros rather than a phantom full bar.
+	if denom > 0 {
+		ladder[0].Fraction = 1.0
+	}
+
+	return ladder, denom
+}
+
+func buildAttackerCost(summary cost.Summary) AttackerCostView {
+	frac := 0.0
+	if summary.Interactions > 0 {
+		frac = float64(summary.ActiveResponse()) / float64(summary.Interactions)
+	}
+	return AttackerCostView{
+		ActiveResponseCount:  summary.ActiveResponse(),
+		Jailed:               summary.Jailed(),
+		CounterAttacked:      summary.TierCounts[2],
+		TimeImposedSec:       summary.TimeImposedSec,
+		TokensBurned:         summary.TokensBurned,
+		RequestsAbsorbed:     summary.RequestsAbsorbed,
+		BytesServed:          summary.BytesServed,
+		AttackerCostFraction: frac,
+		DefenderCostFlat:     true,
+	}
+}
+
+// buildKernelContainment lists Tier-3 (jailed) flows and a sample of non-jailed
+// (T1/T2) flows. One row per flow (deduped on cookie), deterministic order.
+func buildKernelContainment(events []intelligence.AdversaryInteractionEvent) KernelContainmentView {
+	groups := groupByFlow(events)
+	ids := sortedFlowIDs(groups)
+
+	var jailed, ok []ContainedFlow
+	for _, id := range ids {
+		// Sort the flow's events ascending by timestamp into a local copy, then a
+		// single forward pass (matches buildFlowView): the verdict tracks the
+		// latest highest-tier event and never gets corrupted by out-of-order input.
+		grp := append([]intelligence.AdversaryInteractionEvent(nil), groups[id]...)
+		sort.SliceStable(grp, func(i, j int) bool { return grp[i].Timestamp.Before(grp[j].Timestamp) })
+		maxTier := 0
+		verdict := ""
+		for _, e := range grp {
+			if e.Tier >= maxTier {
+				maxTier = e.Tier
+				verdict = e.Verdict
+			}
+		}
+		row := ContainedFlow{
+			FlowIDHex: fmt.Sprintf("0x%x", id),
+			Tier:      maxTier,
+			Verdict:   verdict,
+		}
+		if maxTier >= 3 {
+			jailed = append(jailed, row)
+		} else if maxTier >= 1 && len(ok) < maxOKFlows {
+			ok = append(ok, row)
+		}
+	}
+	return KernelContainmentView{JailedFlows: jailed, OKFlows: ok}
+}
+
+// buildCredibility builds the guardrail/baseline-M/calibration panel. M is the
+// max MFromFeatures over the window's events; FeatureBars come from the
+// highest-M event. Honest neutral (M=1.0, capped 0-bars) when no features.
+func buildCredibility(state TapState, events []intelligence.AdversaryInteractionEvent, calib CalibView) CredibilityView {
+	maxM, peak := computeMaxMAndPeak(events)
+	return CredibilityView{
+		GuardrailActive:     true,
+		BaselineMultiplierM: maxM,
+		FeatureBars:         featureBars(peak),
+		Calibration:         calib,
+		BaselineGates: BaselineGateView{
+			Live:             state.Baseline.Live,
+			BucketSufficient: state.Baseline.BucketSufficient,
+			Calibrated:       state.Baseline.Calibrated,
+		},
+	}
+}
+
+func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryInteractionEvent, flow *FlowView, now time.Time) AdversaryIntelView {
+	var fp *FlowFingerprint
+	if flow != nil {
+		groups := groupByFlow(events)
+		fp = DeriveFingerprint(flow.FlowID, groups[flow.FlowID])
+	}
+	return AdversaryIntelView{
+		KPI: IntelKPIView{
+			TokensBurned:      summary.TokensBurned,
+			TimeImposedSec:    summary.TimeImposedSec,
+			RequestsAbsorbed:  summary.RequestsAbsorbed,
+			BytesServed:       summary.BytesServed,
+			DefenderCostLabel: "flat",
+		},
+		ReconFeed:   buildReconFeed(events, now, maxReconItems),
+		Fingerprint: fp,
+	}
+}
+
+// buildReconFeed surfaces Tier-1 events (the lowest stored tier = quiet probes
+// in negative space) as the early-warning feed: newest first, max maxItems.
+// Severity escalates to "surfaced" on high adjacency novelty or cluster
+// membership; otherwise "recon". Never "detected".
+func buildReconFeed(events []intelligence.AdversaryInteractionEvent, now time.Time, maxItems int) []ReconEvent {
+	var t1 []intelligence.AdversaryInteractionEvent
+	for _, e := range events {
+		if e.Tier == 1 {
+			t1 = append(t1, e)
+		}
+	}
+	if len(t1) == 0 {
+		return nil
+	}
+
+	clustered := clusterMembers(t1)
+
+	// newest first
+	sort.SliceStable(t1, func(i, j int) bool { return t1[i].Timestamp.After(t1[j].Timestamp) })
+
+	feed := make([]ReconEvent, 0, maxItems)
+	for _, e := range t1 {
+		if len(feed) >= maxItems {
+			break
+		}
+		offset := -now.Sub(e.Timestamp).Seconds()
+		adj := e.Features[featAdjacency]
+		isCluster := clustered[clusterKey(e)]
+		severity := "recon"
+		switch {
+		case adj >= reconAdjacencyThreshold:
+			severity = "surfaced"
+		case isCluster:
+			severity = "surfaced"
+		}
+		feed = append(feed, ReconEvent{
+			FlowIDHex:   fmt.Sprintf("0x%x", e.FlowID),
+			OffsetSec:   offset,
+			OffsetLabel: offsetLabel(offset),
+			CanaryType:  e.CanaryType,
+			Description: reconDescription(e, adj, isCluster),
+			Severity:    severity,
+		})
+	}
+	return feed
+}
+
+// clusterKey is the per-event membership key for the recon cluster set. A
+// composite "flowID:tsNanos" string is used (not ts^flowID) because XOR can
+// collide across distinct flows/timestamps, which would mislabel an unrelated
+// touch as clustered.
+func clusterKey(e intelligence.AdversaryInteractionEvent) string {
+	return fmt.Sprintf("%d:%d", e.FlowID, e.Timestamp.UnixNano())
+}
+
+// clusterMembers returns the set of T1 events (keyed by clusterKey) that belong
+// to a cluster: reconClusterMin+ touches from one flow within reconClusterWindow.
+func clusterMembers(t1 []intelligence.AdversaryInteractionEvent) map[string]bool {
+	byFlow := map[uint64][]intelligence.AdversaryInteractionEvent{}
+	for _, e := range t1 {
+		byFlow[e.FlowID] = append(byFlow[e.FlowID], e)
+	}
+	out := map[string]bool{}
+	for _, grp := range byFlow {
+		sort.SliceStable(grp, func(i, j int) bool { return grp[i].Timestamp.Before(grp[j].Timestamp) })
+		// sliding window
+		for i := range grp {
+			j := i
+			for j < len(grp) && grp[j].Timestamp.Sub(grp[i].Timestamp).Seconds() <= reconClusterWindowSec {
+				j++
+			}
+			if j-i >= reconClusterMin {
+				for k := i; k < j; k++ {
+					out[clusterKey(grp[k])] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+func reconDescription(e intelligence.AdversaryInteractionEvent, adj float64, cluster bool) string {
+	switch {
+	case adj >= reconAdjacencyThreshold:
+		return fmt.Sprintf("new adjacency · 0x%x→%s", e.FlowID, e.CanaryType)
+	case cluster:
+		return fmt.Sprintf("cluster · 0x%x repeated probing", e.FlowID)
+	case e.CanaryType != "":
+		return "quiet probe · " + e.CanaryType
+	default:
+		return "touch · 0x" + fmt.Sprintf("%x", e.FlowID)
+	}
+}
+
+func offsetLabel(offsetSec float64) string {
+	s := int(-offsetSec)
+	if s < 0 {
+		s = 0
+	}
+	return fmt.Sprintf("−%d:%02d", s/60, s%60)
+}
+
+// computeMaxM returns the max MFromFeatures across the events. 1.0 if none have
+// derivable features (honest neutral, the multiplier floor-of-one).
+func computeMaxM(events []intelligence.AdversaryInteractionEvent) float64 {
+	m, _ := computeMaxMAndPeak(events)
+	return m
+}
+
+func computeMaxMAndPeak(events []intelligence.AdversaryInteractionEvent) (float64, baseline.Features) {
+	maxM := 1.0
+	var peak baseline.Features
+	p := baseline.DefaultParams()
+	for _, e := range events {
+		f := featuresFromMap(e.Features)
+		m := baseline.MFromFeatures(f, p)
+		if m > maxM {
+			maxM = m
+			peak = f
+		}
+	}
+	return maxM, peak
+}
+
+func featuresFromMap(m map[string]float64) baseline.Features {
+	if m == nil {
+		return baseline.Features{}
+	}
+	return baseline.Features{
+		AdjacencyNovelty: m[featAdjacency],
+		IdentityNovelty:  m[featIdentity],
+		PortNovelty:      m[featPort],
+		VolumeDeviation:  m[featVolume],
+		CadenceDeviation: m[featCadence],
+	}
+}
+
+// featureBars maps the four primary feature contributions (capped 0..1) to the
+// dashboard's display names. Values are clamped to [0,1] for the bar widths.
+func featureBars(f baseline.Features) []FeatureBar {
+	clamp := func(v float64) float64 {
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+	return []FeatureBar{
+		{Name: "adjacency nov.", Value: clamp(f.AdjacencyNovelty)},
+		{Name: "identity nov.", Value: clamp(f.IdentityNovelty)},
+		{Name: "volume dev.", Value: clamp(f.VolumeDeviation)},
+		{Name: "cadence dev.", Value: clamp(f.CadenceDeviation)},
+	}
+}
+
+func groupByFlow(events []intelligence.AdversaryInteractionEvent) map[uint64][]intelligence.AdversaryInteractionEvent {
+	groups := map[uint64][]intelligence.AdversaryInteractionEvent{}
+	for _, e := range events {
+		groups[e.FlowID] = append(groups[e.FlowID], e)
+	}
+	return groups
+}
+
+func sortedFlowIDs(groups map[uint64][]intelligence.AdversaryInteractionEvent) []uint64 {
+	ids := make([]uint64, 0, len(groups))
+	for id := range groups {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
