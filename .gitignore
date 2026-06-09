@@ -25,3 +25,10 @@ bpf/**/vmlinux.h
 *.tfstate
 *.tfstate.*
 **/terraform.tfvars
+
+# M8 dashboard frontend (Next.js) — build/dependency/local-env artifacts
+dashboard/app/node_modules/
+dashboard/app/.next/
+dashboard/app/.env.local
+dashboard/app/next-env.d.ts
+dashboard/app/tsconfig.tsbuildinfo
