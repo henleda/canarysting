@@ -20,6 +20,7 @@ import (
 	"flag"
 	"log"
 	"net"
+	"net/http"
 
 	"google.golang.org/grpc"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/canarysting/canarysting/bpf/observe"
 	"github.com/canarysting/canarysting/internal/boot"
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/dashboard/tap"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/intelligence/stagedlabel"
@@ -43,6 +45,8 @@ func main() {
 		windowBucketer = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
 		maxGap         = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot")
 		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
+
+		tapAddr = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
 
 		registryPath = flag.String("ground-truth-registry", "", "REQUIRED: JSON file declaring legit vs attacker source IPs per scope")
 		iAmStaged    = flag.Bool("i-am-running-a-staged-range", false, "REQUIRED acknowledgement: this binary auto-labels from declared ground truth and must NEVER run in production")
@@ -101,6 +105,22 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go built.StartAggregator(ctx)
+
+	// Read-only data tap for the M8 dashboard-backend (the engine owns the live
+	// state + the locked EventStore). It serves raw JSON only; all presentation is
+	// in the separate dashboard-backend.
+	if *tapAddr != "" {
+		src := &tap.Source{
+			Scope: contract.ScopeKey(*boundary), Calib: built.Calib,
+			Baseline: built.Baseline, Events: built.Events, Aggregator: built.Aggregator,
+		}
+		go func() {
+			log.Printf("staged-range: dashboard tap on %s", *tapAddr)
+			if err := http.ListenAndServe(*tapAddr, src.Handler()); err != nil {
+				log.Printf("staged-range: dashboard tap: %v", err)
+			}
+		}()
+	}
 
 	log.Printf("staged-range: ███ STAGED RANGE — AUTO-LABELING ENABLED ███ scope=%q registry=%q observe=%t db=%q",
 		*boundary, *registryPath, *observeCgroup != "", *baselineDB)

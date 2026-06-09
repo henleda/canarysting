@@ -18,6 +18,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   -baseline-db ${BASELINE_DB} \
   -window-bucketer \
   -ground-truth-registry ${GROUND_TRUTH} \
+  -dashboard-tap-addr ${DASHBOARD_TAP_ADDR} \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3

@@ -287,6 +287,27 @@ func (s *Store) ready(scope contract.ScopeKey, t time.Time) bool {
 	return sb.buckets[s.bucketer(t)]
 }
 
+// GateState reports a scope's baseline gate state for observability/dashboards.
+type GateState struct {
+	Live             bool // baseline accrued and fresh (the eBPF data floor met)
+	BucketSufficient bool // the time bucket for t has enough data
+	Calibrated       bool // the analyst-evidence floor is met (same gate as canary weights)
+}
+
+// State returns the baseline gate state for a scope at time t. It does not
+// amplify or mutate anything — it surfaces the same three gates ready() ANDs, so
+// a dashboard can show why M is or is not amplifying. Read-only.
+func (s *Store) State(scope contract.ScopeKey, t time.Time) GateState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := GateState{Calibrated: s.calibrated != nil && s.calibrated(scope)}
+	if sb := s.scopes[scope]; sb != nil {
+		g.Live = sb.live
+		g.BucketSufficient = sb.buckets[s.bucketer(t)]
+	}
+	return g
+}
+
 // M returns the gated multiplier for an explicit feature vector in a scope at
 // time t. It returns exactly 1.0 unless the scope's baseline is ready, in which
 // case it returns the bounded MFromFeatures. This is the tested core of the
