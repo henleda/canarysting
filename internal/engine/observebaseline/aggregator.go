@@ -16,6 +16,7 @@ package observebaseline
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -130,6 +131,7 @@ func (a *Aggregator) Run(ctx context.Context) {
 	a.Rehydrate()
 	t := time.NewTicker(a.interval)
 	defer t.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -137,6 +139,18 @@ func (a *Aggregator) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			a.foldOnce(a.clock())
+			ticks++
+			// Periodic accrual heartbeat for operating the window (observability,
+			// not a decision input — the healthcheck reads it). Logs the open
+			// flow count and the cumulative fold/exclude/unresolved counters.
+			if ticks%6 == 0 {
+				s := a.Stats()
+				a.mu.RLock()
+				open := len(a.live)
+				a.mu.RUnlock()
+				log.Printf("observebaseline: open=%d folds=%d excluded=%d unresolved=%d rehydrate-skipped=%d",
+					open, s.CompletedFolds, s.ExcludedFolds, s.UnresolvedFolds, s.RehydrateSkipped)
+			}
 		}
 	}
 }

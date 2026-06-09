@@ -46,10 +46,12 @@ resource "aws_instance" "client" {
   associate_public_ip_address = true
   user_data                   = file("${path.module}/user_data.sh")
 
-  # The legit generator identities + the attacker identity, as real secondary
-  # private IPs the OS configures on boot (user_data) so outbound connections can
-  # bind them — the server then observes a real population of distinct sources.
-  secondary_private_ips = concat(var.legit_ips, [var.attacker_ip])
+  # The four caller identities as real private IPs the generator/prober bind, so
+  # the server observes a real population of distinct sources. t4g.small allows 4
+  # IPs/interface, so the FIRST legit identity is the PRIMARY (auto-configured by
+  # the OS) and the rest are secondaries (configured at boot by user_data).
+  private_ip            = var.legit_ips[0]
+  secondary_private_ips = concat(slice(var.legit_ips, 1, length(var.legit_ips)), [var.attacker_ip])
 
   root_block_device {
     volume_type = "gp3"
