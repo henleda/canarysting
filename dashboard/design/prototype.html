@@ -122,12 +122,36 @@
   .step .td { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); margin-top: 3px; }
   .step.active .tl { color: var(--sting); font-weight: 900; }
   .step.active .td { color: var(--sting); }
+  /* per-tier traffic counts (the distribution / funnel) */
+  .step .cnt { font-family: var(--expanded); font-weight: 800; font-size: 26px; line-height: 1; color: var(--ink); margin-top: 8px; letter-spacing: -0.01em; }
+  .step .pct { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+  .step .pb { width: 46px; height: 4px; border-radius: 100px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .step .pb i { display: block; height: 100%; background: var(--line-2); }
+  .step .pn { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); }
+  .step.done.t1 .cnt, .step.done.t1 .pb i { color: var(--tag); background: var(--tag); }
+  .step.resp .cnt { color: var(--contain); } .step.resp .pb i { background: var(--contain); }
+  .step.active .cnt { color: var(--sting); } .step.active .pb i { background: var(--sting); box-shadow: 0 0 10px var(--sting); }
+  .step .resp-tag { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 6px; display: inline-block; padding: 1px 5px; border-radius: 2px; }
+  .step.resp .resp-tag { color: var(--contain); border: 1px solid rgba(255,138,61,0.4); }
+  .step.active .resp-tag { color: var(--sting); border: 1px solid rgba(255,77,96,0.5); background: rgba(255,77,96,0.08); }
 
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 22px; }
   .chips .lbl { width: 100%; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 2px; }
   .chip { font-family: var(--mono); font-size: 11px; color: var(--canary); border: 1px solid rgba(255,206,58,0.3); background: rgba(255,206,58,0.06); border-radius: 2px; padding: 4px 9px; letter-spacing: 0.02em; }
 
   /* ATTACKER COST — the inversion */
+  .aresp { display: flex; align-items: center; gap: 18px; border: 1px solid rgba(255,77,96,0.3); background: linear-gradient(90deg, rgba(255,77,96,0.07), rgba(255,138,61,0.03)); border-radius: 4px; padding: 13px 16px; margin-bottom: 24px; }
+  .aresp .lead { font-family: var(--expanded); font-weight: 900; font-size: 30px; color: var(--sting); line-height: 0.9; letter-spacing: -0.01em; }
+  .aresp .lead small { font-family: var(--mono); font-weight: 500; font-size: 10px; color: var(--ink-faint); display: block; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
+  .aresp .split2 { display: flex; gap: 22px; }
+  .aresp .rs { display: flex; align-items: center; gap: 8px; }
+  .aresp .rs .d { width: 8px; height: 8px; border-radius: 50%; }
+  .aresp .rs .n { font-family: var(--expanded); font-weight: 800; font-size: 20px; }
+  .aresp .rs .l { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: 0.04em; }
+  .aresp .rs.jail .d { background: var(--sting); box-shadow: 0 0 9px var(--sting); } .aresp .rs.jail .n { color: var(--sting); }
+  .aresp .rs.ca .d { background: var(--contain); box-shadow: 0 0 9px var(--contain); } .aresp .rs.ca .n { color: var(--contain); }
+  .aresp .arrow2 { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--ink-faint); text-align: right; line-height: 1.4; }
+  .aresp .arrow2 b { color: var(--ink-dim); }
   .cost-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; margin-bottom: 26px; }
   .cm .v { font-family: var(--expanded); font-weight: 800; font-size: 38px; color: var(--sting); line-height: 0.9; letter-spacing: -0.01em; text-shadow: 0 0 26px rgba(255,77,96,0.3); }
   .cm .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-top: 8px; }
@@ -188,15 +212,15 @@
   .calnum { font-family: var(--mono); font-size: 11px; } .calnum b { color: var(--canary); }
 
   /* moat (the third cell, split into the three intelligence facets) */
-  .moat-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; gap: 16px 22px; height: 100%; }
-  .moat-kpi { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; border-right: 1px solid var(--line); padding-right: 22px; }
-  .moat-kpi .big { font-family: var(--expanded); font-weight: 900; font-size: 46px; color: var(--canary); line-height: 0.86; text-shadow: 0 0 28px rgba(255,206,58,0.3); }
-  .moat-kpi .big .u { font-size: 16px; color: var(--ink-dim); margin-left: 3px; }
-  .moat-kpi .cap { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
-  .moat-kpi .legend { margin-top: 14px; display: grid; gap: 5px; }
-  .moat-kpi .lr { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; }
-  .moat-kpi .lr .lk { color: var(--ink-faint); } .moat-kpi .lr .lv { color: var(--ink); }
-  .moat-sub h3 { margin: 0 0 8px; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--canary); }
+  .intel-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; gap: 16px 22px; height: 100%; }
+  .intel-kpi { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; border-right: 1px solid var(--line); padding-right: 22px; }
+  .intel-kpi .big { font-family: var(--expanded); font-weight: 900; font-size: 46px; color: var(--canary); line-height: 0.86; text-shadow: 0 0 28px rgba(255,206,58,0.3); }
+  .intel-kpi .big .u { font-size: 16px; color: var(--ink-dim); margin-left: 3px; }
+  .intel-kpi .cap { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-top: 10px; }
+  .intel-kpi .legend { margin-top: 14px; display: grid; gap: 5px; }
+  .intel-kpi .lr { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; }
+  .intel-kpi .lr .lk { color: var(--ink-faint); } .intel-kpi .lr .lv { color: var(--ink); }
+  .intel-sub h3 { margin: 0 0 8px; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--canary); }
   .feed { display: grid; gap: 6px; }
   .ev { display: grid; grid-template-columns: 46px 1fr auto; align-items: center; gap: 9px; font-family: var(--mono); font-size: 10px; }
   .ev .ts { color: var(--ink-faint); } .ev .what { color: var(--ink-dim); } .ev .what b { color: var(--ink); }
@@ -253,11 +277,30 @@
       </div>
       <div class="spark" id="spark"></div>
       <div class="ladder">
+        <div class="phead" style="margin-bottom:14px"><h2 style="font-size:10px">Tier distribution · canary-interacting flows (5m)</h2><span class="line"></span></div>
         <div class="ladder-track">
-          <div class="step done"><span class="seg"></span><span class="knob"></span><div class="tn">T0</div><div class="tl">Observe</div><div class="td">score ticks</div></div>
-          <div class="step done"><span class="seg"></span><span class="knob"></span><div class="tn">T1</div><div class="tl">Tag</div><div class="td">richer decoys</div></div>
-          <div class="step done"><span class="seg"></span><span class="knob"></span><div class="tn">T2</div><div class="tl">Contain</div><div class="td">throttle · attrition</div></div>
-          <div class="step active"><span class="seg"></span><span class="knob"></span><div class="tn">T3</div><div class="tl">Jail</div><div class="td">kernel · by cookie</div></div>
+          <div class="step done t0">
+            <span class="seg"></span><span class="knob"></span>
+            <div class="tn">T0 · Observe</div><div class="cnt">312</div>
+            <div class="pct"><span class="pb"><i style="width:100%"></i></span><span class="pn">81.9%</span></div>
+          </div>
+          <div class="step done t1">
+            <span class="seg"></span><span class="knob"></span>
+            <div class="tn">T1 · Tag</div><div class="cnt">47</div>
+            <div class="pct"><span class="pb"><i style="width:15%"></i></span><span class="pn">12.3%</span></div>
+          </div>
+          <div class="step done t2 resp">
+            <span class="seg"></span><span class="knob"></span>
+            <div class="tn">T2 · Contain</div><div class="cnt">18</div>
+            <div class="pct"><span class="pb"><i style="width:6%"></i></span><span class="pn">4.7%</span></div>
+            <span class="resp-tag">counter-attacked</span>
+          </div>
+          <div class="step active t3 resp">
+            <span class="seg"></span><span class="knob"></span>
+            <div class="tn">T3 · Jail</div><div class="cnt">4</div>
+            <div class="pct"><span class="pb"><i style="width:2%"></i></span><span class="pn">1.0%</span></div>
+            <span class="resp-tag">kernel-jailed</span>
+          </div>
         </div>
       </div>
     </section>
@@ -265,6 +308,14 @@
     <!-- ATTACKER COST -->
     <section class="hpanel">
       <div class="phead"><h2>Attacker cost</h2><span class="tag" style="color:var(--sting);border-color:rgba(255,77,96,0.4)">attrition · economics</span><span class="line"></span></div>
+      <div class="aresp">
+        <div class="lead">22<small>flows in active response</small></div>
+        <div class="split2">
+          <div class="rs jail"><span class="d"></span><span class="n">4</span><span class="l">jailed<br>kernel</span></div>
+          <div class="rs ca"><span class="d"></span><span class="n">18</span><span class="l">counter-<br>attacked</span></div>
+        </div>
+        <div class="arrow2"><b>0.19%</b> of flagged<br>traffic — driving ↓</div>
+      </div>
       <div class="cost-metrics">
         <div class="cm"><div class="v" id="m-time">4:12</div><div class="k">time imposed</div></div>
         <div class="cm"><div class="v" id="m-tok">38.4k</div><div class="k">tokens burned</div></div>
@@ -322,9 +373,9 @@
 
     <!-- moat -->
     <section class="cell">
-      <div class="phead"><h2>The moat — compounding intelligence</h2><span class="tag">Track D</span><span class="line"></span></div>
-      <div class="moat-grid">
-        <div class="moat-kpi">
+      <div class="phead"><h2>Adversary intelligence</h2><span class="tag">compounding</span><span class="line"></span></div>
+      <div class="intel-grid">
+        <div class="intel-kpi">
           <div class="big">38.4k<span class="u">tok</span></div>
           <div class="cap">attacker-cost KPI · board-level</div>
           <div class="legend">
@@ -334,7 +385,7 @@
             <div class="lr"><span class="lk">defender</span><span class="lv" style="color:var(--safe)">flat</span></div>
           </div>
         </div>
-        <div class="moat-sub">
+        <div class="intel-sub">
           <h3>Recon early-warning</h3>
           <div class="feed">
             <div class="ev"><span class="ts">−6:02</span><span class="what">quiet probe · <b>internal/buckets</b></span><span class="sev quiet">recon</span></div>
@@ -342,7 +393,7 @@
             <div class="ev"><span class="ts">−2:55</span><span class="what">cluster · 4 decoys / 90s</span><span class="sev warn">surfaced</span></div>
           </div>
         </div>
-        <div class="moat-sub">
+        <div class="intel-sub">
           <h3>Adversary fingerprint</h3>
           <div class="fp">
             <div class="r"><span class="k">order</span><span class="v">creds→env→backups</span></div>
