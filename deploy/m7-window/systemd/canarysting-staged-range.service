@@ -17,6 +17,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   -observe-cgroup /sys/fs/cgroup \
   -baseline-db ${BASELINE_DB} \
   -window-bucketer \
+  -contain-inline \
   -ground-truth-registry ${GROUND_TRUTH} \
   -dashboard-tap-addr ${DASHBOARD_TAP_ADDR} \
   -i-am-running-a-staged-range

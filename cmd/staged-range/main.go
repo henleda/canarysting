@@ -40,6 +40,7 @@ func main() {
 		window         = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
 		grpcAddr       = flag.String("grpc-addr", ":50052", "serve the Engine over gRPC at this address")
 		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (cold-start escalation)")
+		containInline  = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
 		baselineDB     = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store")
 		observeCgroup  = flag.String("observe-cgroup", "", "cgroup v2 path to attach the OBSERVE-ONLY baseline path")
 		windowBucketer = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
@@ -69,6 +70,7 @@ func main() {
 		Boundary:              *boundary,
 		Window:                *window,
 		Aggressive:            *aggressive,
+		ContainInline:         *containInline,
 		BaselineDBPath:        *baselineDB,
 		ObserveCgroup:         *observeCgroup,
 		CoarseBucketer:        *windowBucketer,

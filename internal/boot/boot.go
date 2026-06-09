@@ -42,12 +42,18 @@ import (
 
 // Options configures the composition.
 type Options struct {
-	Boundary       string        // operator scope boundary; empty => refuse to start
-	Window         time.Duration // scoring correlation window
-	Aggressive     bool          // demo/eval: minimum per-tier confidence (cold-start escalation)
-	BaselineDBPath string        // bbolt path; "" => no durability (in-memory baseline)
-	ObserveCgroup  string        // cgroup v2 path; "" => observe disabled (touch-only, M=1)
-	CoarseBucketer bool          // true => WindowBucketer (M7 window); false => DefaultBucketer (production)
+	Boundary   string        // operator scope boundary; empty => refuse to start
+	Window     time.Duration // scoring correlation window
+	Aggressive bool          // demo/eval: minimum per-tier confidence (cold-start escalation)
+	// ContainInline makes Tier 2 (Contain) verdicts INLINE so the adapter runs the
+	// M6 attrition pump (held tarpit + deception body, with the real attacker-cost
+	// outcome reported back) instead of the default async kernel-enforced path.
+	// Tier 3 (Jail) stays async (kernel-enforced). Mode is operator-choosable only
+	// for the action tiers (tiers.Config.Validate), so this is a legal config.
+	ContainInline  bool
+	BaselineDBPath string // bbolt path; "" => no durability (in-memory baseline)
+	ObserveCgroup  string // cgroup v2 path; "" => observe disabled (touch-only, M=1)
+	CoarseBucketer bool   // true => WindowBucketer (M7 window); false => DefaultBucketer (production)
 	Floor          observebaseline.DataFloor
 	// ResetOnSchemaMismatch, when true, DISCARDS a persisted baseline whose schema
 	// version differs from this build (logged loudly) instead of refusing to start.
@@ -161,6 +167,11 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 			contract.TierContain: tiers.MinConfidence,
 			contract.TierJail:    tiers.MinConfidence,
 		}
+	}
+	if opts.ContainInline {
+		// Tier 2 inline => the adapter runs the attrition pump (M6). Tier 3 stays
+		// async (kernel jail). Validate() permits Mode on the action tiers.
+		tierCfg.Mode[contract.TierContain] = contract.ModeInline
 	}
 
 	eng, err := engine.New(engine.Config{

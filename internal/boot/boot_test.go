@@ -77,3 +77,36 @@ func TestCaptureWiringRecordsInteractions(t *testing.T) {
 		t.Errorf("captured an Observe-tier event: tier=%d", got[0].Tier)
 	}
 }
+
+// ContainInline makes Tier 2 (Contain) verdicts INLINE (so the adapter runs the
+// M6 attrition pump) while leaving Tier 3 (Jail) async. Touch-only cold-start
+// scoring is the distinct-touch count, so 3 distinct touches on one flow score
+// 3.0 → Contain (Tag≥1.30, Contain≥3.00, Jail≥5.10).
+func TestContainInlineMakesTierTwoInline(t *testing.T) {
+	containVerdict := func(inline bool) contract.Verdict {
+		t.Helper()
+		built, err := boot.Build(boot.Options{Boundary: "scopeA", Window: time.Minute, ContainInline: inline}, observe.NoopObserver{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer built.Close()
+		now := time.Now()
+		flow := contract.FlowIdentity{SocketCookie: 0xC0DE}
+		var v contract.Verdict
+		for _, c := range []string{"aws.key", "ssh.key", "db.dump"} { // 3 distinct → score 3.0 → Contain
+			if v, err = built.Engine.Submit(contract.SignalEvent{Flow: flow, Scope: "scopeA", Canary: contract.CanaryType(c), Timestamp: now}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if v.Tier != contract.TierContain {
+			t.Fatalf("3 distinct touches => tier %d, want Contain (%d)", v.Tier, contract.TierContain)
+		}
+		return v
+	}
+	if v := containVerdict(true); v.Mode != contract.ModeInline {
+		t.Errorf("ContainInline=true: Tier-2 mode = %v, want ModeInline (attrition pump)", v.Mode)
+	}
+	if v := containVerdict(false); v.Mode != contract.ModeAsync {
+		t.Errorf("ContainInline=false: Tier-2 mode = %v, want ModeAsync (kernel-enforced default)", v.Mode)
+	}
+}
