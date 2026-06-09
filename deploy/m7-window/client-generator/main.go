@@ -61,8 +61,12 @@ func runIdentity(idx int, srcIP, target string, paths []string, baseRPM float64)
 	}
 	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
 	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &http.Transport{DialContext: dialer.DialContext, MaxIdleConnsPerHost: 4},
+		Timeout: 5 * time.Second,
+		// DisableKeepAlives: each request is its own TCP connection that completes,
+		// so the observe path sees a distinct flow per request and the baseline
+		// accrues per-request (not per-pooled-connection). Realistic for the many
+		// short, non-pooled callers a real east-west fabric has.
+		Transport: &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: true},
 	}
 	rng := rand.New(rand.NewSource(int64(idx*7919 + 1)))
 

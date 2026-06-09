@@ -16,6 +16,7 @@ func fromRaw(r observeCsFlowStats) FlowStats {
 		Family:         r.Family,
 		SrcPort:        r.SrcPort,
 		DstPort:        r.DstPort,
+		Closed:         r.Closed,
 		SrcIP:          r.SrcIp,
 		DstIP:          r.DstIp,
 	}

@@ -53,6 +53,7 @@ type FlowStats struct {
 	Family  uint16 // AFInet or AFInet6
 	SrcPort uint16 // remote/initiator port, host order (the caller)
 	DstPort uint16 // local/service port, host order (the workload being reached)
+	Closed  uint16 // 0 = open; 1 = the flow has ended (sock_release). A closed flow is folded once.
 
 	// SrcIP/DstIP hold the captured addresses. For AFInet the address is in the
 	// first 4 bytes. These are consumed by the aggregator to derive adjacency and

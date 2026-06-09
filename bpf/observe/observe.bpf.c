@@ -16,8 +16,10 @@
 // Three programs share ONE map:
 //   observe_ingress (cgroup_skb/ingress): per-packet, account toward the workload.
 //   observe_egress  (cgroup_skb/egress):  per-packet, account from the workload.
-//   observe_release (cgroup/sock_release): delete the cookie's entry on close, so
-//     a completed flow leaves the map (the userspace aggregator folds it once).
+//   observe_release (cgroup/sock_release): MARK the cookie's entry closed on
+//     close (not delete), so a flow that opens and closes between two userspace
+//     poll ticks is still present (closed) for the aggregator to fold exactly
+//     once; the LRU evicts it afterward.
 //
 // flow_stats is mirrored field-for-field by the bpf2go-generated observeCsFlowStats
 // (layout_test pins it) and converted to bpf/observe.FlowStats by the loader.
@@ -47,7 +49,7 @@ struct cs_flow_stats {
 	__u16 family;
 	__u16 src_port; // remote/initiator port (host order)
 	__u16 dst_port; // local/service port (host order)
-	__u16 _pad;
+	__u16 closed;   // 0 = open; 1 = flow ended (set by sock_release) — the fold-once signal
 	__u8  src_ip[16]; // remote/initiator address (the caller's identity)
 	__u8  dst_ip[16]; // local/service address (the reached workload)
 };
@@ -155,8 +157,19 @@ int observe_egress(struct __sk_buff *skb)
 SEC("cgroup/sock_release")
 int observe_release(struct bpf_sock *sk)
 {
+	// MARK the flow closed instead of deleting it. The entry persists (the LRU
+	// evicts it once the userspace aggregator has folded it), so a flow that opens
+	// and closes BETWEEN two userspace poll ticks is still present (closed) on the
+	// next tick and gets folded exactly once — fold-on-completion no longer misses
+	// short flows. (Deleting on close, as the enforce path does, would make a
+	// sub-tick flow vanish before the poller ever saw it.)
 	__u64 cookie = bpf_get_socket_cookie(sk);
-	if (cookie != 0)
-		bpf_map_delete_elem(&observe_stats, &cookie); // flow ended -> leave the map
+	if (cookie == 0)
+		return 1;
+	struct cs_flow_stats *st = bpf_map_lookup_elem(&observe_stats, &cookie);
+	if (st) {
+		st->closed = 1;
+		st->last_seen_ns = bpf_ktime_get_ns();
+	}
 	return 1;
 }

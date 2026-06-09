@@ -32,7 +32,7 @@ func TestConcurrentFoldAndFeatures(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	// Writer: continuously bring flows up and complete them (drives foldOnce).
+	// Writer: continuously open and close flows (mark-closed), driving foldOnce.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -44,10 +44,13 @@ func TestConcurrentFoldAndFeatures(t *testing.T) {
 			default:
 			}
 			cookie := 1000 + (i % 64)
-			r.set(cookie, flowFromIPs(byte(5+i%3), 1, 1400, 12, 2_000_000))
+			fs := flowFromIPs(byte(5+i%3), 1, 1400, 12, 2_000_000)
+			r.set(cookie, fs)
 			agg.foldOnce(now)
-			r.del(cookie)
+			fs.Closed = 1
+			r.set(cookie, fs)
 			agg.foldOnce(now)
+			r.del(cookie) // LRU eviction
 			i++
 		}
 	}()
@@ -77,10 +80,11 @@ func TestConcurrentFoldAndFeatures(t *testing.T) {
 	// Reaching here without the race detector firing or a deadlock is the assertion.
 }
 
-// A cookie that is reused within a single tick for a NEW socket (cumulative
-// counters step backwards / start time changes) is detected: the old flow is
-// folded once with its original totals, and the new socket is tracked fresh.
-func TestCookieReuseFoldsOldAndResetsNew(t *testing.T) {
+// A closed flow that LINGERS in the map across several ticks (the kernel keeps it
+// until the LRU evicts it) is folded EXACTLY ONCE — the folded-set prevents
+// double-counting, and a sub-tick flow (one that is already closed the first time
+// the aggregator sees it) is still caught.
+func TestClosedFlowFoldedExactlyOnce(t *testing.T) {
 	r := newFakeReader()
 	gates := newRecordGates()
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
@@ -89,27 +93,24 @@ func TestCookieReuseFoldsOldAndResetsNew(t *testing.T) {
 		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
 	})
 
-	// Tick 1: a large, long-lived flow on cookie C.
-	big := flowFromIPs(5, 1, 9_000_000, 5000, 2_000_000) // FirstSeenNs=1000
-	r.set(42, big)
+	// A flow already CLOSED the first time the aggregator sees it (opened+closed
+	// between ticks) — and it lingers, present on three consecutive ticks.
+	fs := flowFromIPs(5, 1, 1400, 12, 2_000_000)
+	fs.Closed = 1
+	r.set(42, fs)
 	agg.foldOnce(now)
-
-	// Tick 2: cookie C now names a DIFFERENT socket — smaller totals, new start.
-	small := flowFromIPs(6, 1, 100, 2, 1000)
-	small.FirstSeenNs = 9_999 // distinct start => detected as a new socket
-	small.LastSeenNs = 10_999
-	r.set(42, small)
 	agg.foldOnce(now)
-
-	// The OLD flow was folded exactly once on the reset; the new one is still live.
+	agg.foldOnce(now)
 	if st := agg.Stats(); st.CompletedFolds != 1 {
-		t.Fatalf("CompletedFolds = %d, want 1 (old flow folded on cookie reuse)", st.CompletedFolds)
+		t.Fatalf("CompletedFolds = %d, want 1 (a lingering closed flow must fold exactly once)", st.CompletedFolds)
 	}
 
-	// Complete the new socket and confirm it folds as its own (second) flow.
+	// Once the LRU evicts it (gone from the map), a fresh tick prunes it and a NEW
+	// cookie folds independently.
 	r.del(42)
 	agg.foldOnce(now)
+	completeFlow(agg, r, 43, flowFromIPs(6, 1, 1400, 12, 2_000_000), now)
 	if st := agg.Stats(); st.CompletedFolds != 2 {
-		t.Fatalf("CompletedFolds = %d, want 2 (new socket folded separately)", st.CompletedFolds)
+		t.Fatalf("CompletedFolds = %d, want 2 (a new flow folds after the first was evicted)", st.CompletedFolds)
 	}
 }

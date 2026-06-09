@@ -214,9 +214,12 @@ func TestObserveNeverDropsAPacket(t *testing.T) {
 	}
 }
 
-// TestSockReleaseDeletes: the cookie's entry is removed when the socket closes, so
-// a completed flow leaves the map for the aggregator to fold once.
-func TestSockReleaseDeletes(t *testing.T) {
+// TestSockReleaseMarksClosed: on socket close the cookie's entry is MARKED closed
+// (Closed=1) and RETAINED — not deleted — so a flow that closed between two
+// aggregator polls is still present (closed) for the next poll to fold exactly
+// once. (Deleting on close would let a sub-tick flow vanish before the poller saw
+// it; that is the short-flow miss this fixes.)
+func TestSockReleaseMarksClosed(t *testing.T) {
 	o := newObserver(t)
 	defer o.Close()
 	s := newEchoServer(t)
@@ -224,19 +227,22 @@ func TestSockReleaseDeletes(t *testing.T) {
 	cl, srv := s.dialPair(t)
 	cookie := cookieOf(t, srv)
 	roundTrip(t, cl)
-	_ = readBySrv(t, o, cookie) // present after traffic
+	fs := readBySrv(t, o, cookie) // present after traffic
+	if fs.Closed != 0 {
+		t.Fatalf("flow marked closed while still open: %+v", fs)
+	}
 
 	cl.Close()
 	srv.Close()
-	deleted := false
+	closed := false
 	for i := 0; i < 200; i++ {
-		if _, ok, _ := o.ReadStats(cookie); !ok {
-			deleted = true
+		if got, ok, _ := o.ReadStats(cookie); ok && got.Closed != 0 {
+			closed = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !deleted {
-		t.Error("observe entry not deleted on socket close (sock_release lifecycle broken)")
+	if !closed {
+		t.Error("observe entry not marked closed on socket release (mark-closed lifecycle broken)")
 	}
 }

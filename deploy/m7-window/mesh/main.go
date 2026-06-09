@@ -36,7 +36,12 @@ func main() {
 		}
 	}
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	// DisableKeepAlives so each internal hop is a distinct completing flow the
+	// observe path folds — the internal east-west adjacencies accrue per-call.
+	client := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

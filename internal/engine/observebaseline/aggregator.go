@@ -51,14 +51,13 @@ type Config struct {
 	Now      func() time.Time  // injectable clock (nil => time.Now)
 }
 
-// liveFlow tracks one in-flight cookie between fold ticks so the aggregator can
-// fold a flow exactly once, when it completes (disappears from the kernel map).
+// liveFlow records the attribution of one tracked cookie (the scope/bucket/day
+// captured when the aggregator first observed it open), so a flow is folded into
+// the bucket it started in regardless of when it completes.
 type liveFlow struct {
 	scope  contract.ScopeKey
 	bucket string // window bucket at first observation
 	day    string // calendar day at first observation
-	last   observe.FlowStats
-	seen   bool // observed in the current tick
 }
 
 // AggStats are the aggregator's observability counters.
@@ -83,7 +82,8 @@ type Aggregator struct {
 
 	mu             sync.RWMutex
 	aggregates     map[contract.ScopeKey]map[string]*bucketAggregate
-	live           map[uint64]*liveFlow
+	live           map[uint64]*liveFlow // open cookies: attribution, awaiting close
+	folded         map[uint64]bool      // cookies already folded, lingering until LRU-evicted
 	lastFold       map[contract.ScopeKey]time.Time
 	freshFolds     map[contract.ScopeKey]uint64          // completed folds since this process started
 	recoveryQuorum map[contract.ScopeKey]uint64          // freshFolds target before re-live after a coverage gap
@@ -116,6 +116,7 @@ func New(cfg Config) *Aggregator {
 		clock:          cfg.Now,
 		aggregates:     map[contract.ScopeKey]map[string]*bucketAggregate{},
 		live:           map[uint64]*liveFlow{},
+		folded:         map[uint64]bool{},
 		lastFold:       map[contract.ScopeKey]time.Time{},
 		freshFolds:     map[contract.ScopeKey]uint64{},
 		recoveryQuorum: map[contract.ScopeKey]uint64{},
@@ -231,28 +232,27 @@ func (a *Aggregator) foldOnce(now time.Time) {
 // foldLocked does the lock-held in-memory fold + gate re-evaluation and returns
 // the encoded blobs for the buckets dirtied this tick (encoding is cheap and in
 // memory, so it stays under the lock; the bbolt write does not).
+//
+// Fold-on-CLOSED: the kernel marks a flow Closed on sock_release (it does NOT
+// delete the entry), so every completed flow is still present on the next poll
+// and is folded EXACTLY ONCE — even a flow that opened and closed between two
+// ticks. `live` holds open cookies' attribution; `folded` remembers folded
+// cookies so a closed entry that lingers (until the LRU evicts it) is not
+// double-counted. Both are pruned when a cookie leaves the map.
 func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Mark every tracked flow unseen; the iteration below re-marks the live ones.
-	for _, lf := range a.live {
-		lf.seen = false
-	}
-
+	seen := make(map[uint64]struct{})
 	_ = a.reader.IterStats(func(cookie uint64, fs observe.FlowStats) error {
 		if cookie == 0 {
 			return nil // unattributable flow: refuse to bucket it (fail-safe)
 		}
-		lf := a.live[cookie]
-		if lf != nil && flowReset(lf.last, fs) {
-			// The cumulative counters went backwards / the start time changed: the
-			// cookie now names a DIFFERENT socket (a reset or an improbable cookie
-			// reuse). Fold the old flow's final totals, then track the new one fresh.
-			a.foldCompleted(lf, now)
-			delete(a.live, cookie)
-			lf = nil
+		seen[cookie] = struct{}{}
+		if a.folded[cookie] {
+			return nil // already folded; awaiting LRU eviction
 		}
+		lf := a.live[cookie]
 		if lf == nil {
 			sc, err := a.resolver.Resolve(contract.FlowIdentity{SocketCookie: cookie})
 			if err != nil {
@@ -268,19 +268,25 @@ func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
 			lf = &liveFlow{scope: sc, bucket: a.bucketer(now), day: dayKey(now)}
 			a.live[cookie] = lf
 		}
-		lf.last = fs
-		lf.seen = true
+		if fs.Closed != 0 {
+			a.foldCompleted(lf, fs, now)
+			a.folded[cookie] = true
+			delete(a.live, cookie)
+		}
 		return nil
 	})
 
-	// A flow that was tracked but is no longer in the map has completed
-	// (sock_release deleted it). Fold it exactly once with its final totals.
-	for cookie, lf := range a.live {
-		if lf.seen {
-			continue
+	// Prune cookies that left the map (LRU-evicted): an open one evicted before it
+	// closed is lost (rare; the map is large); a folded one is just cleaned up.
+	for cookie := range a.live {
+		if _, ok := seen[cookie]; !ok {
+			delete(a.live, cookie)
 		}
-		a.foldCompleted(lf, now)
-		delete(a.live, cookie)
+	}
+	for cookie := range a.folded {
+		if _, ok := seen[cookie]; !ok {
+			delete(a.folded, cookie)
+		}
 	}
 
 	// Re-evaluate the gates for every scope with accrued data.
@@ -317,17 +323,8 @@ func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
 	return writes
 }
 
-// flowReset reports whether cur is a new socket reusing prev's cookie rather than
-// a later cumulative read of the same flow: the start time changed, or a
-// cumulative counter went backwards (which a monotonic live flow never does).
-func flowReset(prev, cur observe.FlowStats) bool {
-	return cur.FirstSeenNs != prev.FirstSeenNs ||
-		cur.TotalBytes() < prev.TotalBytes() ||
-		cur.TotalPackets() < prev.TotalPackets()
-}
-
-func (a *Aggregator) foldCompleted(lf *liveFlow, now time.Time) {
-	if a.excluder != nil && a.excluder.excludedFlow(lf.scope, lf.last) {
+func (a *Aggregator) foldCompleted(lf *liveFlow, fs observe.FlowStats, now time.Time) {
+	if a.excluder != nil && a.excluder.excludedFlow(lf.scope, fs) {
 		a.stats.ExcludedFolds++
 		return // confirmed-malicious: keep out of the baseline-of-normal
 	}
@@ -341,7 +338,7 @@ func (a *Aggregator) foldCompleted(lf *liveFlow, now time.Time) {
 		agg = newBucketAggregate()
 		buckets[lf.bucket] = agg
 	}
-	agg.foldFlow(lf.last, lf.day)
+	agg.foldFlow(fs, lf.day)
 	a.markDirty(lf.scope, lf.bucket)
 	a.lastFold[lf.scope] = now
 	a.freshFolds[lf.scope]++

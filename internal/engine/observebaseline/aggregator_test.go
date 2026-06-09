@@ -101,12 +101,16 @@ func testFloor() DataFloor {
 	}
 }
 
-// completeFlow drives a flow from "live" to "completed" (one fold) at time now.
+// completeFlow drives a flow from open to closed (one fold) at time now, the
+// mark-closed lifecycle: observed open (tracked), then marked Closed (the kernel
+// keeps the entry), then folded exactly once.
 func completeFlow(a *Aggregator, r *fakeReader, cookie uint64, fs observe.FlowStats, now time.Time) {
+	fs.Closed = 0
 	r.set(cookie, fs)
-	a.foldOnce(now) // observed: tracked, not yet folded
-	r.del(cookie)
-	a.foldOnce(now) // gone: folded once with final totals
+	a.foldOnce(now) // observed open: tracked, not yet folded
+	fs.Closed = 1
+	r.set(cookie, fs) // marked closed (entry persists, as the kernel does)
+	a.foldOnce(now)   // closed: folded once with final totals
 }
 
 const testScope = contract.ScopeKey("scopeA")

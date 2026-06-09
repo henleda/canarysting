@@ -22,7 +22,7 @@ type observeCsFlowStats struct {
 	Family         uint16
 	SrcPort        uint16
 	DstPort        uint16
-	Pad            uint16
+	Closed         uint16
 	SrcIp          [16]uint8
 	DstIp          [16]uint8
 }

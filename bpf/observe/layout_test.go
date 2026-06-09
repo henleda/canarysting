@@ -41,7 +41,7 @@ func TestFromRawParity(t *testing.T) {
 	raw := observeCsFlowStats{
 		IngressPackets: 11, IngressBytes: 22, EgressPackets: 33, EgressBytes: 44,
 		FirstSeenNs: 55, LastSeenNs: 66, Family: AFInet, SrcPort: 40000, DstPort: 8080,
-		SrcIp: [16]byte{10, 0, 1, 5}, DstIp: [16]byte{10, 0, 2, 1},
+		Closed: 1, SrcIp: [16]byte{10, 0, 1, 5}, DstIp: [16]byte{10, 0, 2, 1},
 	}
 	fs := fromRaw(raw)
 	if fs.IngressPackets != 11 || fs.IngressBytes != 22 || fs.EgressPackets != 33 || fs.EgressBytes != 44 {
@@ -50,7 +50,7 @@ func TestFromRawParity(t *testing.T) {
 	if fs.FirstSeenNs != 55 || fs.LastSeenNs != 66 {
 		t.Fatalf("timestamp parity broken: %+v", fs)
 	}
-	if fs.Family != AFInet || fs.SrcPort != 40000 || fs.DstPort != 8080 {
+	if fs.Family != AFInet || fs.SrcPort != 40000 || fs.DstPort != 8080 || fs.Closed != 1 {
 		t.Fatalf("tuple scalar parity broken: %+v", fs)
 	}
 	if fs.SrcIP != raw.SrcIp || fs.DstIP != raw.DstIp {

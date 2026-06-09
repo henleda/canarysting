@@ -41,8 +41,10 @@ func main() {
 	}
 	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
 	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &http.Transport{DialContext: dialer.DialContext},
+		Timeout: 5 * time.Second,
+		// DisableKeepAlives so each canary touch is a distinct, completing flow the
+		// observe path folds (and excludes from the baseline-of-normal) on close.
+		Transport: &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: true},
 	}
 	rng := rand.New(rand.NewSource(20260609))
 
