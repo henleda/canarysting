@@ -1,0 +1,521 @@
+<!doctype html>
+<!--
+  CanarySting — M8 product dashboard, DESIGN PROTOTYPE (the §1 live screen).
+  Single self-contained file for look-&-feel sign-off. Data here is REALISTIC-
+  SHAPED placeholder modeled on the real types (AdversaryInteractionEvent,
+  calibration.State, the five baseline novelty features, the sting cost proxies);
+  the shipped dashboard wires these to the real dashboard-backend API + SSE.
+  No build step — open in a browser.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CanarySting — Operations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Archivo+Expanded:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #07090b;
+    --bg-2: #0a0d10;
+    --panel: #0e1217;
+    --panel-2: #11161c;
+    --line: #1c242c;
+    --line-2: #2a343d;
+    --ink: #e9eef3;
+    --ink-dim: #94a3af;
+    --ink-faint: #5b6873;
+    --canary: #ffce3a;      /* the canary — primary accent */
+    --canary-deep: #d9a400;
+    --sting: #ff465a;       /* the sting / jail / attacker cost */
+    --sting-deep: #c01e30;
+    --safe: #2fe39a;        /* bystander safe / defender flat / guardrail */
+    --contain: #ff8a3d;     /* tier 2 */
+    --tag: #ffce3a;         /* tier 1 */
+    --observe: #5a7d9a;     /* tier 0 */
+    --radius: 3px;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+    --display: "Archivo", system-ui, sans-serif;
+    --expanded: "Archivo Expanded", "Archivo", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    /* atmosphere: faint grid + radial vignette + grain */
+    background-image:
+      radial-gradient(1200px 700px at 78% -8%, rgba(255,206,58,0.05), transparent 60%),
+      radial-gradient(1000px 600px at 10% 110%, rgba(47,227,154,0.035), transparent 60%),
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
+    background-position: 0 0, 0 0, -1px -1px, -1px -1px;
+  }
+  body::before {
+    /* grain overlay */
+    content: ""; position: fixed; inset: 0; z-index: 9999; pointer-events: none; opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .dim { color: var(--ink-dim); }
+  .faint { color: var(--ink-faint); }
+
+  /* ---- shell ---- */
+  .app { height: 100vh; display: grid; grid-template-rows: 52px 1fr 188px; }
+
+  /* ---- top bar ---- */
+  .topbar {
+    display: flex; align-items: center; gap: 22px; padding: 0 20px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.018), transparent);
+  }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .mark { width: 26px; height: 26px; position: relative; }
+  .mark svg { display: block; }
+  .brand .name { font-family: var(--expanded); font-weight: 800; letter-spacing: 0.14em; font-size: 14px; }
+  .brand .name b { color: var(--canary); }
+  .topbar .sep { width: 1px; height: 24px; background: var(--line); }
+  .meta { display: flex; align-items: center; gap: 8px; }
+  .meta .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; color: var(--ink-faint); text-transform: uppercase; }
+  .meta .v { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px;
+    border: 1px solid var(--line-2); border-radius: 100px; font-family: var(--mono);
+    font-size: 11px; letter-spacing: 0.05em; color: var(--ink-dim);
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .pill.ok { border-color: rgba(47,227,154,0.4); color: var(--safe); }
+  .pill.ok .dot { background: var(--safe); box-shadow: 0 0 8px var(--safe); }
+  .pill.live { border-color: rgba(255,206,58,0.4); color: var(--canary); }
+  .pill.live .dot { background: var(--canary); box-shadow: 0 0 8px var(--canary); animation: pulse 1.8s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .clock { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); letter-spacing: 0.04em; }
+
+  /* ---- body grid ---- */
+  .body { display: grid; grid-template-columns: 1.18fr 1fr; gap: 1px; background: var(--line); overflow: hidden; }
+  .col { background: var(--bg); display: grid; gap: 1px; overflow: hidden; }
+  .col.left { grid-template-rows: 1.32fr 1fr; }
+  .col.right { grid-template-rows: auto auto 1fr; }
+
+  .panel { background: var(--panel); position: relative; padding: 16px 18px; overflow: hidden; }
+  .panel.r { background: var(--panel); }
+  .phead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .phead h2 {
+    margin: 0; font-family: var(--mono); font-weight: 600; font-size: 11px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  .phead .tag {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--ink-faint);
+    border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px; text-transform: uppercase;
+  }
+  .phead .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line), transparent); }
+
+  /* ---- LIVE ESCALATION (hero) ---- */
+  .escalation { display: grid; grid-template-columns: 1fr 188px; gap: 20px; height: 100%; }
+  .flowcard { display: flex; flex-direction: column; }
+  .flow-id { display: flex; align-items: baseline; gap: 12px; }
+  .flow-id .ip { font-family: var(--expanded); font-weight: 700; font-size: 22px; letter-spacing: 0.01em; }
+  .flow-id .role {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--sting); border: 1px solid rgba(255,70,90,0.45); border-radius: 2px; padding: 2px 7px;
+    background: rgba(255,70,90,0.07);
+  }
+  .flow-sub { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-top: 5px; letter-spacing: 0.03em; }
+
+  .score-wrap { margin-top: auto; }
+  .score-row { display: flex; align-items: flex-end; gap: 14px; }
+  .score {
+    font-family: var(--expanded); font-weight: 800; font-size: 76px; line-height: 0.86;
+    color: var(--sting); text-shadow: 0 0 30px rgba(255,70,90,0.4); letter-spacing: -0.01em;
+  }
+  .score-meta { padding-bottom: 8px; }
+  .score-meta .arrow { color: var(--sting); font-family: var(--mono); font-size: 13px; letter-spacing: 0.04em; }
+  .score-meta .mx { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-top: 4px; }
+  .score-meta .mx b { color: var(--canary); }
+  .spark { height: 30px; margin-top: 12px; display: flex; align-items: flex-end; gap: 3px; }
+  .spark i { flex: 1; background: linear-gradient(180deg, var(--sting), rgba(255,70,90,0.18)); border-radius: 1px; }
+
+  /* tier ladder */
+  .ladder { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; }
+  .rung {
+    position: relative; border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 11px;
+    background: var(--panel-2); display: flex; align-items: center; gap: 10px; transition: all .3s;
+  }
+  .rung .tn { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; color: var(--ink-faint); width: 18px; }
+  .rung .tl { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.03em; text-transform: uppercase; }
+  .rung .td { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); margin-left: auto; }
+  .rung .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: var(--radius) 0 0 var(--radius); background: var(--line-2); }
+  .rung.done { border-color: rgba(255,255,255,0.07); }
+  .rung.done .tl { color: var(--ink-dim); }
+  .rung.t0.done .bar { background: var(--observe); }
+  .rung.t1.done .bar { background: var(--tag); }
+  .rung.t2.done .bar { background: var(--contain); }
+  .rung.active {
+    border-color: var(--sting); background: rgba(255,70,90,0.09);
+    box-shadow: 0 0 0 1px rgba(255,70,90,0.25), 0 8px 26px rgba(255,70,90,0.14);
+  }
+  .rung.active .bar { background: var(--sting); box-shadow: 0 0 14px var(--sting); }
+  .rung.active .tl { color: var(--sting); }
+  .rung.active .td { color: var(--sting); }
+
+  /* canary touch chips */
+  .touches { margin-top: 16px; }
+  .touches .lbl { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; color: var(--canary); border: 1px solid rgba(255,206,58,0.3);
+    background: rgba(255,206,58,0.06); border-radius: 2px; padding: 3px 8px; letter-spacing: 0.02em;
+  }
+  .chip.fresh { animation: chipin .5s ease both; }
+  @keyframes chipin { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* ---- FABRIC topology ---- */
+  .fabric { height: 100%; }
+  .topo { display: flex; align-items: center; gap: 0; height: calc(100% - 30px); padding: 6px 0; }
+  .node {
+    border: 1px solid var(--line-2); border-radius: var(--radius); padding: 9px 12px; background: var(--panel-2);
+    text-align: center; position: relative; min-width: 74px;
+  }
+  .node .nm { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+  .node .pt { font-family: var(--mono); font-size: 9px; color: var(--ink-faint); margin-top: 2px; }
+  .node.edge { border-color: rgba(255,206,58,0.4); }
+  .node.edge .nm { color: var(--canary); }
+  .canarydot {
+    position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--canary);
+    box-shadow: 0 0 8px var(--canary); top: -4px; right: -4px;
+  }
+  .link { flex: 1; height: 1px; background: repeating-linear-gradient(90deg, var(--line-2) 0 5px, transparent 5px 10px); position: relative; min-width: 18px; }
+  .link.hot { background: repeating-linear-gradient(90deg, var(--sting) 0 5px, transparent 5px 10px); }
+  .link .pkt { position: absolute; top: -2px; width: 4px; height: 4px; border-radius: 50%; background: var(--canary); box-shadow: 0 0 6px var(--canary); animation: travel 1.6s linear infinite; }
+  .link.hot .pkt { background: var(--sting); box-shadow: 0 0 6px var(--sting); }
+  @keyframes travel { from { left: 0%; } to { left: 100%; } }
+  .negspace { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); margin-top: 8px; letter-spacing: 0.03em; }
+  .negspace b { color: var(--canary); }
+
+  /* ---- ATTACKER COST (economic inversion) ---- */
+  .cost { }
+  .cost-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .metric { background: var(--panel-2); padding: 12px 13px; }
+  .metric .mv { font-family: var(--expanded); font-weight: 700; font-size: 25px; color: var(--sting); letter-spacing: -0.01em; }
+  .metric .mk { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); margin-top: 4px; }
+  .inversion { margin-top: 14px; }
+  .inv-row { display: grid; grid-template-columns: 84px 1fr 74px; align-items: center; gap: 12px; margin-bottom: 9px; }
+  .inv-row .who { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; }
+  .inv-row.att .who { color: var(--sting); }
+  .inv-row.def .who { color: var(--safe); }
+  .track { height: 8px; border-radius: 100px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; position: relative; }
+  .track .fill { position: absolute; inset: 0; border-radius: 100px; }
+  .inv-row.att .fill { width: 86%; background: linear-gradient(90deg, var(--sting-deep), var(--sting)); box-shadow: 0 0 14px rgba(255,70,90,0.35); animation: grow 5s ease-in-out infinite alternate; }
+  .inv-row.def .fill { width: 7%; background: linear-gradient(90deg, #1c8a5f, var(--safe)); }
+  @keyframes grow { from { width: 70%; } to { width: 92%; } }
+  .inv-row .amt { font-family: var(--mono); font-size: 11px; text-align: right; }
+  .inv-row.att .amt { color: var(--sting); }
+  .inv-row.def .amt { color: var(--safe); }
+  .cost-note { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); margin-top: 4px; }
+
+  /* ---- KERNEL CONTAINMENT precision ---- */
+  .sockets { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .sock {
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 11px; background: var(--panel-2);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .sock .cookie { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+  .sock .src { font-family: var(--mono); font-size: 9.5px; color: var(--ink-faint); }
+  .sock .state { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+  .sock .state .d { width: 7px; height: 7px; border-radius: 50%; }
+  .sock.jail { border-color: rgba(255,70,90,0.5); background: rgba(255,70,90,0.07); }
+  .sock.jail .state { color: var(--sting); }
+  .sock.jail .state .d { background: var(--sting); box-shadow: 0 0 9px var(--sting); }
+  .sock.ok .state { color: var(--safe); }
+  .sock.ok .state .d { background: var(--safe); box-shadow: 0 0 9px var(--safe); }
+  .precis-note { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); margin-top: 11px; }
+  .precis-note b { color: var(--safe); }
+
+  /* ---- CREDIBILITY panels (stacked) ---- */
+  .cred { display: grid; gap: 14px; align-content: start; }
+  .cred-item { border-top: 1px solid var(--line); padding-top: 13px; }
+  .cred-item:first-child { border-top: none; padding-top: 0; }
+  .cred-h { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+  .cred-h .ic { width: 6px; height: 6px; border-radius: 50%; }
+  .cred-h .t { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim); }
+  .cred-h .badge { margin-left: auto; font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 2px; letter-spacing: 0.04em; }
+  .badge.green { color: var(--safe); border: 1px solid rgba(47,227,154,0.35); background: rgba(47,227,154,0.07); }
+  .badge.amber { color: var(--canary); border: 1px solid rgba(255,206,58,0.35); background: rgba(255,206,58,0.06); }
+  .cred-body { font-family: var(--sans); font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+  .cred-body .em { color: var(--ink); }
+
+  /* novelty feature bars */
+  .feats { display: grid; gap: 6px; margin-top: 4px; }
+  .feat { display: grid; grid-template-columns: 120px 1fr 34px; align-items: center; gap: 10px; }
+  .feat .fn { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: 0.03em; }
+  .feat .fbar { height: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 100px; overflow: hidden; }
+  .feat .fbar i { display: block; height: 100%; background: linear-gradient(90deg, var(--canary-deep), var(--canary)); border-radius: 100px; }
+  .feat .fv { font-family: var(--mono); font-size: 10px; color: var(--canary); text-align: right; }
+
+  /* calibration meter */
+  .calib { display: flex; align-items: center; gap: 14px; }
+  .calmeter { flex: 1; height: 8px; border-radius: 100px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .calmeter i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, var(--canary-deep), var(--canary)); border-radius: 100px; }
+  .calnum { font-family: var(--mono); font-size: 12px; }
+  .calnum b { color: var(--canary); }
+
+  /* ---- MOAT band ---- */
+  .moat { display: grid; grid-template-columns: 1fr 1fr 1.05fr; gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+  .moat .panel { background: var(--bg-2); }
+  .moat .phead h2 { color: var(--canary); }
+  .moat .phead .line { background: linear-gradient(90deg, rgba(255,206,58,0.3), transparent); }
+
+  /* recon feed */
+  .feed { display: grid; gap: 7px; }
+  .ev { display: grid; grid-template-columns: 58px 1fr auto; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; }
+  .ev .ts { color: var(--ink-faint); font-size: 10px; }
+  .ev .what { color: var(--ink-dim); }
+  .ev .what b { color: var(--ink); }
+  .ev .sev { font-size: 9px; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; }
+  .ev .sev.quiet { color: var(--observe); border: 1px solid rgba(90,125,154,0.4); }
+  .ev .sev.warn { color: var(--canary); border: 1px solid rgba(255,206,58,0.4); }
+
+  /* fingerprint */
+  .fp { font-family: var(--mono); font-size: 11px; line-height: 1.7; color: var(--ink-dim); }
+  .fp .row { display: flex; gap: 10px; }
+  .fp .row .k { color: var(--ink-faint); width: 92px; flex-shrink: 0; letter-spacing: 0.04em; }
+  .fp .row .v { color: var(--ink); }
+  .fp-hash { font-family: var(--mono); font-size: 10px; color: var(--canary); margin-top: 8px; letter-spacing: 0.04em; word-break: break-all; }
+
+  /* KPI big number */
+  .kpi { display: flex; align-items: center; gap: 22px; height: calc(100% - 30px); }
+  .kpi .big { font-family: var(--expanded); font-weight: 800; font-size: 52px; color: var(--canary); line-height: 0.9; text-shadow: 0 0 30px rgba(255,206,58,0.3); }
+  .kpi .big .u { font-size: 18px; color: var(--ink-dim); margin-left: 4px; }
+  .kpi .legend { display: grid; gap: 7px; }
+  .kpi .lrow { display: grid; grid-template-columns: 1fr auto; gap: 16px; font-family: var(--mono); font-size: 11px; }
+  .kpi .lrow .lk { color: var(--ink-faint); }
+  .kpi .lrow .lv { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= TOP BAR ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">
+        <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+          <path d="M13 2 L23 13 L13 24 L3 13 Z" stroke="#ffce3a" stroke-width="1.4" fill="rgba(255,206,58,0.06)"/>
+          <circle cx="13" cy="13" r="3.4" fill="#ffce3a"/>
+          <path d="M13 13 L20 6" stroke="#ff465a" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="name">CANARY<b>STING</b></span>
+    </div>
+    <span class="sep"></span>
+    <div class="meta"><span class="k">scope</span><span class="v">m7-window</span></div>
+    <div class="meta"><span class="k">env</span><span class="v">staged-range · aws</span></div>
+    <span class="spacer"></span>
+    <span class="pill ok"><span class="dot"></span>CALIBRATED · 50/50</span>
+    <span class="pill live"><span class="dot"></span>BASELINE LIVE</span>
+    <span class="sep"></span>
+    <span class="clock" id="clock">--:--:--</span>
+  </header>
+
+  <!-- ================= BODY ================= -->
+  <div class="body">
+
+    <!-- ---------- LEFT: the theater ---------- -->
+    <div class="col left">
+
+      <!-- LIVE ESCALATION (hero) -->
+      <section class="panel">
+        <div class="phead">
+          <h2>Live escalation</h2><span class="tag">flow</span>
+          <span class="line"></span>
+          <span class="tag" style="color:var(--sting);border-color:rgba(255,70,90,0.4)">async · kernel-enforced</span>
+        </div>
+        <div class="escalation">
+          <div class="flowcard">
+            <div class="flow-id">
+              <span class="ip mono">10.20.1.111</span>
+              <span class="role">attacker</span>
+            </div>
+            <div class="flow-sub">cookie 0x118 · src→envoy:8080 · 14 distinct touches / 5m window</div>
+
+            <div class="score-wrap">
+              <div class="touches">
+                <div class="lbl">canary touches (negative space)</div>
+                <div class="chips">
+                  <span class="chip">.aws/credentials</span>
+                  <span class="chip">.env</span>
+                  <span class="chip">backup/db.sql</span>
+                  <span class="chip">internal/buckets</span>
+                  <span class="chip fresh" id="freshchip">admin/metrics</span>
+                </div>
+              </div>
+              <div class="score-row" style="margin-top:18px">
+                <div class="score" id="score">5.00</div>
+                <div class="score-meta">
+                  <div class="arrow">▲ escalating</div>
+                  <div class="mx">base 2.00 × M <b>2.50</b> = sharpened</div>
+                </div>
+              </div>
+              <div class="spark" id="spark"></div>
+            </div>
+          </div>
+
+          <div class="ladder">
+            <div class="rung t0 done"><span class="bar"></span><span class="tn">T0</span><span class="tl">Observe</span><span class="td">score ticks</span></div>
+            <div class="rung t1 done"><span class="bar"></span><span class="tn">T1</span><span class="tl">Tag</span><span class="td">mark · richer decoys</span></div>
+            <div class="rung t2 done"><span class="bar"></span><span class="tn">T2</span><span class="tl">Contain</span><span class="td">throttle · attrition</span></div>
+            <div class="rung t3 active"><span class="bar"></span><span class="tn">T3</span><span class="tl">Jail</span><span class="td">kernel · by cookie</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- THE FABRIC -->
+      <section class="panel">
+        <div class="phead"><h2>The fabric</h2><span class="tag">east-west · envoy</span><span class="line"></span></div>
+        <div class="topo">
+          <div class="node edge"><div class="nm">envoy</div><div class="pt">:8080</div><span class="canarydot" title="negative-space canaries"></span></div>
+          <div class="link hot"><span class="pkt"></span></div>
+          <div class="node"><div class="nm">frontend</div><div class="pt">:8001</div></div>
+          <div class="link"><span class="pkt" style="animation-delay:.3s"></span></div>
+          <div class="node"><div class="nm">api</div><div class="pt">:8002</div><span class="canarydot"></span></div>
+          <div class="link"><span class="pkt" style="animation-delay:.6s"></span></div>
+          <div class="node"><div class="nm">auth</div><div class="pt">:8003</div></div>
+          <div class="link"><span class="pkt" style="animation-delay:.9s"></span></div>
+          <div class="node"><div class="nm">db</div><div class="pt">:8004</div><span class="canarydot"></span></div>
+        </div>
+        <div class="negspace">canaries seeded in the <b>negative space</b> — paths/adjacencies a legitimate flow never uses. baseline learned from real traffic.</div>
+      </section>
+    </div>
+
+    <!-- ---------- RIGHT: sting + precision + credibility ---------- -->
+    <div class="col right">
+
+      <!-- ATTACKER COST -->
+      <section class="panel r">
+        <div class="phead"><h2>Attacker cost</h2><span class="tag" style="color:var(--sting);border-color:rgba(255,70,90,0.4)">attrition</span><span class="line"></span></div>
+        <div class="cost-grid">
+          <div class="metric"><div class="mv" id="m-time">4:12</div><div class="mk">time imposed</div></div>
+          <div class="metric"><div class="mv" id="m-tok">38.4k</div><div class="mk">tokens burned</div></div>
+          <div class="metric"><div class="mv" id="m-req">1,204</div><div class="mk">reqs absorbed</div></div>
+          <div class="metric"><div class="mv">7</div><div class="mk">maze depth</div></div>
+        </div>
+        <div class="inversion">
+          <div class="inv-row att"><span class="who">ATTACKER</span><div class="track"><div class="fill"></div></div><span class="amt">climbing</span></div>
+          <div class="inv-row def"><span class="who">DEFENDER</span><div class="track"><div class="fill"></div></div><span class="amt">bounded</span></div>
+          <div class="cost-note">every generator is ceiling-bounded — the attrition burns the attacker, never the defender.</div>
+        </div>
+      </section>
+
+      <!-- KERNEL CONTAINMENT -->
+      <section class="panel r">
+        <div class="phead"><h2>Kernel containment</h2><span class="tag">eBPF · socket cookie</span><span class="line"></span></div>
+        <div class="sockets">
+          <div class="sock jail"><div class="state"><span class="d"></span>Jailed</div><div class="cookie">0x118</div><div class="src">10.20.1.111 · attacker</div></div>
+          <div class="sock ok"><div class="state"><span class="d"></span>OK</div><div class="cookie">0x0a4</div><div class="src">10.20.1.102 · legit</div></div>
+          <div class="sock ok"><div class="state"><span class="d"></span>OK</div><div class="cookie">0x0b1</div><div class="src">10.20.1.103 · legit</div></div>
+        </div>
+        <div class="precis-note">the offending socket's egress is dropped in-kernel by its cookie. <b>bystanders on the same host keep working</b> — we contain the flow, not the host.</div>
+      </section>
+
+      <!-- CREDIBILITY -->
+      <section class="panel r">
+        <div class="phead"><h2>Credibility — real learned state</h2><span class="line"></span></div>
+        <div class="cred">
+          <div class="cred-item">
+            <div class="cred-h"><span class="ic" style="background:var(--safe);box-shadow:0 0 8px var(--safe)"></span><span class="t">Guardrail</span><span class="badge green">no trigger</span></div>
+            <div class="cred-body">a flow wildly off-baseline that <span class="em">never touches a canary</span> → nothing happens. deviation is weight context, never a trigger.</div>
+          </div>
+          <div class="cred-item">
+            <div class="cred-h"><span class="ic" style="background:var(--canary);box-shadow:0 0 8px var(--canary)"></span><span class="t">Baseline multiplier</span><span class="badge amber">M = 2.50</span></div>
+            <div class="cred-body" style="margin-bottom:8px">the same single touch from this unfamiliar source escalates ~2.5× faster — the real accrued baseline sharpening a real signal.</div>
+            <div class="feats">
+              <div class="feat"><span class="fn">adjacency novelty</span><span class="fbar"><i style="width:100%"></i></span><span class="fv">1.00</span></div>
+              <div class="feat"><span class="fn">identity novelty</span><span class="fbar"><i style="width:100%"></i></span><span class="fv">1.00</span></div>
+              <div class="feat"><span class="fn">port novelty</span><span class="fbar"><i style="width:40%"></i></span><span class="fv">0.40</span></div>
+              <div class="feat"><span class="fn">volume deviation</span><span class="fbar"><i style="width:62%"></i></span><span class="fv">0.62</span></div>
+              <div class="feat"><span class="fn">cadence deviation</span><span class="fbar"><i style="width:31%"></i></span><span class="fv">0.31</span></div>
+            </div>
+          </div>
+          <div class="cred-item">
+            <div class="cred-h"><span class="ic" style="background:var(--canary);box-shadow:0 0 8px var(--canary)"></span><span class="t">Scope / calibration</span><span class="badge amber">calibrated</span></div>
+            <div class="cred-body" style="margin-bottom:9px">per-scope evidence, surfaced honestly — never aggregated across deployments.</div>
+            <div class="calib">
+              <div class="calmeter"><i></i></div>
+              <div class="calnum"><b>50</b><span class="dim"> / 50 labels</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ================= MOAT BAND ================= -->
+  <div class="moat">
+    <section class="panel">
+      <div class="phead"><h2>Recon early-warning</h2><span class="tag">D4 · feed only</span><span class="line"></span></div>
+      <div class="feed">
+        <div class="ev"><span class="ts">−6m02s</span><span class="what">quiet probe · <b>internal/buckets</b></span><span class="sev quiet">recon</span></div>
+        <div class="ev"><span class="ts">−5m41s</span><span class="what">quiet probe · <b>.git/config</b></span><span class="sev quiet">recon</span></div>
+        <div class="ev"><span class="ts">−4m08s</span><span class="what">new adjacency · <b>10.20.1.111→api</b></span><span class="sev warn">surfaced</span></div>
+        <div class="ev"><span class="ts">−2m55s</span><span class="what">touch cluster · 4 decoys / 90s</span><span class="sev warn">surfaced</span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="phead"><h2>Adversary fingerprint</h2><span class="tag">D2 · behavioral</span><span class="line"></span></div>
+      <div class="fp">
+        <div class="row"><span class="k">probe order</span><span class="v">creds → env → backups → buckets</span></div>
+        <div class="row"><span class="k">reaction</span><span class="v">persisted through tag + tarpit</span></div>
+        <div class="row"><span class="k">cadence</span><span class="v">~12s · scripted, low-jitter</span></div>
+        <div class="row"><span class="k">depth</span><span class="v">descended 7 maze levels</span></div>
+        <div class="fp-hash">fp:a3f1·9c08·b27d — anonymized, may cross the network boundary</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="phead"><h2>Attacker-cost KPI</h2><span class="tag">D3 · board-level</span><span class="line"></span></div>
+      <div class="kpi">
+        <div class="big">38.4k<span class="u">tok</span></div>
+        <div class="legend">
+          <div class="lrow"><span class="lk">time imposed</span><span class="lv">4m 12s</span></div>
+          <div class="lrow"><span class="lk">requests absorbed</span><span class="lv">1,204</span></div>
+          <div class="lrow"><span class="lk">fake bytes served</span><span class="lv">11.6 MiB</span></div>
+          <div class="lrow"><span class="lk">defender cost</span><span class="lv" style="color:var(--safe)">bounded · flat</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  // Live-feeling motion only — the shipped dashboard drives these from the
+  // dashboard-backend SSE stream. Here it just animates to convey the feel.
+  const pad = n => String(n).padStart(2, '0');
+  const clock = document.getElementById('clock');
+  setInterval(() => { const d = new Date(); clock.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} UTC`; }, 1000);
+
+  // sparkline
+  const spark = document.getElementById('spark');
+  for (let i = 0; i < 40; i++) { const b = document.createElement('i'); b.style.height = (12 + Math.abs(Math.sin(i/3))*60 + (i>30?i-30:0)*1.2) + '%'; spark.appendChild(b); }
+
+  // attacker-cost meters tick upward
+  let tok = 38420, req = 1204, sec = 252;
+  const fmtK = n => n >= 1000 ? (n/1000).toFixed(1) + 'k' : '' + n;
+  setInterval(() => {
+    tok += Math.floor(Math.random()*90); req += Math.floor(Math.random()*5); sec += 1;
+    document.getElementById('m-tok').textContent = fmtK(tok);
+    document.getElementById('m-req').textContent = req.toLocaleString();
+    document.getElementById('m-time').textContent = Math.floor(sec/60) + ':' + pad(sec%60);
+  }, 1400);
+</script>
+</body>
+</html>
