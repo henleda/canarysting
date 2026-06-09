@@ -15,6 +15,12 @@ import (
 // config/maze page while staying tiny relative to the budget.
 const defaultAttritionBodyCap = 64 << 10 // 64 KiB
 
+// defaultAttritionMaxHold hard-bounds one inline flow's hold. It MUST be < the
+// proxy's ext_proc message_timeout (Envoy's is 10s in deploy/m7-window/envoy.yaml)
+// so the deception body is delivered within the proxy's window and the defender
+// releases the goroutine promptly. Enforced as a context deadline on the pump.
+const defaultAttritionMaxHold = 8 * time.Second
+
 // sleepFunc waits d, returning early with ctx.Err() if ctx is cancelled first.
 // It is the injection seam that makes the pump's REAL hold testable: production
 // uses realSleep (an actual timer); tests pass a fake that records-but-does-not-

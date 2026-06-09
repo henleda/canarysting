@@ -100,6 +100,15 @@ type Config struct {
 	// attacker still pays full time/tokens while the defender's buffer stays small.
 	AttritionBodyCap int
 
+	// AttritionMaxHold hard-bounds how long ONE inline attrition flow is held
+	// before the deception body is returned. Zero normalizes to
+	// defaultAttritionMaxHold (8s). It MUST be < the proxy's ext_proc
+	// message_timeout so the body is delivered (not a gateway timeout) and the
+	// defender never holds a goroutine past the cap; it is enforced as a deadline
+	// on the pump's context, so it cuts an in-progress chunk-delay sleep that the
+	// per-flow Budget (checked only at chunk boundaries) would otherwise overrun.
+	AttritionMaxHold time.Duration
+
 	sleep func(time.Duration)
 	// attritionSleep is the injectable hold timer for the attrition pump. Default
 	// realSleep (a real, ctx-cancellable timer that imposes the actual tarpit
@@ -133,6 +142,9 @@ func (c Config) Normalized() Config {
 	}
 	if c.attritionSleep == nil {
 		c.attritionSleep = realSleep
+	}
+	if c.AttritionMaxHold <= 0 {
+		c.AttritionMaxHold = defaultAttritionMaxHold
 	}
 	if c.AttritionBodyCap <= 0 {
 		c.AttritionBodyCap = defaultAttritionBodyCap

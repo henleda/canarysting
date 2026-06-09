@@ -126,10 +126,16 @@ func main() {
 	// streamed transport; cap it to -attrition-max-hold for the inline path.
 	budget := attrition.DefaultBudget()
 	budget.MaxDuration = *maxHold
+	// SHORT inline drip: small per-chunk delays so the hold is paced finely within
+	// -attrition-max-hold and Outcome.TimeHeldSec (the sum of delays actually
+	// pulled) tracks REAL elapsed wall-time rather than over-counting one long
+	// DefaultDrip chunk (up to 45s) that the deadline cuts mid-sleep. The hold is
+	// hard-bounded by AttritionMaxHold on the adapter side regardless.
+	drip := attrition.DripParams{ChunkBytes: 64, MinDelay: 500 * time.Millisecond, MaxDelay: 1 * time.Second}
 	attr, err := attrition.New(attrition.Config{
 		Floor:  contract.StingFloor(*stingFloor),
 		Budget: budget,
-		Drip:   attrition.DefaultDrip(),
+		Drip:   drip,
 	})
 	if err != nil {
 		log.Fatalf("envoy-adapter: building attritor (floor=%d): %v", *stingFloor, err)
@@ -167,6 +173,7 @@ func main() {
 		Inline:           *inline,
 		Attritor:         attr,
 		AttritionBodyCap: *bodyCap,
+		AttritionMaxHold: *maxHold,
 		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
 			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
 				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)

@@ -97,7 +97,20 @@ func (a *Adapter) attritionOrDeny(ctx context.Context, ev contract.SignalEvent, 
 	s := a.cfg.Attritor.Open(v)
 	defer s.Close()
 
-	body, outcome := pumpStream(ctx, s, a.cfg.AttritionBodyCap, a.cfg.attritionSleep)
+	// Hard-bound the inline hold: the deception body is returned as ONE ext_proc
+	// ImmediateResponse, so the whole hold must finish inside the proxy's
+	// message_timeout, and the defender must not hold a goroutine past the cap.
+	// pumpStream sleeps each chunk's delay and only re-checks the budget at chunk
+	// boundaries, so a long chunk delay could otherwise blow past MaxDuration; this
+	// deadline cuts any in-progress sleep. holdCtx still derives from ctx, so a real
+	// downstream disconnect cancels it sooner than the cap.
+	holdCtx := ctx
+	if a.cfg.AttritionMaxHold > 0 {
+		var cancel context.CancelFunc
+		holdCtx, cancel = context.WithTimeout(ctx, a.cfg.AttritionMaxHold)
+		defer cancel()
+	}
+	body, outcome := pumpStream(holdCtx, s, a.cfg.AttritionBodyCap, a.cfg.attritionSleep)
 
 	// A noop stream (DoneNoOp/DoneKilled/DoneGlobalCeiling before any data) yields
 	// no body: fall back to the plain deny rather than return an empty deception.

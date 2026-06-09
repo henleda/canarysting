@@ -219,6 +219,37 @@ func TestAttritionOrDenyLiveStream(t *testing.T) {
 	}
 }
 
+// AttritionMaxHold hard-bounds the inline hold: even with a per-chunk hold that
+// would never return on its own, attritionOrDeny returns promptly (the deadline
+// cuts the in-progress sleep) and still delivers the first chunk's deception body.
+// This guards the fix for the inline pump over-holding past the cap (and past the
+// proxy's ext_proc message_timeout), which both over-reported TimeHeldSec and held
+// a defender goroutine after the attacker had gone.
+func TestAttritionOrDenyHoldBoundedByMaxHold(t *testing.T) {
+	a := adapterWithAttritor(t, liveAttritor(t), nil)
+	a.cfg.AttritionMaxHold = 60 * time.Millisecond
+	// A per-chunk hold that only ends when the (deadline-bounded) ctx fires — so
+	// the AttritionMaxHold cap is what ends the hold, not the stream.
+	a.cfg.attritionSleep = func(ctx context.Context, _ time.Duration) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	start := time.Now()
+	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("hold not bounded by AttritionMaxHold (60ms): took %v", elapsed)
+	}
+	ir := r.GetImmediateResponse()
+	if ir == nil || ir.GetStatus().GetCode() != typev3.StatusCode_TooManyRequests {
+		t.Fatalf("want 429 immediate within the bounded hold, got %+v", r)
+	}
+	// The first chunk's bytes are buffered before the capped sleep, so the deception
+	// body is still delivered — not the empty-body fallback.
+	if len(ir.GetBody()) == 0 {
+		t.Fatal("bounded hold delivered an empty body; want the partial deception payload")
+	}
+}
+
 // A nil attritor falls back to the plain deny (existing immediateDeny body).
 func TestAttritionOrDenyNilAttritorFallsBack(t *testing.T) {
 	a := adapterWithAttritor(t, nil, nil)
