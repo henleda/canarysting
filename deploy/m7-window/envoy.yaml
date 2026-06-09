@@ -39,9 +39,16 @@ static_resources:
               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
               grpc_service:
                 envoy_grpc: { cluster_name: canarysting_extproc }
-                timeout: 0.2s
+                # 10s (was 0.2s): the M6 attrition pump HOLDS an inline Tier 2/3
+                # attacker request for a real tarpit duration before returning the
+                # deception body. Envoy must wait that long for the ext_proc
+                # response. Legit T0/T1 traffic still returns in ~50ms (no hold), so
+                # normal latency is unaffected; this only extends how long Envoy
+                # tolerates a held (attacker) response. The prober's own ~4s request
+                # ctx ends the hold first, so Envoy never actually cuts it.
+                timeout: 10s
               failure_mode_allow: false
-              message_timeout: 0.2s
+              message_timeout: 10s
               processing_mode:
                 request_header_mode: SEND
                 response_header_mode: SKIP
