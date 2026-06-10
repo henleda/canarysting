@@ -21,26 +21,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install clang/llvm + libbpf headers + bpftool
+      - name: Install clang/llvm + libbpf headers + kernel tools (bpftool)
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev
-          # bpftool generates the CO-RE vmlinux.h below. The standalone package
-          # exists on recent Ubuntu; fall back to linux-tools for older runners.
-          sudo apt-get install -y bpftool \
-            || sudo apt-get install -y "linux-tools-$(uname -r)" \
+          # bpftool lives in the versioned linux-tools package for the running
+          # kernel. The bare `bpftool` name is only a virtual package, and the
+          # /usr/sbin/bpftool wrapper mis-resolves Azure kernel flavors — so we
+          # install the versioned package and call its real binary directly below.
+          sudo apt-get install -y "linux-tools-$(uname -r)" \
             || sudo apt-get install -y linux-tools-generic
-      - name: Tool versions
+      - name: Locate bpftool and show tool versions
         run: |
           clang --version
-          bpftool version
+          krel="$(uname -r)"
+          echo "kernel: $krel"
+          # Prefer the binary matching the running kernel; bypass the broken
+          # /usr/sbin/bpftool wrapper. Fall back to any versioned binary, then PATH.
+          bpftool="$(find /usr/lib -path '*linux-tools*/bpftool' -type f 2>/dev/null | grep -F "$krel" | head -n1)"
+          [ -n "$bpftool" ] || bpftool="$(find /usr/lib -path '*linux-tools*/bpftool' -type f 2>/dev/null | sort -V | tail -n1)"
+          [ -n "$bpftool" ] || bpftool="$(command -v bpftool || true)"
+          test -n "$bpftool" || { echo "bpftool not found; searched /usr/lib/*linux-tools*"; find /usr/lib -path '*linux-tools*' -name bpftool 2>/dev/null; exit 1; }
+          echo "BPFTOOL=$bpftool" >> "$GITHUB_ENV"
+          echo "using bpftool: $bpftool"
+          "$bpftool" version
       # enforce.bpf.c does `#include "vmlinux.h"` for CO-RE kernel types. That
       # header is gitignored (it is host/kernel-specific), so CI must generate it
       # from the runner's kernel BTF before the clang build, or `make bpf` fails
       # with: fatal error: 'vmlinux.h' file not found.
       - name: Generate vmlinux.h from kernel BTF
         run: |
-          bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/enforce/vmlinux.h
+          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/enforce/vmlinux.h
           echo "generated bpf/enforce/vmlinux.h ($(wc -l < bpf/enforce/vmlinux.h) lines)"
       # Compiles bpf/enforce/*.bpf.c to BPF objects. While the kernel C is a
       # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
