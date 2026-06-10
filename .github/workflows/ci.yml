@@ -53,15 +53,23 @@ jobs:
         run: |
           clang --version
           "$BPFTOOL" version
-      # enforce.bpf.c does `#include "vmlinux.h"` for CO-RE kernel types. That
-      # header is gitignored (host/kernel-specific), so CI generates it from the
-      # runner's kernel BTF before the clang build, or `make bpf` fails with:
-      # fatal error: 'vmlinux.h' file not found.
+      # Every bpf/<x>/<x>.bpf.c does `#include "vmlinux.h"` for CO-RE kernel
+      # types. That header is gitignored (host/kernel-specific), so CI generates
+      # it from the runner's kernel BTF before the clang build, or `make bpf`
+      # fails with: fatal error: 'vmlinux.h' file not found.
       - name: Generate vmlinux.h from kernel BTF
         run: |
           test -r /sys/kernel/btf/vmlinux || { echo "no kernel BTF at /sys/kernel/btf/vmlinux"; exit 1; }
-          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/enforce/vmlinux.h
-          echo "generated bpf/enforce/vmlinux.h ($(wc -l < bpf/enforce/vmlinux.h) lines)"
+          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > "$RUNNER_TEMP/vmlinux.h"
+          # A quoted include resolves relative to the including file's own
+          # directory, so place the header in every dir that has a .bpf.c source
+          # (enforce/observe/sockops, and any added later).
+          n=0
+          for d in $(find bpf -name '*.bpf.c' -exec dirname {} \; | sort -u); do
+            cp "$RUNNER_TEMP/vmlinux.h" "$d/vmlinux.h"
+            n=$((n + 1))
+          done
+          echo "placed vmlinux.h ($(wc -l < "$RUNNER_TEMP/vmlinux.h") lines) into $n bpf source dir(s)"
       # Compiles bpf/enforce/*.bpf.c to BPF objects. While the kernel C is a
       # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
       # is implemented (see docs/STING.md, docs/TECHNICAL_ARCHITECTURE.md).
