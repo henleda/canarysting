@@ -27,10 +27,13 @@ export default function KernelContainment({ containment }: { containment: Kernel
       ) : (
         <div className="precis-note faint">no contained sockets in window — kernel enforcement idle, observing.</div>
       )}
-      <div className="precis-note">
-        the offending socket&apos;s egress is dropped in-kernel by its cookie.{' '}
-        <b>bystanders on the same host keep working</b> — we contain the flow, not the host.
-      </div>
+      <Link href="/precision" className="precis-note-link">
+        <div className="precis-note">
+          the offending socket&apos;s egress is dropped in-kernel by its cookie.{' '}
+          <b>bystanders on the same host keep working</b> — we contain the flow, not the host.{' '}
+          <span className="precis-cta">containment precision →</span>
+        </div>
+      </Link>
     </section>
   );
 }

@@ -34,6 +34,8 @@ export default function OperationsPage() {
         </Link>
       </div>
       <div className="band">
+        {/* KernelContainment links to /precision from its bystander note (it has
+            inner cookie links, so the whole panel can't be one anchor). */}
         <KernelContainment containment={snapshot?.kernel_containment} />
         <Credibility credibility={snapshot?.credibility} />
         <AdversaryIntelligence intel={snapshot?.adversary_intel} />
