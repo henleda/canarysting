@@ -111,11 +111,18 @@ restore_prober() {
 }
 trap restore_prober EXIT
 
-# --- 3. build if stale ---
-echo "=== build llm-attacker ==="
-go build -o /tmp/llm-attacker ./cmd/llm-attacker
-sudo mkdir -p "$BIN"
-sudo install -m0755 /tmp/llm-attacker "$BIN/llm-attacker"
+# --- 3. build (or use a pre-installed binary) ---
+# M9 needs Go >=1.24. If the box Go is older, cross-compile elsewhere and ship the
+# binary to $BIN/llm-attacker, then run with SKIP_BUILD=1.
+if [ "${SKIP_BUILD:-0}" = "1" ]; then
+  [ -x "$BIN/llm-attacker" ] || { echo "SKIP_BUILD=1 but $BIN/llm-attacker is missing" >&2; exit 1; }
+  echo "=== using pre-installed $BIN/llm-attacker (SKIP_BUILD=1) ==="
+else
+  echo "=== build llm-attacker ==="
+  go build -o /tmp/llm-attacker ./cmd/llm-attacker
+  sudo mkdir -p "$BIN"
+  sudo install -m0755 /tmp/llm-attacker "$BIN/llm-attacker"
+fi
 
 # --- 4. assemble args ---
 ARGS=(-target "$TARGET" -src-ip "$SRC_IP" -tap-addr "$TAP_ADDR" -cost-out "$COST_OUT")
