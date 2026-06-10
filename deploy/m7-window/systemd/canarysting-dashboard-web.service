@@ -1,0 +1,21 @@
+[Unit]
+Description=CanarySting M8 dashboard web (Next.js console; proxies /api -> dashboard-backend)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target canarysting-dashboard-backend.service
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/canarysting/dashboard/app
+Environment=NODE_ENV=production
+Environment=DASHBOARD_BACKEND_URL=http://127.0.0.1:8089
+# Loopback-only: the console renders attacker intelligence and has NO auth. View
+# via an on-demand SSH tunnel (ssh -L 3001:127.0.0.1:3001 ...); never bind a public
+# interface without auth + a locked SG. Requires Node (nodesource 20.x) on the box
+# and a built app: cd dashboard/app && npm install && npm run build.
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3001
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

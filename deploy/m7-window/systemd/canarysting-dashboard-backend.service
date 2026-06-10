@@ -1,0 +1,23 @@
+[Unit]
+Description=CanarySting M8 dashboard backend (read-only tap consumer -> JSON/SSE API)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target canarysting-staged-range.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/canarysting/m7.env
+# Read-only: polls the engine tap (DASHBOARD_TAP_ADDR) and serves the loopback
+# dashboard API. No eBPF, no root needed. The API exposes attacker intelligence
+# and has NO auth, so it binds loopback only; the Next.js web unit (same box)
+# proxies /api to it. DynamicUser + loopback = minimal footprint on the window box.
+ExecStart=/opt/canarysting/bin/dashboard-backend -tap-addr http://${DASHBOARD_TAP_ADDR} -listen-addr 127.0.0.1:8089 -env ${SCOPE}
+Restart=always
+RestartSec=3
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
