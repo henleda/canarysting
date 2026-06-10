@@ -51,20 +51,29 @@ type BroadPlanner struct {
 	Locations map[contract.CanaryType][]Location
 }
 
-// Plan returns want[type] proposals per type. With pinned Locations it draws from
-// them (cycling if fewer than requested); otherwise it synthesizes deterministic
-// locations keyed by scope and type.
+// Plan returns proposals per type. For a type with PINNED Locations, it places
+// ALL of them — pinning a location is an explicit "put a canary here" instruction
+// (e.g. the M4/M9 demo set, including directory canaries), so the mix count must
+// not silently drop the extras. For an unpinned type it synthesizes want[type]
+// deterministic locations keyed by scope and type.
 func (b BroadPlanner) Plan(scope contract.ScopeKey, _ Mode, want map[contract.CanaryType]int) []Proposal {
 	var props []Proposal
+
+	// Pinned types: place every pinned location, even if the mix doesn't request
+	// this type (the operator pinned it deliberately).
+	for typ, pinned := range b.Locations {
+		for _, loc := range pinned {
+			props = append(props, Proposal{Location: loc, Type: typ, Origin: OriginOperatorBroad})
+		}
+	}
+
+	// Unpinned types: synthesize want[type] locations.
 	for typ, n := range want {
-		pinned := b.Locations[typ]
+		if len(b.Locations[typ]) > 0 {
+			continue // already placed all pinned locations above
+		}
 		for i := 0; i < n; i++ {
-			var loc Location
-			if len(pinned) > 0 {
-				loc = pinned[i%len(pinned)]
-			} else {
-				loc = Location(fmt.Sprintf("cs://%s/%s/%d", scope, typ, i))
-			}
+			loc := Location(fmt.Sprintf("cs://%s/%s/%d", scope, typ, i))
 			props = append(props, Proposal{Location: loc, Type: typ, Origin: OriginOperatorBroad})
 		}
 	}
