@@ -61,6 +61,24 @@ export interface AttackerCostView {
   defender_cost_flat: boolean; // structural invariant: always true
 }
 
+// RealAttackCostView is the M9 live cost meter: the attacker's GROUND-TRUTH
+// Anthropic token/$ burn (posted by the llm-attacker, polled from the tap's
+// attack-ledger). Deliberately SEPARATE from AttackerCostView.tokens_burned
+// (the defender's proxy estimate) — shown side by side, never merged.
+export interface RealAttackCostView {
+  present: boolean; // false until an attack run posts a ledger
+  active: boolean; // a run is currently posting (not stale)
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  total_tokens: number;
+  usd: number;
+  hard_cap_usd: number;
+  cap_fraction: number; // usd/hard_cap, 0..1, for the meter bar
+}
+
 // ContainedFlow is one row in the kernel-containment panel.
 export interface ContainedFlow {
   flow_id_hex: string;
@@ -155,4 +173,7 @@ export interface Overview {
   kernel_containment: KernelContainmentView;
   credibility: CredibilityView;
   adversary_intel: AdversaryIntelView;
+
+  // M9 live cost meter (the attacker's real, ground-truth Anthropic burn).
+  real_attack_cost: RealAttackCostView;
 }

@@ -160,4 +160,19 @@ export const fixtureOverview: Overview = {
       hash: 'fp:a3f1·9c08·b27d',
     },
   },
+
+  // M9 live cost meter (fixture: a run mid-burn at ~$2.31 of a $5 cap).
+  real_attack_cost: {
+    present: true,
+    active: true,
+    model: 'claude-opus-4-8',
+    input_tokens: 312_400,
+    output_tokens: 41_220,
+    cache_read_tokens: 188_000,
+    cache_creation_tokens: 540,
+    total_tokens: 542_160,
+    usd: 2.31,
+    hard_cap_usd: 5.0,
+    cap_fraction: 0.462,
+  },
 };

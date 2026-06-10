@@ -109,6 +109,10 @@ func (b *Backend) poll(now time.Time) error {
 
 	ov := views.Derive(state, events, now)
 	ov.Env = b.cfg.Env
+	// The M9 live cost meter comes from a SEPARATE tap endpoint (not state/events),
+	// so it's merged in after Derive. Best-effort: a missing/failed ledger just
+	// leaves Present=false (honest "attack not running").
+	ov.RealAttackCost = b.fetchLedger()
 
 	b.mu.Lock()
 	b.last = &ov
@@ -157,6 +161,58 @@ func (b *Backend) fetchEvents() ([]intelligence.AdversaryInteractionEvent, error
 		return nil, fmt.Errorf("decode events: %w", err)
 	}
 	return events, nil
+}
+
+// fetchLedger polls the tap's attack-ledger for the M9 live cost meter. It is
+// best-effort and never fails the poll: any error (endpoint absent on an older
+// tap, transport failure, "not present" body) yields a zero view with
+// Present=false. The decode struct is local — the backend reaches the tap only
+// over HTTP and does not import the tap package.
+func (b *Backend) fetchLedger() views.RealAttackCostView {
+	body, err := b.get(b.cfg.TapBaseURL + "/raw/attack-ledger")
+	if err != nil {
+		return views.RealAttackCostView{}
+	}
+	var led struct {
+		Present             *bool   `json:"present"` // set to false by the tap when no run yet
+		InputTokens         int64   `json:"input_tokens"`
+		OutputTokens        int64   `json:"output_tokens"`
+		CacheReadTokens     int64   `json:"cache_read_tokens"`
+		CacheCreationTokens int64   `json:"cache_creation_tokens"`
+		USD                 float64 `json:"usd"`
+		HardCapUSD          float64 `json:"hard_cap_usd"`
+		Model               string  `json:"model"`
+		Active              bool    `json:"active"`
+	}
+	if err := json.Unmarshal(body, &led); err != nil {
+		return views.RealAttackCostView{}
+	}
+	if led.Present != nil && !*led.Present {
+		return views.RealAttackCostView{} // tap explicitly reports no run yet
+	}
+	capFrac := 0.0
+	if led.HardCapUSD > 0 {
+		capFrac = led.USD / led.HardCapUSD
+		if capFrac > 1 {
+			capFrac = 1
+		}
+		if capFrac < 0 {
+			capFrac = 0
+		}
+	}
+	return views.RealAttackCostView{
+		Present:             true,
+		Active:              led.Active,
+		Model:               led.Model,
+		InputTokens:         led.InputTokens,
+		OutputTokens:        led.OutputTokens,
+		CacheReadTokens:     led.CacheReadTokens,
+		CacheCreationTokens: led.CacheCreationTokens,
+		TotalTokens:         led.InputTokens + led.OutputTokens + led.CacheReadTokens + led.CacheCreationTokens,
+		USD:                 led.USD,
+		HardCapUSD:          led.HardCapUSD,
+		CapFraction:         capFrac,
+	}
 }
 
 func (b *Backend) get(rawURL string) ([]byte, error) {

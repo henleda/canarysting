@@ -112,10 +112,17 @@ endif
 run-engine:
 	$(GO) run ./cmd/engine
 
-## demo: stand up the staged demo (placeholder until M7/M9 land)
+## attack-scripted: run the M9 zero-API scripted attacker against a local target.
+## Override TARGET=... ; defaults to the staged-range demo target. Costs $0.
+.PHONY: attack-scripted
+attack-scripted: bin
+	$(GOBIN)/llm-attacker -scripted -src-ip "" -target $(or $(TARGET),http://127.0.0.1:8080)
+
+## demo: drive the M9 adversary against the live M7 window (run on the client box).
+## Pass flags through ARGS, e.g.  make demo ARGS="--scripted"  or  make demo ARGS="--budget 0.50 --max-turns 5"
 .PHONY: demo
 demo:
-	@echo "demo: not yet implemented — see docs/ROADMAP.md (M7 environment, M9 scenario)."
+	@deploy/m7-window/run-attack.sh $(ARGS)
 
 ## clean: remove build artifacts
 .PHONY: clean

@@ -11,6 +11,9 @@ Wants=network-online.target
 # reboot (the >=2-week window).
 EnvironmentFile=/etc/canarysting/m7.env
 StateDirectory=canarysting
+# $AGGRESSIVE_FLAG (no braces) word-splits: when unset/empty in m7.env it expands
+# to NO argument, preserving the live window's posture exactly. The M9 demo toggle
+# set-demo-posture.sh sets it to "-aggressive" (single-touch escalation) and back.
 ExecStart=/opt/canarysting/bin/staged-range \
   -scope-boundary ${SCOPE} \
   -grpc-addr 127.0.0.1:50052 \
@@ -20,6 +23,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   -contain-inline \
   -ground-truth-registry ${GROUND_TRUTH} \
   -dashboard-tap-addr ${DASHBOARD_TAP_ADDR} \
+  $AGGRESSIVE_FLAG \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3

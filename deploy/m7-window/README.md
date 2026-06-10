@@ -86,6 +86,53 @@ reachable within ~2 weeks. The production default is the 168-bucket
 `Weekday×Hour`; graduate to it (drop `-window-bucketer`) as more weeks of real
 data accrue — expect a sufficiency dip at graduation as the finer buckets refill.
 
+## M9 — the LLM / scripted attacker
+
+Two adversaries drive the live window from the declared-attacker IP (`10.20.1.111`),
+plus one-command orchestration. Both keep a **single keepalive TCP connection** =
+one socket cookie = one flow that escalates T0→T3 (the always-on prober deliberately
+uses distinct flows; the M9 attacker inverts that).
+
+- **LLM attacker** (`cmd/llm-attacker`) — a Claude **Opus 4.8** agentic loop with one
+  `http_request` tool. The deception bodies it pulls back (fake_tree maze, token_bait)
+  accumulate in its context and burn **real tokens**, capped by a hard dollar ceiling
+  (`-hard-cap-usd`, default $5; two-layer enforcement + SIGINT/SIGTERM kill switch).
+- **Scripted attacker** (`--scripted`) — deterministic, **zero-API** ($0). Same keepalive
+  transport, fixed canary-touch sequence + maze follow. CI / rehearsal / reference trace.
+
+**Run it (on the client box):**
+```
+deploy/m7-window/run-attack.sh --scripted                 # zero-API reference trace ($0)
+deploy/m7-window/run-attack.sh --budget 0.50 --max-turns 5  # smallest live smoke
+deploy/m7-window/run-attack.sh                            # full live run ($5 cap)
+```
+`run-attack.sh` health-checks the server, stops the prober for a clean single-cookie
+trace (D6a, restarts on exit), builds, resolves the key, runs, and prints the
+real-vs-proxy cost ledger.
+
+**API key (D4):** create `/etc/canarysting/anthropic.key` (mode 0600), either a bare
+key or an `ANTHROPIC_API_KEY=sk-ant-...` line. Never a CLI arg, never committed.
+
+**Both demo postures (D6):** the realistic 3–5-touch escalation is the engine default;
+single-touch escalation is `cmd/staged-range -aggressive`. Toggle it **on the server**:
+```
+server$ sudo deploy/m7-window/set-demo-posture.sh aggressive   # single-touch (fast)
+server$ sudo deploy/m7-window/set-demo-posture.sh default       # revert
+```
+`run-attack.sh --aggressive` flips it for you when `SERVER_SSH=user@server` is exported,
+else it prints the command. The attacker binary is identical in both postures.
+
+**Live cost meter (D5):** the attacker PUTs its running real-token ledger to the tap's
+`/raw/attack-ledger`; the dashboard-backend polls it and the CISO screen's Attacker-cost
+panel shows the real `$` burn climbing toward the cap, **beside** the defender-side proxy
+estimate (the two numbers are never merged). The meter needs the engine tap reachable
+from the client box (`-dashboard-tap-addr` on the private IP, SG-restricted); if it's
+loopback-only the meter no-ops and the run-end `-cost-out` JSON is the source of truth.
+
+**Optional continuous unit** (`canarysting-llm-attacker.service`) is installed but **not
+enabled** by `client-setup.sh` — for accruing continuous real adversary history at a lower
+per-run cap ($0.50). Enable by hand only after the key file exists.
+
 ## Cost / lifecycle
 
 The client box is a `t4g.small` (~$12/mo); the server box runs 24/7 for the

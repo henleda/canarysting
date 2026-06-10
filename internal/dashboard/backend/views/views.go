@@ -91,6 +91,31 @@ type Overview struct {
 	KernelContainment KernelContainmentView `json:"kernel_containment"`
 	Credibility       CredibilityView       `json:"credibility"`
 	AdversaryIntel    AdversaryIntelView    `json:"adversary_intel"`
+
+	// RealAttackCost is the M9 live meter: the attacker's GROUND-TRUTH token/$
+	// burn, posted by the llm-attacker and polled from the tap's attack-ledger.
+	// It is deliberately SEPARATE from AttackerCost.TokensBurned (the defender's
+	// proxy estimate) — the two are shown side by side, never merged. Present is
+	// false until an attack run posts a ledger.
+	RealAttackCost RealAttackCostView `json:"real_attack_cost"`
+}
+
+// RealAttackCostView is the M9 real-cost meter. It mirrors the tap's
+// attack-ledger and adds the cap fraction for the on-screen progress bar. All
+// numbers are the attacker's own observed Anthropic usage — not a defender
+// estimate.
+type RealAttackCostView struct {
+	Present             bool    `json:"present"` // false until an attack posts a ledger
+	Active              bool    `json:"active"`  // a run is currently posting (not stale)
+	Model               string  `json:"model"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	USD                 float64 `json:"usd"`
+	HardCapUSD          float64 `json:"hard_cap_usd"`
+	CapFraction         float64 `json:"cap_fraction"` // usd/hard_cap, clamped 0..1, for the meter bar
 }
 
 // CalibView is the topbar calibration pill.

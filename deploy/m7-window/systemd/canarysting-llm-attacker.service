@@ -1,0 +1,39 @@
+[Unit]
+Description=CanarySting M9 LLM attacker (client box) — continuous real-adversary history
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target canarysting-secondary-ips.service
+Wants=network-online.target
+Requires=canarysting-secondary-ips.service
+
+[Service]
+# OPTIONAL continuous-run unit for accruing real adversary-interaction history
+# during the window (NOT the demo path — for the demo use run-attack.sh by hand).
+# NOT enabled by default: client-setup.sh installs but does not enable it, and it
+# only makes sense once /etc/canarysting/anthropic.key exists.
+#
+# SPEND SAFETY:
+#   - a LOWER per-run cap than the demo ($0.50 here, not $5)
+#   - Restart=on-failure (NOT always): a budget-exhausted clean exit (code 0) must
+#     NOT auto-restart and silently keep spending.
+#   - StartLimit bounds restarts so a crash-loop can't drain the budget.
+EnvironmentFile=/etc/canarysting/m7.env
+EnvironmentFile=/etc/canarysting/anthropic.key
+# -tap-addr is the SERVER's tap (this attacker runs on the client box, so loopback
+# is wrong). client-setup.sh writes TAP_ADDR into m7.env; empty => live meter off
+# (the run-end -cost-out JSON is still written either way).
+ExecStart=/opt/canarysting/bin/llm-attacker \
+  -target ${ENVOY_TARGET} \
+  -src-ip ${ATTACKER_IP} \
+  -tap-addr ${TAP_ADDR} \
+  -model claude-opus-4-8 \
+  -effort high \
+  -hard-cap-usd 0.50 \
+  -max-turns 12 \
+  -cost-out /var/lib/canarysting/m9-last-run.json
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

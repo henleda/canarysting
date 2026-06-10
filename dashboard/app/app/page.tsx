@@ -26,7 +26,7 @@ export default function OperationsPage() {
       <TopBar snapshot={snapshot} status={effectiveStatus} />
       <div className="hero">
         <LiveEscalation escalation={snapshot?.escalation} />
-        <AttackerCost cost={snapshot?.attacker_cost} />
+        <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
       </div>
       <div className="band">
         <KernelContainment containment={snapshot?.kernel_containment} />

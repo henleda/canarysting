@@ -1,12 +1,17 @@
-// Package tap is the engine's MINIMAL, read-only data tap for the M8 dashboard.
-// It runs inside the engine process (which owns the live calibration/baseline
-// state and the durable EventStore — and holds the bbolt write lock, so a second
-// process can't open it read-only). It exposes only RAW state + the scope's
-// interaction events as JSON; all dashboard presentation/aggregation lives in the
-// SEPARATE dashboard-backend, which consumes this tap. It never writes anything
-// and never crosses a scope boundary (rule 5); the events it serves are already
-// anonymized (rule 9 — only derived features, tier, canary type, and the socket
-// cookie, no raw addresses/payloads).
+// Package tap is the engine's MINIMAL data tap for the M8/M9 dashboard. It runs
+// inside the engine process (which owns the live calibration/baseline state and
+// the durable EventStore — and holds the bbolt write lock, so a second process
+// can't open it read-only). It exposes RAW state + the scope's interaction
+// events as JSON; all dashboard presentation/aggregation lives in the SEPARATE
+// dashboard-backend, which consumes this tap.
+//
+// It never touches the engine's durable stores and never crosses a scope
+// boundary (rule 5); the events it serves are already anonymized (rule 9 — only
+// derived features, tier, canary type, and the socket cookie, no raw
+// addresses/payloads). The ONE exception to read-only is the M9 live cost meter
+// (D5): PUT /raw/attack-ledger accepts the attacker's OWN in-memory token ledger
+// (see ledger.go) — no scope state, never persisted, never folded into the
+// EventStore, kept strictly separate from the defender-derived proxy estimate.
 package tap
 
 import (
@@ -32,6 +37,10 @@ type Source struct {
 	Events     *boltevents.Store
 	Aggregator *observebaseline.Aggregator
 	Now        func() time.Time // injectable clock (nil => time.Now)
+
+	// ledger holds the M9 attacker's live real-cost meter — the one (small,
+	// in-memory) write surface on the tap (D5). Lazily initialized in Handler.
+	ledger *ledgerStore
 }
 
 func (s *Source) now() time.Time {
@@ -58,11 +67,17 @@ type State struct {
 //	                                 seconds (default 3600); the backend rolls
 //	                                 these into tier/cost/recon views
 //	GET /healthz                   — liveness
+//	PUT /raw/attack-ledger         — M9 attacker posts its live real-cost meter
+//	GET /raw/attack-ledger         — read the live meter (backend polls this)
 func (s *Source) Handler() http.Handler {
+	if s.ledger == nil {
+		s.ledger = &ledgerStore{}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("/raw/state", s.handleState)
 	mux.HandleFunc("/raw/events", s.handleEvents)
+	mux.HandleFunc("/raw/attack-ledger", s.handleAttackLedger)
 	return mux
 }
 

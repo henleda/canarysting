@@ -8,6 +8,11 @@
 /envoy-adapter
 /envoy-selfcheck
 /sting-selfcheck
+/llm-attacker
+/staged-range
+/dashboard-backend
+# M9: API keys must never be committed (D4)
+*.key
 # eBPF build artifacts
 *.bpf.o
 # editor / OS

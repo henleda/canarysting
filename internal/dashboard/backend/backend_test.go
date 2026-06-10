@@ -360,3 +360,62 @@ func TestBackendSSE(t *testing.T) {
 	}
 	cancel()
 }
+
+// TestBackendMergesAttackLedger verifies the M9 live cost meter: a tap that
+// serves /raw/attack-ledger results in a populated, SEPARATE RealAttackCost
+// view (never merged into the proxy AttackerCost).
+func TestBackendMergesAttackLedger(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/raw/state", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(views.TapState{Scope: "s", At: time.Now()})
+	})
+	mux.HandleFunc("/raw/events", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]intelligence.AdversaryInteractionEvent{})
+	})
+	mux.HandleFunc("/raw/attack-ledger", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"input_tokens": 45230, "output_tokens": 8110, "cache_read_tokens": 31000,
+			"usd": 2.50, "hard_cap_usd": 5.0, "model": "claude-opus-4-8", "active": true,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b := New(Config{TapBaseURL: srv.URL})
+	if err := b.poll(time.Now()); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	ov, ok := b.snapshot()
+	if !ok {
+		t.Fatal("no snapshot after poll")
+	}
+	rc := ov.RealAttackCost
+	if !rc.Present || !rc.Active {
+		t.Fatalf("want present+active ledger, got %+v", rc)
+	}
+	if rc.TotalTokens != 45230+8110+31000 {
+		t.Fatalf("total tokens wrong: %d", rc.TotalTokens)
+	}
+	if rc.USD != 2.50 || rc.CapFraction != 0.5 {
+		t.Fatalf("usd/cap wrong: usd=%.2f cap=%.2f", rc.USD, rc.CapFraction)
+	}
+	// must NOT have polluted the proxy estimate
+	if ov.AttackerCost.TokensBurned != 0 {
+		t.Fatalf("real meter must stay separate from proxy TokensBurned, got %.0f", ov.AttackerCost.TokensBurned)
+	}
+}
+
+// TestBackendLedgerAbsentIsHonest verifies a tap with no ledger endpoint (or no
+// run yet) yields Present=false rather than a transport error failing the poll.
+func TestBackendLedgerAbsentIsHonest(t *testing.T) {
+	srv := fakeTap(t, "s", nil, false) // fakeTap serves no /raw/attack-ledger
+	defer srv.Close()
+	b := New(Config{TapBaseURL: srv.URL})
+	if err := b.poll(time.Now()); err != nil {
+		t.Fatalf("poll should not fail when ledger absent: %v", err)
+	}
+	ov, _ := b.snapshot()
+	if ov.RealAttackCost.Present {
+		t.Fatalf("want Present=false when no ledger endpoint, got %+v", ov.RealAttackCost)
+	}
+}
