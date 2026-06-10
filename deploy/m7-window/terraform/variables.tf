@@ -56,3 +56,9 @@ variable "envoy_port" {
   type        = number
   default     = 8080
 }
+
+variable "tap_port" {
+  description = "Server-box dashboard data-tap port the M9 client attacker reaches for the live cost meter."
+  type        = number
+  default     = 8088
+}

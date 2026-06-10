@@ -37,6 +37,19 @@ resource "aws_security_group_rule" "server_envoy_from_client" {
   description              = "M7 client generator and prober to server Envoy (private only)"
 }
 
+# Open the server's dashboard data tap to the client SG only (private) so the M9
+# attacker can POST its live real-cost ledger to the tap (D5 live meter). Without
+# this the meter no-ops and the run-end -cost-out JSON is the source of truth.
+resource "aws_security_group_rule" "server_tap_from_client" {
+  type                     = "ingress"
+  from_port                = var.tap_port
+  to_port                  = var.tap_port
+  protocol                 = "tcp"
+  security_group_id        = data.aws_security_group.dev.id
+  source_security_group_id = aws_security_group.client.id
+  description              = "M9 client attacker live-cost-meter POST to server dashboard tap (private only)"
+}
+
 resource "aws_instance" "client" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
