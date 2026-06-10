@@ -21,12 +21,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install clang/llvm + libbpf headers
+      - name: Install clang/llvm + libbpf headers + bpftool
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev
-      - name: clang version
-        run: clang --version
+          # bpftool generates the CO-RE vmlinux.h below. The standalone package
+          # exists on recent Ubuntu; fall back to linux-tools for older runners.
+          sudo apt-get install -y bpftool \
+            || sudo apt-get install -y "linux-tools-$(uname -r)" \
+            || sudo apt-get install -y linux-tools-generic
+      - name: Tool versions
+        run: |
+          clang --version
+          bpftool version
+      # enforce.bpf.c does `#include "vmlinux.h"` for CO-RE kernel types. That
+      # header is gitignored (it is host/kernel-specific), so CI must generate it
+      # from the runner's kernel BTF before the clang build, or `make bpf` fails
+      # with: fatal error: 'vmlinux.h' file not found.
+      - name: Generate vmlinux.h from kernel BTF
+        run: |
+          bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/enforce/vmlinux.h
+          echo "generated bpf/enforce/vmlinux.h ($(wc -l < bpf/enforce/vmlinux.h) lines)"
       # Compiles bpf/enforce/*.bpf.c to BPF objects. While the kernel C is a
       # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
       # is implemented (see docs/STING.md, docs/TECHNICAL_ARCHITECTURE.md).
