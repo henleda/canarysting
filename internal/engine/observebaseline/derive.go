@@ -98,6 +98,10 @@ func FeaturesMap(f baseline.Features) map[string]float64 {
 		"port_novelty":      f.PortNovelty,
 		"volume_deviation":  f.VolumeDeviation,
 		"cadence_deviation": f.CadenceDeviation,
+		// D5 sharpening signal (0 in Phase 1). Persisted so an event's stored
+		// Features round-trip the value and the dashboard's M reconstruction
+		// matches the engine once Phase 2 sets the match non-zero.
+		"fingerprint_match": f.FingerprintMatch,
 	}
 }
 

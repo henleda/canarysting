@@ -31,6 +31,12 @@ const (
 	DefaultMMax = 3.0 // multiplier cap (asymptotic); keep conservative
 	DefaultK    = 0.5 // saturation knee: the d at which g = 0.5
 	DefaultCMax = 1.0 // per-feature contribution cap
+	// DefaultSharpeningAlpha is the D5 detection-sharpening coefficient α: how
+	// much a maximal confirmed-malicious fingerprint match adds to M, as a
+	// bounded ADDITIVE term (docs/D2_D5_DESIGN.md §1.2). α ∈ [0, MMax−1]; 0
+	// disables D5. At α=0.5 a pure match on an otherwise-normal flow lifts M to
+	// 1.5; combined with novelty it saturates toward MMax (final clamp).
+	DefaultSharpeningAlpha = 0.5
 )
 
 // Features is a flow's deviation feature vector against the scope baseline for
@@ -44,8 +50,22 @@ type Features struct {
 	PortNovelty      float64 // port/protocol abnormal for this adjacency
 	VolumeDeviation  float64 // byte/packet envelope distance from baseline
 	CadenceDeviation float64 // timing/frequency distance from baseline
+
+	// FingerprintMatch is the D5 detection-sharpening signal: [0,1] strength of a
+	// match between the flow's emerging behavior and a CONFIRMED-MALICIOUS profile
+	// in this scope (docs/D2_D5_DESIGN.md §1.2). It is DELIBERATELY NOT a
+	// contributions() / novelty-norm dimension — confirmed-malice is orthogonal to
+	// baseline-deviation and is applied as a separate bounded ADDITIVE term in
+	// MFromFeatures, so it is neither diluted by nor double-counted against the
+	// five novelty features. Weight context only: it shapes M, never triggers
+	// anything (rule 8); a base that is zero without a canary touch stays zero.
+	FingerprintMatch float64
 }
 
+// contributions returns the FIVE baseline-novelty/deviation features that form
+// the bounded Euclidean norm d. FingerprintMatch is intentionally excluded (it is
+// an additive sharpening term, not a norm dimension — see the field comment), so
+// d — and therefore M for any flow without a fingerprint match — is unchanged.
 func (f Features) contributions() [5]float64 {
 	return [5]float64{
 		f.AdjacencyNovelty,
@@ -62,10 +82,22 @@ type Params struct {
 	MMax float64 // multiplier cap, >= 1
 	K    float64 // saturation knee, > 0
 	CMax float64 // per-feature cap, > 0
+	// SharpeningAlpha is the D5 additive sharpening coefficient α (the amount a
+	// maximal confirmed-malicious fingerprint match adds to M). Clamped to
+	// [0, MMax−1] by Normalized; 0 disables D5. Zero value = off (operator-elective),
+	// so it is NOT default-filled — DefaultParams sets the documented default.
+	SharpeningAlpha float64
 }
 
-// DefaultParams returns the documented defaults.
-func DefaultParams() Params { return Params{MMax: DefaultMMax, K: DefaultK, CMax: DefaultCMax} }
+// DefaultParams returns the documented defaults. SharpeningAlpha is 0 here in
+// PHASE 1 — D5 is off everywhere (the engine AND the dashboard's M
+// reconstruction, which both reach for DefaultParams) until Phase 2 wires the
+// matcher and flips this to DefaultSharpeningAlpha (and sets α in boot's baseline
+// Params). Keeping α=0 here makes Phase-1 neutrality unconditional, not merely a
+// consequence of match=0.
+func DefaultParams() Params {
+	return Params{MMax: DefaultMMax, K: DefaultK, CMax: DefaultCMax, SharpeningAlpha: 0}
+}
 
 // Normalized fills zero/invalid fields with defaults. MMax is floored at 1 (the
 // multiplier floor-of-one invariant: M can never suppress a base score).
@@ -78,6 +110,15 @@ func (p Params) Normalized() Params {
 	}
 	if p.CMax <= 0 {
 		p.CMax = DefaultCMax
+	}
+	// α is operator-elective (0 = D5 off, a valid choice, so not default-filled),
+	// but it must stay in [0, MMax−1] so the additive term cannot push M past MMax
+	// before the final clamp.
+	if p.SharpeningAlpha < 0 {
+		p.SharpeningAlpha = 0
+	}
+	if max := p.MMax - 1; p.SharpeningAlpha > max {
+		p.SharpeningAlpha = max
 	}
 	return p
 }
@@ -120,10 +161,36 @@ func MFromD(d float64, p Params) float64 {
 	return 1 + (p.MMax-1)*G(d, p.K)
 }
 
-// MFromFeatures composes the full pipeline: features → capped contributions →
-// bounded d → saturating M. The returned M is always in [1, M_max].
+// MFromFeatures composes the full pipeline: the five novelty features → capped
+// contributions → bounded d → saturating baseline term, PLUS the D5 additive
+// sharpening term for a confirmed-malicious fingerprint match:
+//
+//	M = clamp( 1 + (M_max−1)·g(d)  +  α·match , 1, M_max )
+//
+// The sharpening term is ADDITIVE and separate from the novelty norm (so a
+// confirmed match is neither diluted by low novelty nor double-counted against
+// adjacency/identity; docs/D2_D5_DESIGN.md §1.2). It is still inside M, so the
+// guardrail holds in arithmetic: a base that is zero without a canary touch stays
+// zero (Score = 0 × M = 0; rule 8). The returned M is always in [1, M_max].
+// FingerprintMatch=0 (the default, and all of Phase 1) makes this byte-identical
+// to the pre-D5 MFromD(Deviation(f)).
 func MFromFeatures(f Features, p Params) float64 {
-	return MFromD(Deviation(f, p), p)
+	p = p.Normalized()
+	m := MFromD(Deviation(f, p), p)
+	if p.SharpeningAlpha > 0 {
+		match := f.FingerprintMatch
+		if match < 0 {
+			match = 0
+		}
+		if match > 1 {
+			match = 1
+		}
+		m += p.SharpeningAlpha * match
+		if m > p.MMax {
+			m = p.MMax
+		}
+	}
+	return m
 }
 
 // Bucketer maps a time to the baseline time-bucket key (§3.4). The baseline is
@@ -186,6 +253,23 @@ type FeatureSource interface {
 	Features(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) (f Features, ok bool)
 }
 
+// Matcher is the D5 detection-sharpening seam: it returns how strongly a flow's
+// EMERGING behavior matches a CONFIRMED-MALICIOUS profile in its scope — the
+// fingerprint-match strength [0,1] that feeds M's additive sharpening term
+// (docs/D2_D5_DESIGN.md §1.2). The confirmed-malicious profile set is built from
+// T3/jail outcomes (decision C / Option 3): customer-reproducible ground truth,
+// gated by a per-fingerprint jail-count floor + freshness inside the matcher.
+//
+// Like FeatureSource, this is an interface so internal/engine/baseline takes NO
+// dependency on the intelligence/profile packages (no import cycle). The result
+// is WEIGHT CONTEXT only: it can never trigger anything (rule 8) — it shapes M on
+// a base that is zero without a canary touch. 0 = no match / under the jail floor
+// / stale / not ready. A nil Matcher (the default, and all of Phase 1) means no
+// sharpening, so M is exactly the pre-D5 baseline multiplier.
+type Matcher interface {
+	Match(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) float64
+}
+
 // Store owns the per-scope baseline state and produces M for a flow, gating to a
 // neutral 1.0 whenever the scope is uncalibrated, the baseline is stale, or the
 // current time bucket is sparse — "when in doubt, the multiplier is neutral"
@@ -201,6 +285,7 @@ type Store struct {
 	bucketer   Bucketer
 	calibrated func(contract.ScopeKey) bool // ties M to the SAME evidence floor as weights
 	features   FeatureSource                // M7: derives per-flow Features; nil => neutral
+	matcher    Matcher                      // D5: confirmed-malicious fingerprint matcher; nil => no sharpening
 	scopes     map[contract.ScopeKey]*scopeBaseline
 }
 
@@ -243,6 +328,20 @@ func (s *Store) UseFeatureSource(fs FeatureSource) *Store {
 	if fs != nil {
 		s.mu.Lock()
 		s.features = fs
+		s.mu.Unlock()
+	}
+	return s
+}
+
+// UseMatcher wires the D5 fingerprint Matcher (the per-scope confirmed-malicious
+// profile store; see internal/intelligence/profile + the engine malicious-profile
+// store in Phase 2). A nil matcher is ignored (default: none → match 0 → no
+// sharpening, so M is exactly the baseline multiplier). Returns the Store for
+// chaining. Safe to call once at composition time.
+func (s *Store) UseMatcher(m Matcher) *Store {
+	if m != nil {
+		s.mu.Lock()
+		s.matcher = m
 		s.mu.Unlock()
 	}
 	return s
@@ -337,6 +436,7 @@ func (s *Store) Multiplier(scope contract.ScopeKey, flow contract.FlowIdentity, 
 	// unlock, then call out.
 	s.mu.Lock()
 	fs := s.features
+	mt := s.matcher
 	s.mu.Unlock()
 
 	f := Features{} // neutral by default
@@ -344,6 +444,15 @@ func (s *Store) Multiplier(scope contract.ScopeKey, flow contract.FlowIdentity, 
 		if derived, ok := fs.Features(scope, flow, at); ok {
 			f = derived
 		}
+	}
+	// D5 sharpening: fold in the confirmed-malicious fingerprint-match strength as
+	// weight context (it lands in M's additive term inside s.M → MFromFeatures).
+	// Called OUTSIDE the Store lock — the matcher may take its own lock, same B→A
+	// deadlock discipline as fs.Features() above. The match is still subject to
+	// s.M's readiness gate (uncalibrated/stale/sparse ⇒ M=1.0, match ignored) and
+	// to the matcher's own jail-evidence/freshness floor (it returns 0 otherwise).
+	if mt != nil {
+		f.FingerprintMatch = mt.Match(scope, flow, at)
 	}
 	return s.M(scope, f, at)
 }

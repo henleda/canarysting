@@ -35,11 +35,12 @@ import (
 // Feature-map keys written into AdversaryInteractionEvent.Features. These mirror
 // the baseline.Features struct fields (docs/BASELINE_MULTIPLIER.md §3).
 const (
-	featAdjacency = "adjacency_novelty"
-	featIdentity  = "identity_novelty"
-	featPort      = "port_novelty"
-	featVolume    = "volume_deviation"
-	featCadence   = "cadence_deviation"
+	featAdjacency   = "adjacency_novelty"
+	featIdentity    = "identity_novelty"
+	featPort        = "port_novelty"
+	featVolume      = "volume_deviation"
+	featCadence     = "cadence_deviation"
+	featFingerprint = "fingerprint_match" // D5 sharpening signal (0 in Phase 1)
 )
 
 const (
@@ -665,6 +666,7 @@ func featuresFromMap(m map[string]float64) baseline.Features {
 		PortNovelty:      m[featPort],
 		VolumeDeviation:  m[featVolume],
 		CadenceDeviation: m[featCadence],
+		FingerprintMatch: m[featFingerprint], // 0 for pre-D5 events (missing key)
 	}
 }
 
