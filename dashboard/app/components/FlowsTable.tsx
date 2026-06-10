@@ -1,0 +1,79 @@
+'use client';
+
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { fmtK, fmtTime } from '@/lib/format';
+import { useSince } from './SinceProvider';
+import type { FlowsList } from '@/lib/types';
+
+const TIERS = [
+  { v: -1, l: 'all' },
+  { v: 0, l: 'T0' },
+  { v: 1, l: 'T1' },
+  { v: 2, l: 'T2' },
+  { v: 3, l: 'T3' },
+];
+
+function localTime(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toISOString().slice(11, 19);
+}
+
+// FlowsTable lists SESSIONS (decision E): each row is a cookie-session. The
+// cookie cell deep-links to that exact session via ?session=<start unix>.
+export default function FlowsTable({ data, tierFilter, loading }: { data: FlowsList | null; tierFilter: number; loading: boolean }) {
+  const router = useRouter();
+  const { since } = useSince();
+
+  const setTier = (v: number) => {
+    const p = new URLSearchParams({ since });
+    if (v >= 0) p.set('tier', String(v));
+    router.replace(`/flows?${p.toString()}`);
+  };
+
+  return (
+    <>
+      <div className="trange" style={{ marginBottom: 16 }}>
+        {TIERS.map((t) => (
+          <button key={t.v} className={`pill-btn${t.v === tierFilter ? ' active' : ''}`} onClick={() => setTier(t.v)}>
+            {t.l}
+          </button>
+        ))}
+      </div>
+      {!data ? (
+        <div className="faint mono">{loading ? 'WARMING UP…' : 'no flows'}</div>
+      ) : data.flows.length === 0 ? (
+        <div className="faint mono">no sessions in window{tierFilter >= 0 ? ` at tier ${tierFilter}` : ''}</div>
+      ) : (
+        <table className="flows-table">
+          <thead>
+            <tr>
+              <th>cookie</th><th>tier</th><th>score</th><th>touches</th><th>last seen</th><th>time imposed</th><th>tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.flows.map((f, i) => {
+              const tcls = f.peak_tier >= 3 ? 't3' : f.peak_tier === 2 ? 't2' : '';
+              const start = Math.floor(new Date(f.session_start).getTime() / 1000);
+              return (
+                <tr key={`${f.flow_id_hex}-${f.session_index}`} className={tcls}>
+                  <td className="cookie">
+                    <Link href={`/flow/${f.flow_id_hex}?since=${since}&session=${start}`}>{f.flow_id_hex}</Link>
+                    {f.session_count > 1 && <span className="session-badge">{f.session_index}/{f.session_count}</span>}
+                  </td>
+                  <td className="tiercell">T{f.peak_tier} {f.verdict}</td>
+                  <td>{f.score > 0 ? f.score.toFixed(2) : '—'}</td>
+                  <td>{f.touch_count}</td>
+                  <td>{localTime(f.last_seen)}</td>
+                  <td>{f.total_cost.time_held_sec > 0 ? fmtTime(f.total_cost.time_held_sec) : '—'}</td>
+                  <td>{f.total_cost.token_cost > 0 ? fmtK(f.total_cost.token_cost) : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {data && data.flows.length > 200 && <div className="faint mono" style={{ marginTop: 10 }}>showing {data.flows.length} sessions</div>}
+    </>
+  );
+}

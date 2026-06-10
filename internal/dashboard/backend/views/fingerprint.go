@@ -18,6 +18,7 @@ import (
 // the same sequence on a different day gets the same fingerprint identity.
 type FlowFingerprint struct {
 	FlowID         uint64   `json:"flow_id"`
+	FlowIDHex      string   `json:"flow_id_hex"`     // "0x%x" — deep-link with THIS, not flow_id (uint64 > 2^53 loses precision as a JS number)
 	OrderedTypes   []string `json:"ordered_types"`   // CanaryType sequence in timestamp order (with dupes)
 	CadenceSec     float64  `json:"cadence_sec"`     // median inter-arrival; 0 if < 2 events
 	CadenceJitter  float64  `json:"cadence_jitter"`  // MAD of inter-arrivals; 0 if < 3 events
@@ -78,6 +79,7 @@ func DeriveFingerprint(flowID uint64, events []intelligence.AdversaryInteraction
 
 	return &FlowFingerprint{
 		FlowID:         flowID,
+		FlowIDHex:      fmt.Sprintf("0x%x", flowID),
 		OrderedTypes:   orderedTypes,
 		CadenceSec:     cadence,
 		CadenceJitter:  jitter,

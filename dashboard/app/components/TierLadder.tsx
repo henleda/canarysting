@@ -1,4 +1,6 @@
+import Link from 'next/link';
 import { fmtInt, fmtPct } from '@/lib/format';
+import { WALL_LINK } from './LiveEscalation';
 import type { TierStep } from '@/lib/types';
 
 interface TierLadderProps {
@@ -46,7 +48,7 @@ export default function TierLadder({ ladder }: TierLadderProps) {
             .join(' ');
 
           return (
-            <div key={step.tier} className={cls}>
+            <Link key={step.tier} href={`/flows?tier=${step.tier}&since=1h`} className={cls} style={WALL_LINK}>
               <span className="seg" />
               <span className="knob" />
               <div className="tn">{tierName(step)}</div>
@@ -60,7 +62,7 @@ export default function TierLadder({ ladder }: TierLadderProps) {
               {step.has_response && step.resp_label && (
                 <span className="resp-tag">{step.resp_label}</span>
               )}
-            </div>
+            </Link>
           );
         })}
       </div>

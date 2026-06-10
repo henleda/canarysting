@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useOverview } from '@/lib/useOverview';
 import { fixtureOverview } from '@/lib/fixture';
 import TopBar from '@/components/TopBar';
@@ -26,7 +27,11 @@ export default function OperationsPage() {
       <TopBar snapshot={snapshot} status={effectiveStatus} />
       <div className="hero">
         <LiveEscalation escalation={snapshot?.escalation} />
-        <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
+        {/* The whole attacker-cost panel deep-links to the /cost breakdown.
+            display:contents keeps the grid layout identical (the <a> box vanishes). */}
+        <Link href="/cost?since=1h" style={{ display: 'contents', color: 'inherit', textDecoration: 'none' }}>
+          <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
+        </Link>
       </div>
       <div className="band">
         <KernelContainment containment={snapshot?.kernel_containment} />

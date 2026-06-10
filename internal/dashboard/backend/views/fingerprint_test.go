@@ -49,6 +49,11 @@ func TestFingerprintDeterministic(t *testing.T) {
 	if a.Hash == "" || a.Hash[:3] != "fp:" {
 		t.Fatalf("hash format = %q, want fp:-prefixed", a.Hash)
 	}
+	// FlowIDHex must match the cookie exactly so the UI deep-links without a
+	// lossy uint64→JS-number round-trip.
+	if a.FlowIDHex != "0x118" {
+		t.Fatalf("FlowIDHex = %q, want 0x118", a.FlowIDHex)
+	}
 }
 
 func TestFingerprintOrderingInvariant(t *testing.T) {

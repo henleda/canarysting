@@ -245,3 +245,78 @@ body::before {
  * ===================================================================== */
 html { height: 100%; }
 body { min-height: 100%; }
+
+/* ===================================================================== *
+ * Interactive console drill-down (M8 routed pages). Additive only — the  *
+ * home wall above is untouched. Reuses the signed-off design tokens.     *
+ * ===================================================================== */
+.app-console { display: grid; grid-template-rows: 60px 1fr; height: 100vh; background: var(--bg); }
+.detail-page { flex: 1; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; gap: 28px; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+
+.crumbs { font-family: var(--mono); font-size: 12px; letter-spacing: 0.06em; color: var(--ink-faint); text-transform: uppercase; }
+.crumbs a { color: var(--ink-dim); text-decoration: none; }
+.crumbs a:hover { color: var(--canary); }
+.crumbs .sep { margin: 0 8px; color: var(--ink-faint); }
+.crumbs .cur { color: var(--ink); }
+
+.trange { display: flex; gap: 6px; }
+.pill-btn { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim);
+  background: transparent; border: 1px solid var(--line); border-radius: 5px; padding: 5px 12px; cursor: pointer; }
+.pill-btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+.pill-btn.active { color: var(--canary); border-color: rgba(255,206,58,0.45); }
+
+.detail-section { border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; background: var(--panel); }
+.detail-section > h3 { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 14px; }
+.faint { color: var(--ink-faint); }
+.errstrip { font-family: var(--mono); font-size: 11px; color: var(--sting); margin-top: -12px; }
+
+/* event timeline */
+.timeline { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.trow { display: grid; grid-template-columns: 64px 1.4fr 52px 56px 50px 1.1fr 1fr; gap: 12px; align-items: center;
+  background: var(--panel); padding: 9px 14px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
+.trow .t-offset { color: var(--ink-faint); }
+.trow .t-type { color: var(--ink); }
+.trow .t-tier { font-weight: 700; text-align: center; border-radius: 3px; padding: 1px 0; font-size: 10px; }
+.trow .t-tier.t1 { color: var(--tag); border: 1px solid rgba(255,206,58,0.35); }
+.trow .t-tier.t2 { color: var(--contain); border: 1px solid rgba(255,140,60,0.4); }
+.trow .t-tier.t3 { color: var(--sting); border: 1px solid rgba(255,77,96,0.45); }
+.trow .t-score { color: var(--ink); }
+.trow .t-m { color: var(--ink-dim); text-align: right; }
+.trow .t-mech { color: var(--canary); }
+.trow .t-mech.none { color: var(--ink-faint); font-style: italic; }
+.trow .t-cost { color: var(--ink-dim); text-align: right; }
+
+/* M breakdown bars (5 features, reuse feats look) */
+.mbars { display: flex; flex-direction: column; gap: 8px; }
+.mbar { display: grid; grid-template-columns: 90px 1fr 44px; gap: 10px; align-items: center; font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+.mbar .track { height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+.mbar .fill { height: 100%; background: linear-gradient(90deg, var(--canary-deep), var(--canary)); border-radius: 3px; }
+.mbar .val { text-align: right; color: var(--ink); }
+
+/* flows table */
+.flows-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+.flows-table th { text-align: left; color: var(--ink-faint); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  font-size: 9.5px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.flows-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--ink-dim); }
+.flows-table tr:hover td { background: rgba(255,255,255,0.02); }
+.flows-table td.cookie a { color: var(--canary); text-decoration: none; }
+.flows-table td.cookie a:hover { text-decoration: underline; }
+.flows-table tr.t2 td.tiercell { color: var(--contain); }
+.flows-table tr.t3 td.tiercell { color: var(--sting); }
+.flows-table .session-badge { color: var(--ink-faint); font-size: 9px; margin-left: 6px; }
+
+/* escalation badge (recon) */
+.esc-badge { font-family: var(--mono); font-size: 10px; font-weight: 700; border-radius: 3px; padding: 1px 6px; text-decoration: none; }
+.esc-badge.t2 { color: var(--contain); border: 1px solid rgba(255,140,60,0.4); }
+.esc-badge.t3 { color: var(--sting); border: 1px solid rgba(255,77,96,0.45); }
+
+/* cost time-series mini bars */
+.tseries { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
+.tseries .bar { flex: 1; background: var(--canary-deep); border-radius: 1px 1px 0 0; min-height: 1px; }
+.tseries .bar.zero { background: rgba(255,255,255,0.05); }
+
+/* detail-page cost strips show FOUR metrics (time/tokens/reqs/bytes). Scope the
+   4-up grid to .detail-section so the home-wall hero's 3-up .cost-metrics is
+   untouched (additive override). */
+.detail-section .cost-metrics { grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 0; }

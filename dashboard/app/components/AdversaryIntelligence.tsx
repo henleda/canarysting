@@ -1,5 +1,7 @@
+import Link from 'next/link';
 import PanelHead from './PanelHead';
 import { fmtBytes, fmtInt, fmtK, fmtOffsetLabel, fmtTimeLong } from '@/lib/format';
+import { WALL_LINK } from './LiveEscalation';
 import type { AdversaryIntelView, FlowFingerprint, ReconEvent } from '@/lib/types';
 
 // AdversaryIntelligence is the band-right cell (widest). Three facets in the
@@ -46,7 +48,9 @@ export default function AdversaryIntelligence({ intel }: { intel: AdversaryIntel
 
         {/* recon early-warning */}
         <div className="intel-sub">
-          <h3>Recon early-warning</h3>
+          <h3>
+            <Link href="/recon?since=1h" style={WALL_LINK}>Recon early-warning →</Link>
+          </h3>
           {feed.length > 0 ? (
             <div className="feed">
               {feed.slice(0, 3).map((ev, i) => (
@@ -111,7 +115,9 @@ function Fingerprint({ fp }: { fp: FlowFingerprint }) {
         <span className="k">cadence</span>
         <span className="v">{cadence}</span>
       </div>
-      <div className="fp-hash">{fp.hash}</div>
+      <Link className="fp-hash" href={`/flow/${fp.flow_id_hex}?since=1h`} style={WALL_LINK}>
+        {fp.hash}
+      </Link>
     </div>
   );
 }

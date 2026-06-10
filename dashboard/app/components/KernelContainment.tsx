@@ -1,4 +1,6 @@
+import Link from 'next/link';
 import PanelHead from './PanelHead';
+import { WALL_LINK } from './LiveEscalation';
 import type { ContainedFlow, KernelContainmentView } from '@/lib/types';
 
 // KernelContainment is the band-left cell. It lists jailed (T3) flows and a
@@ -40,7 +42,9 @@ function Sock({ flow, jailed }: { flow: ContainedFlow; jailed: boolean }) {
         <span className="d" />
         {jailed ? 'Jailed' : 'OK'}
       </div>
-      <div className="cookie">cookie {flow.flow_id_hex}</div>
+      <div className="cookie">
+        cookie <Link href={`/flow/${flow.flow_id_hex}?since=1h`} style={WALL_LINK}>{flow.flow_id_hex}</Link>
+      </div>
       <div className="src">
         T{flow.tier}
         <br />

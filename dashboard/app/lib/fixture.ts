@@ -151,6 +151,7 @@ export const fixtureOverview: Overview = {
     ],
     fingerprint: {
       flow_id: 0x118,
+      flow_id_hex: '0x118',
       ordered_types: ['.aws/credentials', '.env', 'backup/db.sql'],
       cadence_sec: 12,
       cadence_jitter: 1.2,
@@ -175,4 +176,85 @@ export const fixtureOverview: Overview = {
     hard_cap_usd: 5.0,
     cap_fraction: 0.462,
   },
+};
+
+// ---- Interactive console drill-down fixtures (NEXT_PUBLIC_FIXTURE=1) ----
+import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline } from './types';
+
+export const fixtureFlowDetail: FlowDetail = {
+  flow_id_hex: '0x118',
+  flow_id: 0x118,
+  session_start: '2026-06-09T13:54:00Z',
+  session_index: 2,
+  session_count: 3,
+  touch_count: 5,
+  peak_tier: 3,
+  verdict: 'jail',
+  score: 5.0,
+  first_seen: '2026-06-09T13:54:00Z',
+  last_seen: '2026-06-09T13:58:12Z',
+  timeline: [
+    { timestamp: '2026-06-09T13:54:00Z', canary_type: '.env', tier: 1, verdict: 'tag', score: 1, m: 1.2, time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0, mechanism: '' },
+    { timestamp: '2026-06-09T13:55:10Z', canary_type: '.aws/credentials', tier: 1, verdict: 'tag', score: 2, m: 1.8, time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0, mechanism: '' },
+    { timestamp: '2026-06-09T13:56:30Z', canary_type: 'backup/db.sql', tier: 2, verdict: 'contain', score: 3, m: 2.4, time_held_sec: 8, bytes_served: 8836, requests: 1, token_cost: 2209, mechanism: 'fake_tree' },
+    { timestamp: '2026-06-09T13:57:20Z', canary_type: 'internal/buckets', tier: 2, verdict: 'contain', score: 4, m: 2.6, time_held_sec: 8, bytes_served: 8836, requests: 1, token_cost: 2209, mechanism: 'fake_tree' },
+    { timestamp: '2026-06-09T13:58:12Z', canary_type: 'admin/metrics', tier: 3, verdict: 'jail', score: 5, m: 2.6, time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0, mechanism: '' },
+  ],
+  fingerprint: {
+    flow_id: 0x118,
+    flow_id_hex: '0x118',
+    ordered_types: ['.env', '.aws/credentials', 'backup/db.sql', 'internal/buckets', 'admin/metrics'],
+    cadence_sec: 70,
+    cadence_jitter: 8,
+    adjacency_nov: 0.9,
+    identity_nov: 0.7,
+    persists_tarpit: true,
+    hash: 'fp:a3f1·9c08·b27d',
+  },
+  m_breakdown: {
+    m: 2.6,
+    contributions: [
+      { feature: 'adjacency_novelty', raw_value: 0.9, capped: 0.9, label: 'adjacency nov.' },
+      { feature: 'identity_novelty', raw_value: 0.7, capped: 0.7, label: 'identity nov.' },
+      { feature: 'port_novelty', raw_value: 0.2, capped: 0.2, label: 'port nov.' },
+      { feature: 'volume_deviation', raw_value: 0.5, capped: 0.5, label: 'volume dev.' },
+      { feature: 'cadence_deviation', raw_value: 0.3, capped: 0.3, label: 'cadence dev.' },
+    ],
+    gate_note: 'M derived from peak event · DefaultParams',
+  },
+  spark_series: [0.2, 0.4, 0.6, 0.8, 1.0],
+};
+
+export const fixtureFlowsList: FlowsList = {
+  total_count: 3,
+  filtered: 3,
+  flows: [
+    { flow_id_hex: '0x118', flow_id: 0x118, session_start: '2026-06-09T13:54:00Z', session_index: 2, session_count: 3, peak_tier: 3, verdict: 'jail', touch_count: 5, score: 5, base_m: 2.6, total_cost: { time_held_sec: 16, bytes_served: 17672, requests: 2, token_cost: 4418 }, first_seen: '2026-06-09T13:54:00Z', last_seen: '2026-06-09T13:58:12Z' },
+    { flow_id_hex: '0x2a', flow_id: 0x2a, session_start: '2026-06-09T13:40:00Z', session_index: 1, session_count: 1, peak_tier: 2, verdict: 'contain', touch_count: 3, score: 3, base_m: 1.9, total_cost: { time_held_sec: 8, bytes_served: 8054, requests: 1, token_cost: 2014 }, first_seen: '2026-06-09T13:40:00Z', last_seen: '2026-06-09T13:41:30Z' },
+    { flow_id_hex: '0x7c', flow_id: 0x7c, session_start: '2026-06-09T13:30:00Z', session_index: 1, session_count: 1, peak_tier: 1, verdict: 'tag', touch_count: 1, score: 1, base_m: 1.0, total_cost: { time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0 }, first_seen: '2026-06-09T13:30:00Z', last_seen: '2026-06-09T13:30:00Z' },
+  ],
+};
+
+export const fixtureCostBreakdown: CostBreakdown = {
+  total: { time_held_sec: 24, bytes_served: 25726, requests: 3, token_cost: 6432 },
+  by_flow: fixtureFlowsList.flows.filter((f) => f.total_cost.time_held_sec > 0),
+  by_mechanism: [
+    { mechanism: 'fake_tree', event_count: 3, time_held_sec: 24, bytes_served: 25726, requests: 3, token_cost: 6432 },
+  ],
+  time_series: Array.from({ length: 24 }, (_, i) => ({
+    bucket_start: `2026-06-09T13:${String(i % 60).padStart(2, '0')}:00Z`,
+    time_held_sec: i % 5 === 0 ? 8 : 0,
+    token_cost: i % 5 === 0 ? 2000 : 0,
+    event_count: i % 5 === 0 ? 1 : 0,
+  })),
+  bucket_sec: 150,
+};
+
+export const fixtureReconTimeline: ReconTimeline = {
+  total_recon: 3,
+  rows: [
+    { flow_id_hex: '0x118', flow_id: 0x118, session_start: '2026-06-09T13:54:00Z', timestamp: '2026-06-09T13:54:00Z', offset_label: '−4:12', canary_type: '.env', severity: 'surfaced', description: 'cluster · 0x118 repeated probing', escalated: true, escalated_tier: 3 },
+    { flow_id_hex: '0x2a', flow_id: 0x2a, session_start: '2026-06-09T13:40:00Z', timestamp: '2026-06-09T13:40:00Z', offset_label: '−18:00', canary_type: '.aws/credentials', severity: 'recon', description: 'quiet probe · .aws/credentials', escalated: true, escalated_tier: 2 },
+    { flow_id_hex: '0x7c', flow_id: 0x7c, session_start: '2026-06-09T13:30:00Z', timestamp: '2026-06-09T13:30:00Z', offset_label: '−28:00', canary_type: '.env', severity: 'recon', description: 'quiet probe · .env', escalated: false, escalated_tier: 0 },
+  ],
 };

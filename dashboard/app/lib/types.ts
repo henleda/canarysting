@@ -136,6 +136,7 @@ export interface ReconEvent {
 // FlowFingerprint is the adversary behavioral fingerprint for one flow.
 export interface FlowFingerprint {
   flow_id: number;
+  flow_id_hex: string; // "0x%x" — deep-link with THIS (flow_id as a JS number loses precision > 2^53)
   ordered_types: string[] | null; // CanaryType sequence in timestamp order (with dupes)
   cadence_sec: number; // median inter-arrival; 0 if < 2 events
   cadence_jitter: number; // MAD of inter-arrivals; 0 if < 3 events
@@ -176,4 +177,127 @@ export interface Overview {
 
   // M9 live cost meter (the attacker's real, ground-truth Anthropic burn).
   real_attack_cost: RealAttackCostView;
+}
+
+// ============================================================================
+// Interactive console drill-down types — mirror internal/dashboard/backend/
+// views/drilldown.go 1:1 (snake_case). Timestamps are RFC3339 strings.
+// A "flow" here is a SESSION: a cookie split on idle gaps (decision E), so
+// session_index/session_count expose cookie reuse ("session 2 of 3").
+// ============================================================================
+
+export interface TouchEvent {
+  timestamp: string;
+  canary_type: string;
+  tier: number;
+  verdict: string;
+  score: number; // 0 = pre-Score event — render "—"
+  m: number; // M for THIS touch; 1.0 if none
+  time_held_sec: number;
+  bytes_served: number;
+  requests: number;
+  token_cost: number;
+  mechanism: string; // "" → "kernel-enforced · cost not attributed"
+}
+
+export interface MContribution {
+  feature: string;
+  raw_value: number;
+  capped: number;
+  label: string;
+}
+
+export interface MBreakdown {
+  m: number;
+  contributions: MContribution[];
+  gate_note: string;
+}
+
+export interface FlowDetail {
+  flow_id_hex: string;
+  flow_id: number;
+  session_start: string;
+  session_index: number;
+  session_count: number;
+  touch_count: number;
+  peak_tier: number;
+  verdict: string;
+  score: number; // 0 = pre-Score event — render "—"
+  first_seen: string;
+  last_seen: string;
+  timeline: TouchEvent[];
+  fingerprint?: FlowFingerprint | null;
+  m_breakdown?: MBreakdown | null;
+  spark_series: number[];
+}
+
+export interface FlowCost {
+  time_held_sec: number;
+  bytes_served: number;
+  requests: number;
+  token_cost: number;
+}
+
+export interface FlowRow {
+  flow_id_hex: string;
+  flow_id: number;
+  session_start: string;
+  session_index: number;
+  session_count: number;
+  peak_tier: number;
+  verdict: string;
+  touch_count: number;
+  score: number; // 0 = pre-Score event — render "—"
+  base_m: number;
+  total_cost: FlowCost;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface FlowsList {
+  flows: FlowRow[];
+  total_count: number;
+  filtered: number;
+}
+
+export interface MechanismCost {
+  mechanism: string;
+  event_count: number;
+  time_held_sec: number;
+  bytes_served: number;
+  requests: number;
+  token_cost: number;
+}
+
+export interface CostBucket {
+  bucket_start: string;
+  time_held_sec: number;
+  token_cost: number;
+  event_count: number;
+}
+
+export interface CostBreakdown {
+  total: FlowCost;
+  by_flow: FlowRow[];
+  by_mechanism: MechanismCost[];
+  time_series: CostBucket[];
+  bucket_sec: number;
+}
+
+export interface ReconRow {
+  flow_id_hex: string;
+  flow_id: number;
+  session_start: string; // RFC3339; the exact session this T1 belongs to (deep-link &session=)
+  timestamp: string;
+  offset_label: string;
+  canary_type: string;
+  severity: 'recon' | 'surfaced' | string;
+  description: string;
+  escalated: boolean;
+  escalated_tier: number;
+}
+
+export interface ReconTimeline {
+  rows: ReconRow[];
+  total_recon: number;
 }

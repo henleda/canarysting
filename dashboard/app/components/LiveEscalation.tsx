@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import PanelHead from './PanelHead';
 import Spark from './Spark';
 import TierLadder from './TierLadder';
@@ -5,6 +6,9 @@ import { fmtInt } from '@/lib/format';
 import type { EscalationView } from '@/lib/types';
 
 const STING_TAG_STYLE = { color: 'var(--sting)', borderColor: 'rgba(255,77,96,0.4)' };
+// Home-wall links inherit color and drop the underline so the signed-off look is
+// unchanged — only a pointer cursor appears. Default since=1h on wall entry.
+export const WALL_LINK = { color: 'inherit', textDecoration: 'none' } as const;
 
 // LiveEscalation is the hero-left panel. It binds escalation.flow + the tier
 // ladder. Identity is the socket-cookie hex (flow_id_hex) — the data has NO
@@ -52,7 +56,9 @@ export default function LiveEscalation({ escalation }: { escalation: EscalationV
       <div className="esc-top">
         <div>
           <div className="flow-id">
-            <span className="ip mono">{flow.flow_id_hex}</span>
+            <Link href={`/flow/${flow.flow_id_hex}?since=1h`} className="ip mono" style={WALL_LINK}>
+              {flow.flow_id_hex}
+            </Link>
             <span className="role">{flow.verdict || 'flagged'}</span>
           </div>
           <div className="flow-sub">
