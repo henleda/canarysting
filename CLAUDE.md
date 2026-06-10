@@ -8,7 +8,7 @@ CanarySting is a proxy-attached deception and active-response platform. It seeds
 
 Two product components:
 - **Canary** — the detection surface: canary object generation, placement, and observation of interaction.
-- **Sting** — the response: containment (blocking, rate-limiting, jailing) and attrition (tarpitting, token-wasting, adversarial responses).
+- **Sting** — the response: containment (blocking, rate-limiting, jailing) and multi-dimensional attrition (velocity disruption, information poisoning, opportunity-cost injection, exploit-inventory burn, operational exposure). See `docs/STING.md`.
 
 The authoritative product and architecture specification is `docs/ARCHITECTURE.md`. The deep technical architecture, the eBPF baseline-learning capability, and the differentiated-technology rationale are in `docs/TECHNICAL_ARCHITECTURE.md` — read it before working on the engine, the canary seeder, or the eBPF layer. The exact math for how the baseline weights a canary touch (bounded, floored-at-one, multiplicative) is specified in `docs/BASELINE_MULTIPLIER.md`. The intelligence layer — how CanarySting turns its vantage point into a proprietary, compounding data asset (adversary profiling, attacker-cost metric, the cross-customer network, the threat feed) — is specified in `docs/INTELLIGENCE.md`; read it before working anything under `internal/intelligence/`. If anything here conflicts with those documents, the architecture docs win for *intent*; this file wins for *how we build*. When they disagree on intent, stop and ask rather than guessing.
 
@@ -38,7 +38,7 @@ Monorepo. Top-level map:
 - `cmd/` — binaries. `engine` (the decision engine service), `canaryctl` (operator CLI).
 - `internal/engine/` — scoring, tiers, calibration, scope, feedback. The brain. Proxy-agnostic.
 - `internal/canary/` — canary `catalog` (object types + seed weights) and `seeder` (placement).
-- `internal/sting/` — `containment` (kernel-enforced blocking) and `attrition` (tarpit/token-burn).
+- `internal/sting/` — `containment` (kernel-enforced blocking) and `attrition` (multi-dimensional: velocity, information poisoning, opportunity cost, exploit burn, operational exposure — see `docs/STING.md`).
 - `internal/contract/` — the in-process Go types for the layer contract. Source of truth.
 - `adapters/envoy`, `adapters/nginx` — thin proxy adapters. Envoy first, nginx second.
 - `bpf/enforce/` — eBPF C programs (TC/cgroup hooks). `bpf/loader/` — Go loader.

@@ -2,12 +2,12 @@
 
 Read `CLAUDE.md` and `docs/ARCHITECTURE.md` first. This governs `internal/sting/` and the eBPF enforcement it drives (`bpf/`).
 
-Sting is the response. It takes a tier verdict from the engine and acts on the offending flow. It splits into two intents that share mechanisms but differ in purpose.
+Sting is the response. It takes a tier verdict from the engine and acts on the offending flow. It has two intents: **containment** (stop the actor) and **attrition** (impose cost). Attrition is multi-dimensional: it imposes cost across five axes, not one. This matters because the attacker may be running metered API inference, self-hosted open-weight models, or stolen compute, and a single-axis "burn their tokens" approach only bites the first case. The five-axis model imposes cost that lands regardless of how the attacker is hosted.
 
 ## Subpackages
 
-- `containment/` — stop egress, hold the actor. Kernel-enforced.
-- `attrition/` — impose economic cost. Tarpit, adversarial responses, token-burning.
+- `containment/` — stop egress, hold the actor. Kernel-enforced. The floor under everything else.
+- `attrition/` — impose multi-dimensional cost. The platform's differentiator.
 
 ## Containment (`containment/`)
 
@@ -49,17 +49,46 @@ throttle-not-jail) and the `deploy/m5-demo` end-to-end run.
 
 ## Attrition (`attrition/`)
 
-Goal: raise the attacker's cost per operation. This is the platform's differentiator.
-- Mechanisms: tarpitting (slow responses to a crawl), serving plausible-but-endless fake resources, deep fake directory trees, recursive fake structures, and bait crafted to trigger expensive parsing — all aimed at making an automated or LLM-driven attacker burn time, compute, and tokens.
-- **Can begin at Tier 2.** Attrition-stinging a false positive is cheap (a slightly slower response to one legitimate flow), unlike containment-stinging a false positive. So attrition tolerates a more permissive strictness setting than containment.
+Goal: raise the attacker's cost per operation across five axes. This is the platform's differentiator. The framing is **opportunity cost on a velocity-dependent adversary**, not "make them pay a cloud bill." An autonomous attacker's edge is speed and scale; every axis below attacks that edge and lands whether the attacker's inference is metered, self-hosted, or running on stolen compute.
+
+The five axes, with the first three carrying the most weight:
+
+### 1. Velocity disruption (highlighted)
+
+Attack the speed advantage directly. Tarpit at the protocol and application layer: hold connections open, drip-feed bytes, slow-roll responses so each interaction costs seconds or minutes instead of milliseconds. Adaptive latency that increases the more a flow probes, so persistence is punished. Velocity is the AI attacker's whole advantage; injecting latency and dead ends is self-hosting-proof because it costs the attacker wall-clock time no matter who owns the GPU.
+
+### 2. Information poisoning (highlighted)
+
+Degrade the quality of the attacker's model of reality. Serve plausible-but-false environmental state: fake credentials, fabricated internal hostnames, bogus network topology, decoy secrets that look real, fake "successful" results. The cost is not compute; it is that the agent acts on bad intelligence — pivots toward controlled environments, exfiltrates fabricated data, burns real exploits against targets that do not exist, makes decisions that lead deeper into the deception. This is uniquely devastating to autonomous agents, which lack the human intuition to sense the environment is wrong, and it composes directly with the intelligence layer: the same fabricated environment that misleads the attacker generates the adversary-interaction data the platform monetizes (see `docs/INTELLIGENCE.md`). Treat this as the core differentiated mechanism.
+
+### 3. Opportunity-cost injection (highlighted)
+
+Consume the attacker's finite capacity. A self-hosted attacker has a fixed token-per-second ceiling on a fixed GPU fleet; every cycle spent parsing a fake directory tree or reasoning about bogus state is a cycle not spent on a real target. This subsumes the original "token-burning" mechanism (deep fake directory trees, recursive structures, bait crafted to trigger expensive parsing) but frames it correctly: the cost imposed is opportunity cost on constrained capacity, which lands against metered, self-hosted, and stolen-compute attackers alike. Against a metered attacker it is also a direct dollar cost; do not lead with that, since it is the weakest framing.
+
+### 4. Exploit-inventory burn
+
+Make decoys attractive enough that the attacker spends real exploits on them. Exploits and novel chains have real cost — developed, sometimes purchased, and burned once revealed. A fresh exploit fired at a fake service is both intelligence (the platform learns it) and a forced choice for the attacker: reveal it or waste it. This cost is independent of compute entirely.
+
+### 5. Operational exposure
+
+When a flow is confirmed hostile, raise the attacker's operational risk: force infrastructure to reveal itself (callbacks to controlled endpoints), fingerprint the tooling, capture command-and-control patterns. This feeds the intelligence asset and imposes attribution/opsec cost, which a sophisticated actor values highly. Independent of how the attacker is hosted.
+
+### Mechanisms map to the engine tiers
+
+- **Can begin at Tier 2.** Attrition-stinging a false positive is cheap (a slightly slower response, or a fake credential served to one legitimate flow), unlike containment-stinging a false positive. So attrition tolerates a more permissive strictness setting than containment.
+- Velocity disruption and information poisoning are the natural Tier 2 actions (low error cost, stay-unaware). Opportunity-cost injection and exploit-inventory baiting escalate at Tier 2→3. Operational exposure is a Tier 3 action on a confirmed-hostile flow.
 
 ### Aggressive by brand, elective by deployment
 
 - The platform **ships the aggressive ceiling** — that is the brand. But the operator chooses the **floor**:
-  - **Passive:** slow responses / tarpit only.
-  - **Moderate:** serve plausible fake resources that keep a crawler looping.
-  - **Aggressive:** full adversarial — deep recursive fake structures, token-maximizing bait.
+  - **Passive:** velocity disruption only (slow responses / tarpit).
+  - **Moderate:** add information poisoning and fake resources that keep the attacker looping on false state.
+  - **Aggressive:** full adversarial — opportunity-cost injection, exploit-baiting, and operational-exposure actions on confirmed-hostile flows.
 - **The default floor is conservative.** Code must never make an aggressive response the silent default. The aggressive level is reached only by explicit operator configuration.
+
+### The engagement contest (design consideration)
+
+Every attrition axis depends on keeping the attacker engaged long enough for the cost to be meaningful, and a capable attacker will try to detect deception and disengage cheaply. The real engineering contest is keeping the agent engaged and believing longer than it takes to detect the trap. Design fake state and responses to be internally consistent and plausible under an agent's inspection, and measure time-to-disengage as a core attrition metric. This is an open research area, not a solved one (see `docs/INTELLIGENCE.md` profiling, which sharpens the bait over time).
 
 ### The sting must bound its own cost
 

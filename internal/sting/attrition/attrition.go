@@ -1,7 +1,13 @@
-// Package attrition imposes economic cost on automated/LLM-driven attackers:
-// tarpitting, plausible-endless fake directory/config mazes, and token-maximizing
-// bait — all aimed at burning the attacker's time, compute, and tokens while
-// keeping the defender's cost flat. It is the platform's differentiator.
+// Package attrition imposes multi-dimensional cost on automated/LLM-driven
+// attackers across five axes: velocity disruption (latency/tarpit), information
+// poisoning (fabricated environmental state that degrades the agent's decisions),
+// opportunity-cost injection (consuming finite compute capacity; subsumes
+// token-burning), exploit-inventory burn, and operational exposure. The cost lands
+// whether the attacker is metered, self-hosted, or on stolen compute. It is the
+// platform's differentiator. The mechanisms shipped here — tarpitting,
+// plausible-endless fake directory/config mazes, and token-maximizing bait — are
+// the velocity/information-poisoning/opportunity-cost subset; see docs/STING.md
+// for the full taxonomy. All keep the defender's cost flat.
 //
 // Attrition is a pull-based STREAM, not a one-shot Respond: the driver (the future
 // Envoy adapter at M4, or the local scripted-attacker harness) calls Next, writes
