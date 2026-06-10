@@ -90,3 +90,75 @@ func TestBuildScopeIsolation(t *testing.T) {
 		t.Fatalf("scope-b must not resolve a scope-a placement: got %v", err)
 	}
 }
+
+// --- directory canary matching (M9) ---
+
+func dirRegistry(t *testing.T, scope contract.ScopeKey) seeder.Registry {
+	t.Helper()
+	reg := seeder.NewMemRegistry()
+	put := func(loc seeder.Location, typ contract.CanaryType) {
+		if err := reg.Put(seeder.Placement{Scope: scope, Location: loc, Type: typ}); err != nil {
+			t.Fatalf("put %s: %v", loc, err)
+		}
+	}
+	// exact leaf + directory canary, mirroring the demo set
+	put("/admin/metrics", catalog.TypeFakeEndpoint)
+	put("/admin/", catalog.TypeFakeEndpoint)
+	put("/backup/db.sql", catalog.TypeDecoyFile)
+	put("/backup/", catalog.TypeDecoyFile)
+	put("/.env", catalog.TypeFakeSecret) // exact, NOT a directory
+	return reg
+}
+
+func mustType(t *testing.T, b *Builder, scope contract.ScopeKey, path string) contract.CanaryType {
+	t.Helper()
+	ev, err := b.Build(scope, Touch{Flow: contract.FlowIdentity{SocketCookie: 1}, Location: seeder.Location(path)})
+	if err != nil {
+		t.Fatalf("path %q: unexpected error %v", path, err)
+	}
+	return ev.Canary
+}
+
+func TestDirectoryCanaryMatchesSubpaths(t *testing.T) {
+	const scope = contract.ScopeKey("s")
+	b := NewBuilder(dirRegistry(t, scope))
+
+	cases := map[string]contract.CanaryType{
+		"/admin/":          catalog.TypeFakeEndpoint, // exact dir
+		"/admin/login":     catalog.TypeFakeEndpoint, // under the dir
+		"/admin":           catalog.TypeFakeEndpoint, // no trailing slash -> still matches the dir canary
+		"/admin/x/y/z":     catalog.TypeFakeEndpoint, // deep under the dir
+		"/admin/metrics":   catalog.TypeFakeEndpoint, // exact leaf (precise match wins, same type here)
+		"/backup/":         catalog.TypeDecoyFile,
+		"/backup/dump.sql": catalog.TypeDecoyFile,
+		"/.env":            catalog.TypeFakeSecret, // exact non-directory canary
+	}
+	for path, want := range cases {
+		if got := mustType(t, b, scope, path); got != want {
+			t.Errorf("path %q: want type %v, got %v", path, want, got)
+		}
+	}
+}
+
+func TestNonCanaryPathsNeverMatch(t *testing.T) {
+	const scope = contract.ScopeKey("s")
+	b := NewBuilder(dirRegistry(t, scope))
+	// legit application paths must NEVER become a signal (rule 8).
+	for _, p := range []string{"/shop", "/search", "/products", "/account", "/cart", "/checkout", "/orders", "/", "/api/health"} {
+		_, err := b.Build(scope, Touch{Flow: contract.FlowIdentity{SocketCookie: 1}, Location: seeder.Location(p)})
+		if err != ErrNoPlacement {
+			t.Errorf("legit path %q must yield ErrNoPlacement, got %v", p, err)
+		}
+	}
+}
+
+func TestExactNonDirCanaryDoesNotPrefixMatch(t *testing.T) {
+	const scope = contract.ScopeKey("s")
+	b := NewBuilder(dirRegistry(t, scope))
+	// /.env is an EXACT canary (no trailing slash); a path "below" it must NOT match.
+	_, err := b.Build(scope, Touch{Flow: contract.FlowIdentity{SocketCookie: 1}, Location: "/.env/extra"})
+	if err != ErrNoPlacement {
+		t.Errorf("/.env/extra must not match the exact /.env canary, got %v", err)
+	}
+	// /backup/db.sql is exact; a subpath must not match IT (it matches /backup/ dir instead, same type — fine).
+}

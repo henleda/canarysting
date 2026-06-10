@@ -8,6 +8,7 @@ package signal
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/canarysting/canarysting/internal/canary/seeder"
@@ -57,7 +58,7 @@ func (b *Builder) Build(scope contract.ScopeKey, t Touch) (contract.SignalEvent,
 	if t.Flow.SocketCookie == 0 {
 		return contract.SignalEvent{}, ErrNoSocketCookie
 	}
-	p, ok := b.reg.Lookup(scope, t.Location)
+	p, ok := b.resolve(scope, t.Location)
 	if !ok {
 		return contract.SignalEvent{}, ErrNoPlacement
 	}
@@ -71,4 +72,44 @@ func (b *Builder) Build(scope contract.ScopeKey, t Touch) (contract.SignalEvent,
 		Scope:     scope,
 		Timestamp: at,
 	}, nil
+}
+
+// resolve maps an observed location to a placement. It first tries an EXACT
+// match (the common, precise case). On a miss it falls back to DIRECTORY
+// canaries: a placement whose location ends in "/" matches any path at or below
+// it. This lets an attacker's natural enumeration of a hostile directory
+// (e.g. GET /admin/, /admin/login, /admin/whatever) register as a touch of the
+// canary seeded at "/admin/", without seeding every exact leaf. The walk is
+// O(path depth) Lookups — no registry enumeration on the hot path — and a
+// non-canary path (e.g. a legit "/shop") falls through to ErrNoPlacement fast.
+//
+// SAFETY: directory canaries must be seeded ONLY at negative-space roots a
+// legitimate caller never requests (rule 8). The demo set seeds them at
+// /admin/, /backup/, /config/, /secrets/, /internal/ — disjoint from the legit
+// application paths.
+func (b *Builder) resolve(scope contract.ScopeKey, loc seeder.Location) (seeder.Placement, bool) {
+	// 1. exact match
+	if p, ok := b.reg.Lookup(scope, loc); ok {
+		return p, true
+	}
+	// 2. directory-canary prefix walk: try the path (and each ancestor) as a
+	//    trailing-slash directory; accept only a placement whose own location is
+	//    a directory canary (ends in "/").
+	cur := string(loc)
+	for {
+		dir := cur
+		if !strings.HasSuffix(dir, "/") {
+			dir += "/"
+		}
+		if p, ok := b.reg.Lookup(scope, seeder.Location(dir)); ok && strings.HasSuffix(string(p.Location), "/") {
+			return p, true
+		}
+		trimmed := strings.TrimRight(cur, "/")
+		idx := strings.LastIndex(trimmed, "/")
+		if idx <= 0 { // reached the root ("/x" -> stop; never treat "/" as a canary)
+			break
+		}
+		cur = trimmed[:idx]
+	}
+	return seeder.Placement{}, false
 }

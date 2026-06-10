@@ -54,12 +54,23 @@ func enforceVerdict(enf enforcer, v contract.Verdict) (act containment.Action, a
 // legitimate flow never requests, so a touch is almost certainly hostile
 // (docs/ROADMAP §1). The M3 seeder places real harmless decoys at these
 // locations; the adapter recognizes a touch by the path.
+//
+// Each type carries an EXACT leaf AND a DIRECTORY canary (trailing "/"). The
+// directory canary matches any path at or below it (signal.Builder prefix walk),
+// so an LLM attacker's natural enumeration — GET /admin/, /backup/, /config/,
+// /secrets/, /internal/ (and anything under them) — registers as a touch without
+// spoon-feeding exact leaves. Each directory maps to a DISTINCT canary type
+// because the scorer dedups by type: hitting three distinct hostile directories
+// is three distinct types → crosses Contain → inline attrition maze.
+//
+// SAFETY: every path here is negative space, disjoint from the legit generator
+// paths (/shop,/search,/products,/account,/cart,/checkout,/orders) — rule 8.
 var demoCanaryPaths = map[contract.CanaryType][]seeder.Location{
-	catalog.TypePlantedCredential: {"/.aws/credentials"},
-	catalog.TypeFakeSecret:        {"/.env"},
-	catalog.TypeDecoyFile:         {"/backup/db.sql"},
-	catalog.TypeFakeBucket:        {"/internal/buckets"},
-	catalog.TypeFakeEndpoint:      {"/admin/metrics"},
+	catalog.TypePlantedCredential: {"/.aws/credentials", "/secrets/"},
+	catalog.TypeFakeSecret:        {"/.env", "/config/"},
+	catalog.TypeDecoyFile:         {"/backup/db.sql", "/backup/"},
+	catalog.TypeFakeBucket:        {"/internal/buckets", "/internal/"},
+	catalog.TypeFakeEndpoint:      {"/admin/metrics", "/admin/"},
 }
 
 // seedCanaries places the demo canaries in the negative space and returns the
