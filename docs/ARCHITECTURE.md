@@ -15,9 +15,9 @@ The product has two named components.
 
 **Canary** is the detection surface. It generates and places decoy objects (fake secrets, buckets, credentials, files, endpoints), seeds them where east-west traffic can reach them, and observes every interaction. Canary answers one question: who is touching things they should never touch, and how.
 
-**Sting** is the response. It takes the verdict produced from canary interaction and acts. Sting spans blocking, rate-limiting, tarpitting, token-wasting, and adversarial time-wasting. Sting is where CanarySting stops being a detector and becomes a control that imposes cost on the attacker.
+**Sting** is the response. It takes the verdict produced from canary interaction and acts. Sting spans containment (blocking, rate-limiting, jailing) and multi-dimensional attrition: imposing cost across velocity, information quality, finite capacity, exploit inventory, and operational exposure. Sting is where CanarySting stops being a detector and becomes a control that imposes cost on the attacker.
 
-The core thesis: detection alone is a commodity, and containment alone is defensive. The differentiated value is the ability to impose asymmetric economic cost on automated attackers. Against a human that is a delay. Against a script or an LLM agent it is a direct hit to the attacker's operating budget.
+The core thesis: detection alone is a commodity, and containment alone is defensive. The differentiated value is the ability to impose asymmetric cost on automated attackers across multiple dimensions — their speed, the quality of their intelligence, their finite compute capacity, their exploit inventory, and their operational exposure. The cost lands whether the attacker runs metered API inference, self-hosted open-weight models, or stolen compute, because it attacks a velocity-dependent adversary's scarce resources, not just a metered bill.
 
 ---
 
@@ -63,14 +63,14 @@ Sting splits into two intents that share mechanisms but differ in purpose.
 
 **Containment sting.** Goal: stop egress and hold the actor. Mechanisms: rate-limiting, hard egress deny, jailing the socket or cgroup. Purpose: defensive, prevent exfiltration and lateral progress. This is the fail-closed, high-confidence Tier 3 work, enforced in the kernel.
 
-**Attrition sting.** Goal: impose cost. Mechanisms: tarpitting, adversarial slow responses, and plausible-but-endless fake resources engineered to make an automated or LLM-driven attacker burn time, compute, and tokens chasing nothing. Purpose: economic, raise the attacker's cost per operation. Attrition can begin at Tier 2 because the cost of attrition-stinging a false positive is small (a slightly slower response to one legitimate flow), whereas containment-stinging a false positive is severe (jailed real traffic).
+**Attrition sting.** Goal: impose cost across five axes — velocity disruption (latency/tarpitting that attacks the attacker's speed advantage), information poisoning (fabricated environmental state that degrades the agent's decisions), opportunity-cost injection (consuming finite compute capacity, which subsumes token-burning), exploit-inventory burn (forcing real exploits to be spent on decoys), and operational exposure (forcing infrastructure to reveal itself). The cost lands regardless of how the attacker is hosted. Attrition can begin at Tier 2 because the cost of attrition-stinging a false positive is small (a slightly slower response, or fake state served to one legitimate flow), whereas containment-stinging a false positive is severe (jailed real traffic). See `docs/STING.md` for the full taxonomy.
 
 Attrition is the competitive differentiator and ships aggressive-capable from day one. Operators may dial it down to passive (slow responses only) or moderate (serve plausible fake resources that keep a crawler looping), but the platform sells the aggressive ceiling: responses crafted to maximize an LLM agent's token consumption through deep fake directory trees, recursive fake structures, and bait that triggers expensive parsing. Against scripted and model-driven attackers, this is a direct cost imposed on the adversary's compute budget.
 
 | Sting type | Goal | Mechanisms | Earliest tier | Error cost |
 |---|---|---|---|---|
 | Containment | Stop egress, hold actor | Rate-limit, hard deny, jail socket/cgroup | Tier 2 (limit), Tier 3 (deny/jail) | High |
-| Attrition | Impose economic cost | Tarpit, adversarial responses, token-burning fake resources | Tier 2 | Low |
+| Attrition | Impose multi-dimensional cost | Velocity disruption, information poisoning, opportunity-cost injection, exploit burn, operational exposure | Tier 2 | Low |
 
 ---
 
@@ -172,7 +172,7 @@ Three logical layers, with the proxies kept thin.
 
 1. **Canary layer.** Proxy adapters (Envoy first, nginx second) plus canary object generation and seeding. Emits signals; carries no detection logic.
 2. **Decision engine.** Scoring, tiering, strictness calibration, scope-keyed isolated state, the feedback loop. Proxy-agnostic, behind a stable contract.
-3. **Sting layer.** Response keyed off the engine's tier verdict, attributed by socket cookie. Split into containment (kernel-enforced) and attrition (tarpit and token-burning, aggressive-capable).
+3. **Sting layer.** Response keyed off the engine's tier verdict, attributed by socket cookie. Split into containment (kernel-enforced) and multi-dimensional attrition (velocity, information poisoning, opportunity cost, exploit burn, operational exposure — aggressive-capable).
 
 The contract between layers is a flow identity plus a signal event in, a verdict out. Each new proxy is one adapter against that contract. Kernel enforcement is independent of which proxy fired the signal.
 
@@ -182,10 +182,10 @@ The contract between layers is a flow identity plus a signal event in, a verdict
 
 One known item for patent counsel, flagged as due diligence rather than a blocker. A granted US patent (10,623,442, originally filed 2015) covers a specific chained-honeytoken method: planting decoy credentials in one resource that unlock specifically enumerated downstream resources, and alerting only after the attacker traverses that exact credential chain.
 
-CanarySting's design differs in mechanism: it scores continuous interaction depth across heterogeneous canary types, keys decisions on a learned calibrated suspicion score rather than a fixed credential traversal, and its novel layer (the attrition sting) is not a detection method at all. Infringement turns on practicing every element of a claim, and "require multiple interactions before acting" as a general concept is not what is claimed. Two design and business actions follow:
+CanarySting's design differs in mechanism: it scores continuous interaction depth across heterogeneous canary types, keys decisions on a learned calibrated suspicion score rather than a fixed credential traversal, and its novel layer (multi-dimensional active attrition, especially information poisoning of autonomous agents) is not a detection method at all. Infringement turns on practicing every element of a claim, and "require multiple interactions before acting" as a general concept is not what is claimed. Two design and business actions follow:
 
 1. Do not build canary placement around the specific chained-decoy-credential mechanism (canary A exists to hand out credentials that unlock canary B in a fixed chain). The depth-of-interaction model does not need it and works on independent canaries scored by count and weight.
-2. Commission a proper freedom-to-operate search before raising or shipping, and file a provisional on the genuinely novel work: the aggressive attrition sting and the token-economic-cost mechanism against LLM-driven attackers, which appears unoccupied.
+2. Commission a proper freedom-to-operate search before raising or shipping, and file a provisional on the genuinely novel work: multi-dimensional active attrition against autonomous/LLM-driven attackers — in particular (a) information poisoning that degrades an autonomous agent's decision-making by feeding it fabricated environmental state, and (b) opportunity-cost and velocity attrition imposed on a velocity-dependent adversary. This claim surface is richer and more defensible than a narrow 'token-wasting' claim, and appears unoccupied.
 
 ---
 
