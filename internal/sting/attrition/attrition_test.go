@@ -14,6 +14,7 @@ import (
 
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/harmless"
+	"github.com/canarysting/canarysting/internal/harmless/decoy"
 	"github.com/canarysting/canarysting/internal/intelligence"
 )
 
@@ -256,8 +257,8 @@ func TestFloorIsRespected(t *testing.T) {
 		allowed map[string]bool
 	}{
 		{contract.FloorPassive, map[string]bool{MechTarpit: true}},
-		{contract.FloorModerate, map[string]bool{MechTarpit: true, MechFakeTree: true}},
-		{contract.FloorAggressive, map[string]bool{MechTarpit: true, MechFakeTree: true, MechTokenBait: true}},
+		{contract.FloorModerate, map[string]bool{MechTarpit: true, MechFakeTree: true, MechPoison: true}},
+		{contract.FloorAggressive, map[string]bool{MechTarpit: true, MechFakeTree: true, MechPoison: true, MechTokenBait: true}},
 	}
 	for _, tc := range cases {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
@@ -274,10 +275,10 @@ func TestFloorIsRespected(t *testing.T) {
 func TestGeneratorSelectionTable(t *testing.T) {
 	// Pins the EXACT active axis SET per (floor, tier) AND the headline mechanism
 	// (the most-aggressive member — the D3 by-mechanism KPI). Under the five-axis
-	// model a tier composes a SET (velocity+poison from TierContain), but a higher
-	// tier must never raise the floor's ceiling, and the headline must equal the old
-	// single-generator selection so the KPI stays stable: FloorAggressive Tier 2 is
-	// the gentler form (fake_tree), Tier 3 the full adversarial form (token_bait).
+	// model a tier composes a SET (velocity + the poison generators from TierContain),
+	// but a higher tier must never raise the floor's ceiling. AX2 made poison_field
+	// the Tier-2 headline at the poison floors (the D8 fake_tree->poison_field flip);
+	// token_bait stays the Tier-3 aggressive headline.
 	mechSet := func(gs []generator) map[string]bool {
 		m := map[string]bool{}
 		for _, g := range gs {
@@ -293,10 +294,10 @@ func TestGeneratorSelectionTable(t *testing.T) {
 	}{
 		{contract.FloorPassive, contract.TierContain, []string{MechTarpit}, MechTarpit},
 		{contract.FloorPassive, contract.TierJail, []string{MechTarpit}, MechTarpit},
-		{contract.FloorModerate, contract.TierContain, []string{MechTarpit, MechFakeTree}, MechFakeTree},
-		{contract.FloorModerate, contract.TierJail, []string{MechTarpit, MechFakeTree}, MechFakeTree},
-		{contract.FloorAggressive, contract.TierContain, []string{MechTarpit, MechFakeTree}, MechFakeTree},
-		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechTokenBait}, MechTokenBait},
+		{contract.FloorModerate, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
+		{contract.FloorModerate, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
+		{contract.FloorAggressive, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
+		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison, MechTokenBait}, MechTokenBait},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		sel := a.selectAxes(tc.tier)
@@ -401,14 +402,110 @@ func TestTokenProxyKeysOffRotatedGenerator(t *testing.T) {
 	}
 }
 
+// --- AX2: information poisoning (poison_field) ---
+
+func TestPoisonFieldInternallyConsistent(t *testing.T) {
+	// Every stage of the fabricated environment must reference the SAME hosts, so an
+	// agent inspecting it sees a coherent (false) world — the "plausible under
+	// inspection" requirement. The host set is recomputed from the seed, never stored.
+	const seed = 0xC0FFEE
+	h0 := decoy.ReservedHost(mix(seed, 0)) // the "primary" — referenced by every stage
+	h1 := decoy.ReservedHost(mix(seed, 1)) // the "cache" — referenced by cred + topology
+	h2 := decoy.ReservedHost(mix(seed, 2)) // the "gateway" — referenced by topology
+	// The hosts must be DISTINCT, or "consistency across stages" would be trivially
+	// (and implausibly) satisfied by one repeated host.
+	if h0 == h1 || h1 == h2 || h0 == h2 {
+		t.Fatalf("fabricated hosts are not distinct: %q %q %q", h0, h1, h2)
+	}
+	pages := make([]string, len(poisonClasses))
+	for stage := range poisonClasses {
+		pages[stage] = string(poisonPage(seed, stage))
+	}
+	for stage, page := range pages {
+		if !strings.Contains(page, h0) {
+			t.Fatalf("stage %d (%s) does not reference the consistent primary host %q:\n%s", stage, poisonClasses[stage], h0, page)
+		}
+	}
+	if !strings.Contains(pages[0], h1) || !strings.Contains(pages[1], h1) {
+		t.Fatalf("cache host %q is not consistent across the credential+topology stages", h1)
+	}
+	// A different flow (seed) gets a DIFFERENT environment (per-flow keyed).
+	if strings.Contains(string(poisonPage(seed+1, 0)), h0) {
+		t.Fatal("a different seed reproduced the same host — poison_field is not per-flow keyed")
+	}
+}
+
+func TestPoisonClassForStage(t *testing.T) {
+	// Direct boundary coverage of the reached->label map (the drive tests exercise it
+	// only indirectly): 0/negative => "" (no poison served); 1..N => the stage label;
+	// past N clamps to the deepest stage (the loop never invents a class).
+	if poisonClassForStage(0) != "" || poisonClassForStage(-1) != "" {
+		t.Fatal("reached<=0 must map to the empty class (no poison served)")
+	}
+	for reached := 1; reached <= len(poisonClasses); reached++ {
+		if got, want := poisonClassForStage(reached), poisonClasses[reached-1]; got != want {
+			t.Fatalf("poisonClassForStage(%d) = %q, want %q", reached, got, want)
+		}
+	}
+	if got := poisonClassForStage(len(poisonClasses) + 5); got != poisonClasses[len(poisonClasses)-1] {
+		t.Fatalf("past the stage count must clamp to the deepest class, got %q", got)
+	}
+}
+
+func TestPoisonReactionSignal(t *testing.T) {
+	// A FloorModerate flow rotates through poison_field; PoisonReached climbs to the
+	// stage count and PoisonClass names the deepest stage. A passive (no-poison) flow
+	// leaves both zero/empty (cur.poisonStage is touched only by poison_field).
+	a := mustNew(t, Config{Floor: contract.FloorModerate, Budget: testBudget(), Drip: fastDrip()})
+	s := a.Open(verdict(contract.TierContain, 0xBEEF))
+	_, out := drive(t, s, 30) // enough chunks for the rotation to walk every poison stage
+	if out.PoisonReached != len(poisonClasses) {
+		t.Fatalf("PoisonReached = %d, want %d (all stages walked)", out.PoisonReached, len(poisonClasses))
+	}
+	if want := poisonClasses[len(poisonClasses)-1]; out.PoisonClass != want {
+		t.Fatalf("PoisonClass = %q, want the deepest stage %q", out.PoisonClass, want)
+	}
+	if out.Axes&contract.AxisPoison == 0 {
+		t.Fatal("Moderate flow Outcome.Axes is missing AxisPoison")
+	}
+	pa := mustNew(t, Config{Budget: testBudget(), Drip: fastDrip()}) // passive: no poison_field
+	ps := pa.Open(verdict(contract.TierContain, 0xF00D))
+	_, pout := drive(t, ps, 10)
+	if pout.PoisonReached != 0 || pout.PoisonClass != "" {
+		t.Fatalf("passive flow carries a poison signal: reached=%d class=%q", pout.PoisonReached, pout.PoisonClass)
+	}
+}
+
+func TestPoisonFieldBoundedAndHarmless(t *testing.T) {
+	// poison_field loops (endless, budget-bounded), and every page it ever emits is
+	// within the per-chunk cap, marker-tagged, and provably harmless.
+	cur := cursor{seed: 0x1234}
+	p := genParams{MaxDepth: DefaultMaxDepth, Drip: DefaultDrip()}
+	for i := 0; i < 4*len(poisonClasses)+1; i++ {
+		data, _, ok := poisonField{}.next(&cur, p)
+		if !ok {
+			t.Fatalf("poison_field ended at chunk %d; it must loop (a self-end would terminate the rotated stream)", i)
+		}
+		if len(data) == 0 || len(data) > maxChunkBytes {
+			t.Fatalf("chunk %d size %d out of (0, %d]", i, len(data), maxChunkBytes)
+		}
+		if err := harmless.CrossScan(data); err != nil {
+			t.Fatalf("chunk %d not provably harmless: %v", i, err)
+		}
+		if !strings.Contains(string(data), stingMarker) {
+			t.Fatalf("chunk %d missing the sting marker", i)
+		}
+	}
+}
+
 func TestTokenBaitNotConstructedBelowAggressive(t *testing.T) {
 	for _, tc := range []struct {
 		floor contract.StingFloor
 		gens  int
 	}{
 		{contract.FloorPassive, 1},
-		{contract.FloorModerate, 2},
-		{contract.FloorAggressive, 3},
+		{contract.FloorModerate, 3},
+		{contract.FloorAggressive, 4},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		if len(a.gens) != tc.gens {

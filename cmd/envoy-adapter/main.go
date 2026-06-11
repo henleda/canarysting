@@ -95,7 +95,7 @@ func main() {
 		engineAddr = flag.String("engine", "localhost:50052", "engine gRPC address (cmd/engine -grpc-addr)")
 		scopeFlag  = flag.String("scope", "", "resolved scope key; REQUIRED — never a global scope")
 		inline     = flag.Bool("inline", true, "inline enforcement (hold canary touches for the verdict)")
-		stingFloor = flag.Int("sting-floor", 0, "attrition floor for inline Tier 2/3: 0=passive(tarpit), 1=moderate(fake_tree), 2=aggressive(token_bait). 0 => no fake-resource deception (tarpit only)")
+		stingFloor = flag.Int("sting-floor", 0, "attrition floor for inline Tier 2/3: 0=passive(tarpit/velocity), 1=moderate(+poison_field/fake_tree), 2=aggressive(+token_bait). 0 => no fake-resource deception (tarpit only)")
 		bodyCap    = flag.Int("attrition-body-cap", 64<<10, "max deception-body bytes assembled into the single ext_proc ImmediateResponse")
 		maxHold    = flag.Duration("attrition-max-hold", 8*time.Second, "max wall-time to hold ONE inline attrition flow before returning the deception body. MUST be < the proxy's ext_proc message_timeout (Envoy's is 10s here) so the body is actually delivered (else the proxy returns a gateway timeout) and the imposed-time number reflects what the attacker really waited")
 	)
