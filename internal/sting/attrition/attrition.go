@@ -143,15 +143,15 @@ func New(cfg Config) (*BoundedAttritor, error) {
 	// Ladder order least->most aggressive; the most-aggressive constructed generator
 	// is the headline Mechanism (sel[last]). poisonField sits after fakeMaze, so at
 	// the poison floors (Moderate+) it is the Tier-2 headline (the D8 fake_tree->
-	// poison_field flip). At FloorAggressive+TierJail, exploitBait stays last, so it
-	// remains the Tier-3 headline (the AX4 flip). AX5's opExposure (passive operational
-	// exposure — the gentlest Tier-3 mechanism, pure observation) is inserted BEFORE
-	// exploitBait, so it ROTATES in the set (its axis joins Outcome.Axes and it accrues
-	// ExposureSignals) WITHOUT taking the headline — exploit_bait remains the Tier-3
-	// KPI mechanism (no second headline flip). tokenBait likewise rotates but is not
-	// the headline.
+	// poison_field flip). At FloorAggressive+TierJail, opExposure sits LAST, so it is
+	// the Tier-3 headline: operational exposure is the APEX outcome — once a flow is
+	// confirmed-hostile and jailed, the headline says we have stripped its operational
+	// secrecy (its tooling/C2 fingerprint), the deepest intelligence in the model.
+	// tokenBait (opportunity cost) and exploitBait (exploit burn) still ROTATE in the
+	// Tier-3 set (their axes join Outcome.Axes; they accrue their own cost/ExploitsObserved)
+	// but are no longer the headline Mechanism.
 	var gens []generator
-	for _, g := range []generator{tarpit{}, fakeMaze{}, poisonField{}, tokenBait{}, opExposure{}, exploitBait{}} {
+	for _, g := range []generator{tarpit{}, fakeMaze{}, poisonField{}, tokenBait{}, exploitBait{}, opExposure{}} {
 		if g.axis()&floorAxes != 0 {
 			gens = append(gens, g)
 		}
