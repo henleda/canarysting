@@ -385,10 +385,11 @@ func TestSelectAxesComposition(t *testing.T) {
 func TestTokenProxyKeysOffRotatedGenerator(t *testing.T) {
 	// Per-chunk TokenCostProxy must bill the CURRENTLY-ACTIVE (rotated) generator,
 	// not the frozen headline Mechanism. At FloorAggressive+TierJail the set is
-	// {tarpit, fakeMaze, tokenBait}; only token_bait bills at baitTokenRatio (3.0),
-	// tarpit/fake_tree at the plain divisor (1/4). A regression freezing it to the
-	// headline (token_bait) would bill EVERY chunk at 3.0x — a ~12x over-attribution
-	// into the attacker-cost hero / D3 KPI. Bracket the accumulated proxy STRICTLY
+	// {tarpit, fakeMaze, poisonField, tokenBait, exploitBait, opExposure}; only
+	// token_bait bills at baitTokenRatio (3.0), every other generator at the plain
+	// divisor (1/4). A regression freezing it to the headline (now op_exposure, billed
+	// plain) would actually UNDER-bill token_bait's chunks — and freezing to token_bait
+	// would over-bill every chunk at 3.0x. Bracket the accumulated proxy STRICTLY
 	// between the all-plain and all-bait bounds to prove a genuine per-generator mix.
 	a := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
 	s := a.Open(verdict(contract.TierJail, 0xF00D))
