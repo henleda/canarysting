@@ -15,14 +15,22 @@ on intent, the layer doc wins; this doc governs sequencing.
 
 **Land design partners by showing, live, the thing no incumbent ships:** a canary
 touch triggers an automated, escalating, **kernel-enforced** response that imposes
-asymmetric economic cost on an automated/LLM attacker — with low false positives
-*by construction* (the guardrail), and learned state that never leaves the
-customer's boundary (scope isolation). And on top of the control, the thing that
-makes it compound: a **proprietary adversary-intelligence asset** (`INTELLIGENCE.md`)
-that sharpens with every deployment — profiling, an attacker-cost KPI, an
-early-warning recon signal, and a cross-customer network — built so that only
-anonymized patterns ever cross a boundary and raw data never does. The control
-gets us in; the intelligence is the moat, and the demo shows both.
+**asymmetric opportunity cost on a velocity-dependent automated/LLM attacker** —
+across five attrition axes (velocity disruption, **information poisoning** [the
+core differentiator], opportunity-cost injection, exploit-inventory burn,
+operational exposure), with **time-to-disengage** as the headline engagement
+metric — not "make them pay a cloud bill" (the dollar framing is the weakest and
+never leads). All with low false positives *by construction* (the guardrail), and
+learned state that never leaves the customer's boundary (scope isolation). And on
+top of the control, the thing that makes it compound: a **proprietary
+adversary-intelligence asset** (`INTELLIGENCE.md`) that sharpens with every
+deployment and now compounds **five-axis attrition data** (per-axis engagement,
+time-to-disengage, poison-reached, exploit/exposure signals) — profiling, an
+attacker-cost KPI, an early-warning recon signal, and a cross-customer network —
+built so that only anonymized patterns ever cross a boundary and raw data never
+does. The control gets us in; the intelligence is the moat, and the demo shows
+both. The authoritative attrition build plan is `docs/ATTRITION_FIVE_AXIS_DESIGN.md`
+(see Track E below).
 
 ### Locked decisions (review on 2026-06-03)
 
@@ -59,6 +67,11 @@ These are settled and now drive the plan:
    M7 learning window must accrue **real adversary-interaction history** (the
    attacker runs against the environment during the window), not benign baseline
    traffic alone — this widens the long pole (see §4). Accepted under decision 6.
+   *(Forward note, 2026-06-10: the five-axis attrition reframe — Track E /
+   `docs/ATTRITION_FIVE_AXIS_DESIGN.md` — does not change this decision; it means
+   each of these intelligence tiers now consumes per-axis attrition data, not just
+   single-axis tarpit/token signals. The reframe reorders the forward build, not
+   the locked scope.)*
 
 We optimize for **a credible, real, polished demo** — not feature completeness,
 and not raw speed.
@@ -81,10 +94,23 @@ for the first demo):
    It keeps probing distinct canaries inside a tight window → **Tier 1** (tag) →
    **Tier 2** (contain + attrition begins). The suspicion score and tier ladder
    animate live.
-4. **The sting (the wow).** At Tier 2 the attacker is tarpitted and fed an
-   endless, plausible fake directory tree / fake secrets engineered to trigger
-   expensive parsing. A meter shows **attacker time + tokens + compute burned**.
-   The **defender's** cost stays flat — every generator is bounded.
+4. **The sting (the wow).** At Tier 2 the attacker runs into **multi-axis
+   attrition**: **velocity disruption** (adaptive latency that punishes
+   persistence the more it probes) + **information poisoning** — *the core
+   differentiator* — a single internally-consistent fabricated environment (fake
+   credentials, hostnames, topology, "successful" results) the agent acts on as
+   if it were real, not just an endless maze + **opportunity-cost injection**
+   (parser-hostile bait that consumes finite capacity). The headline metric is
+   **engagement / time-to-disengage** and the **imposed wall-clock time** — i.e.
+   **opportunity cost on a velocity-dependent adversary**, which lands whether the
+   attacker is metered, self-hosted, or on stolen compute. A token/compute/$ meter
+   is shown but **subordinated** as an explicit *proxy/estimate* (the platform
+   cannot observe the attacker's real allocation; the M9 `RealMeter` $ stays the
+   only ground-truth number and is never merged with the proxy). The **defender's**
+   cost stays flat — every generator is bounded. *(The live-window Tier-2 mechanism
+   flip from `fake_tree` to `poison_field` (Track E AX2, decision D8) is a visible
+   demo change needing founder signoff — the recon-feed/by-mechanism rollup/saved
+   screenshots key on `fake_tree`.)*
 5. **The precision (the CISO proof).** **Tier 3** jails the exact offending
    socket **in the kernel** (by socket cookie, via eBPF). A legitimate bystander
    flow on the same host keeps working — proving we contain the *flow*, not the
@@ -103,11 +129,15 @@ for the first demo):
      *before* the loud part — an early-warning feed, never an enforcement action
      (the guardrail still holds). (Track D / D4.)
    - *Adversary profile:* the system recognizes the actor by a **behavioral
-     fingerprint** — its probing order, its reaction to tagging and tarpitting,
-     its timing — derived from real interaction history. (D2.)
-   - *Attacker-cost KPI:* the cost meter from beat 4 rolled up into the
-     board-level number a CISO reports — time imposed, tokens/compute burned,
-     requests absorbed, per scope. (D3.)
+     fingerprint** — its probing order, its canary-type sequence, and its
+     **per-axis engagement** (which of the five attrition axes it engaged) +
+     **time-to-disengage** / disengage-reason — derived from real interaction
+     history. (D2.)
+   - *Attacker-cost KPI:* the engagement meter from beat 4 rolled up into the
+     board-level number a CISO reports — **leading with imposed time / opportunity
+     cost** (median/p90 time-to-disengage), with per-axis **overlapping** subtotals
+     (never a partition summing to the flat total) and tokens/compute/$ demoted as a
+     qualified *proxy*, per scope. (D3.)
    - *The cross-customer money-shot:* a fingerprint learned in this deployment is
      anonymized and passed through the **single default-deny egress filter** —
      shown live **dropping** anything raw or environment-identifying — and then
@@ -138,9 +168,12 @@ AWS.
 
 ## 3. Milestones
 
-Three tracks that converge on the demo. Estimates are rough engineering days for
-the two of us, under the tests-as-invariants discipline (§5). No date pressure —
-estimates size effort, not a deadline.
+Tracks that converge on the demo: A (engine + sting libraries), B (kernel + proxy
+integration), C (environment + product), D (intelligence moat), and E (the
+2026-06-10 five-axis attrition deepening, which refactors the delivered M6 on top of
+the rest). Estimates are rough engineering days for the two of us, under the
+tests-as-invariants discipline (§5). No date pressure — estimates size effort, not a
+deadline.
 
 ### Track A — the engine and sting libraries (pure Go, local)
 
@@ -306,7 +339,7 @@ The brain runs end-to-end in-process — no proxy, no kernel.
 
 ### Track C — the real environment + the visible product
 
-#### M7 — Persistent staged environment: real baseline + calibration  · ongoing, started early
+#### M7 — Persistent staged environment: real baseline + calibration  · ← **LIVE & ACCRUING (2026-06-09)** · ongoing until calibrated
 - Stand up the staged microservice environment as an **always-on** workload on
   the AWS host so it generates **genuine** east-west traffic continuously.
 - Run **baseline mode** for a real, operator-set learning window so a real
@@ -319,21 +352,21 @@ The brain runs end-to-end in-process — no proxy, no kernel.
 - **Note:** start this as early as the environment can run (after M4/M5 give it a
   real dataplane and kernel path) so the window has elapsed by demo day.
 
-#### M8 — Product dashboard (Next.js, polished)  · 6–10 days · parallel once M1 emits data
+#### M8 — Product dashboard (Next.js, polished)  · 6–10 days · ← **DONE (2026-06-09)** · parallel once M1 emits data
 - The product dashboard (the §1 screen): live scores, tier ladder, scope/
   calibration state, attacker-cost meter, guardrail + baseline panels. Highly
   polished — CISO-grade. **Separate from the corporate `canarysting-www`.**
 - Backed only by real engine/environment data (no mock data).
 - **Exit:** the screen tells the story end-to-end from real state.
 
-#### M9 — Scenario + LLM attacker  · 4–7 days
+#### M9 — Scenario + LLM attacker  · 4–7 days · ← **DONE (2026-06-09)**
 - Scenario orchestration: one command stands up the staged attack.
 - Scripted attacker for repeatability; then a **real LLM agent** harness that
   actually probes and burns tokens against the attrition — the why-now made
   visible (ties to the GTG-1002 narrative in the market report).
 - **Exit:** the demo runs end-to-end with a real agent burning real tokens.
 
-#### M10 — Package for design partners  · 2–4 days
+#### M10 — Package for design partners  · 2–4 days · ← **PENDING**
 - Scripted, repeatable demo; AWS deploy manifests in `deploy/`; a runbook; the
   **observe-only baseline pilot** framing as the leave-behind
   (`TECHNICAL_ARCHITECTURE.md` §4/§10).
@@ -355,7 +388,7 @@ The brain runs end-to-end in-process — no proxy, no kernel.
 > credible operator-config story; naturally lands here (or earlier if a partner needs
 > to tune strictness).
 
-#### M11 — Kubernetes / EKS demo  · scoped after §7 research lands · *future*
+#### M11 — Kubernetes / EKS demo  · scoped after §7 research lands · *future* · ← **PENDING**
 - Port the staged demo to Kubernetes (likely EKS): eBPF as a privileged
   DaemonSet, the Envoy integration as mesh-native or sidecar, scope key from
   SPIFFE trust domain / cluster UID. Informed by the §7 research findings.
@@ -387,54 +420,117 @@ this track's credible demo state rides on a learning window that now must includ
   scope-keyed event the higher tiers consume. *(Starts after M1; completed as
   M3/M6/M5 fill the remaining fields.)*
 
-#### D2 — Adversary profiling  · 5–8 days · *the moat input*
+#### D2 — Adversary profiling  · 5–8 days · *the moat input* · ← **UNBUILT** (engine seam only; `profile/` is a `doc.go` stub)
 - `internal/intelligence/profile/`: derive **behavioral fingerprints** from event
-  sequences (probing order, canary-type sequence, reaction to tag/tarpit, timing)
-  — built to carry **no** environment-identifying detail, because the fingerprint
-  is the unit the cross-customer network (D6) may share.
-- The **AI-attacker profiler** (`INTELLIGENCE.md` §4.2): structured, reaction-
-  labeled, cost-quantified output, shaped as a clean training signal for the
-  future bait model (Model 2; not built here, but the interface is). Keep the
-  profiler→bait→events loop an explicit, testable boundary (§4.3).
+  sequences (probing order, canary-type sequence) built to carry **no**
+  environment-identifying detail, because the fingerprint is the unit the
+  cross-customer network (D6) may share. **Reframed for five-axis attrition
+  (2026-06-10, `docs/ATTRITION_FIVE_AXIS_DESIGN.md`):** the profile's behavioral
+  reaction is now a **per-axis engagement signature** read from the new (Track E
+  AX0) `StingOutcome` fields — `Axes` (which of the five axes the flow actually
+  engaged, **overlapping**) + **time-to-disengage** + a disengage classification
+  (`TimeToDisengageSec`/`DisengageReason` — never a defender-stop mislabeled as an
+  attacker disengage, and **not** `LastSeen−FirstSeen`, a separate session-span
+  metric) + poison reaction (`PoisonClass`/`PoisonReached`) as a peer of depth —
+  **replacing** the old single-axis "reaction to tag/tarpit + tokens/time/bytes
+  cost signature." Read engagement *jointly* with the disengage classifier, not
+  depth alone (an indifferent crawler also advances `PoisonReached`/depth). These
+  new per-axis fields are behavioral and anonymized-by-construction; they stay
+  **local-rich** and are coarsened only at the D6 export boundary.
+- The **AI-attacker profiler** (`INTELLIGENCE.md` §4.2): structured, per-axis
+  reaction-labeled, opportunity-cost-quantified output, shaped as a clean training
+  signal for the future bait model (Model 2; not built here, but the interface is).
+  Keep the profiler→bait→events loop an explicit, testable boundary (§4.3).
 - **Tests:** a fingerprint is reproducible from the same event sequence; a
   fingerprint provably contains no scope-identifying field (gate for D6).
+- **Depends on:** D1 + real events from M7/M9 + **Track E AX0** (the per-axis
+  `StingOutcome` fields must exist and be persisted before the engagement signature
+  can be derived). See `docs/D2_D5_DESIGN.md` for the full schema.
 - **Exit:** real interaction history yields reusable, shareable-safe profiles.
-  *(Needs D1 + real events from M7/M9.)*
 
-#### D3 — Attacker-cost metric  · 1–2 days · *the board-level KPI*
-- `internal/intelligence/cost/`: a clean reporting view over the event store —
-  time imposed, tokens/compute extracted, requests absorbed, per period, per
-  scope, aggregated. Derived entirely from the deployment's own events; leaves
-  the boundary only if the operator exports their own number.
-- This is the meter from the M6 attrition demo, operationalized into the renewal-
-  lever KPI the M8 dashboard surfaces.
-- **Exit:** a real, defensible attacker-cost number per scope. *(Needs D1 + M6
-  cost proxies; mostly aggregation.)*
+#### D3 — Attacker-cost metric  · 1–2 days · *the board-level KPI* · ← **DELIVERED (core); reframe pending under Track E AX3**
+- `internal/intelligence/cost/`: a clean reporting view over the event store. The
+  core `cost.Rollup`/`Summary` ships (`TimeImposedSec`, `TokensBurned`,
+  `RequestsAbsorbed`, `BytesServed`, `MaxDepth`, `TierCounts`). **Reframed for
+  five-axis attrition (2026-06-10):** this is **opportunity cost on a
+  velocity-dependent adversary**, not a token/compute/$ bill. Concretely the view
+  **leads with imposed time + engagement** (median/p90 time-to-disengage);
+  **demotes** tokens/compute/$ below time and qualifies them as a **proxy/estimate**
+  (the platform cannot observe the attacker's real allocation); keeps the M9
+  `RealMeter` ($) as the only ground-truth number but subordinates it and **never
+  merges** it with the proxy; and adds **per-axis subtotals** (classified off the
+  `Axes` bits) rendered as **intentionally OVERLAPPING** bars that must NEVER be
+  presented as a partition summing to the flat total (a mechanism lands on multiple
+  axes). Derived entirely from the deployment's own events; leaves the boundary
+  only if the operator exports their own number. Includes the required
+  anti-regression framing guard test (`cost.go` "no economic cost" → "no
+  opportunity/attrition cost").
+- This is the engagement meter from the attrition demo, operationalized into the
+  renewal-lever KPI the M8 dashboard surfaces — the board-KPI value reframed around
+  imposed time / opportunity cost, not dollars.
+- **Exit:** a real, defensible opportunity-cost number per scope. *(Core delivered;
+  the reframe + per-axis subtotals land with Track E AX3, which needs AX0+AX1
+  engagement fields; mostly aggregation.)*
 
-#### D4 — Reconnaissance early-warning signal  · 2–3 days
+#### D4 — Reconnaissance early-warning signal  · 2–3 days · ← **UNBUILT (intelligence pkg)** (a dashboard recon feed exists; `recon/` is a `doc.go` stub)
 - `internal/intelligence/recon/`: a distinct low-tier signal from canary touches
   in the negative space combined with baseline deviation **as context only**
-  (never a trigger — `BASELINE_MULTIPLIER.md` §5 holds). Surface to the operator
-  as an early-warning feed, not an enforcement action.
+  (never a trigger — `BASELINE_MULTIPLIER.md` §5 holds; rule 8 unchanged). Surface
+  to the operator as an early-warning feed, not an enforcement action.
+- **Five-axis context (2026-06-10):** where a recon-flagged flow later escalates,
+  the early-warning record can be enriched with the eventual per-axis engagement
+  (Track E `Axes`/time-to-disengage) — still **context only, never a trigger**,
+  and the attractive decoy services in negative space (Track E AX4) remain a
+  **canary-touch** trigger, not a baseline-deviation one.
 - **Exit:** quiet pre-attack probing is surfaced ahead of the loud part, without
   ever tripping the guardrail. *(Needs D1 + the M7 baseline.)*
 
-#### D5 — In-deployment detection sharpening  · 3–4 days · *guardrail-critical*
+#### D5 — In-deployment detection sharpening  · 3–4 days · *guardrail-critical* · ← **PARTIAL** (Phase 1 DONE, `797e877`; Phase 2 UNBUILT)
 - A known fingerprint (D2) raises the weight of a *matching canary touch* — as
   **weight context within the multiplier bounds** (`BASELINE_MULTIPLIER.md`),
-  **never** as an independent trigger. Integrates into the M1/M2 scoring path;
-  stays within the scope; obeys scope isolation.
+  **never** as an independent trigger (rule 8 unchanged). Integrates into the
+  M1/M2 scoring path; stays within the scope; obeys scope isolation.
+- **Phase 1 (DELIVERED):** the bounded additive-sharpening term + `Matcher` seam
+  live in `internal/engine/baseline/baseline.go` with `alpha=0` in `DefaultParams`
+  (a true no-op everywhere). **Phase 2 (UNBUILT):** the real D2 profiling +
+  jail-outcome feedback. The D5 input is the D2 profile, which is now a **per-axis
+  engagement signature** (Track E reframe) — but D5 still only moves M (weight
+  context within `M_max`), never manufactures a jail. See `docs/D2_D5_DESIGN.md`.
 - **Tests:** a fingerprint match alone (no canary touch) takes **no** action;
   the sharpened weight stays within `M ∈ [1, M_max]`.
 - **Exit:** local profiles sharpen local detection without weakening the
-  guardrail. *(Needs D2 + M1/M2.)*
+  guardrail. *(Phase 2 needs D2 + M1/M2.)*
 
-#### D6 — Cross-customer intelligence network  · 6–9 days · *the moat, the trust-critical chokepoint*
+#### D6 — Cross-customer intelligence network  · 6–9 days · *the moat, the trust-critical chokepoint* · ← **UNBUILT** (`network/` is a `doc.go` stub — the egress filter does not yet exist)
 - `internal/intelligence/network/`: build the **egress filter first and most
   carefully** — the single **default-deny** chokepoint; a field leaves only if
   explicitly marked safe and justified. Then anonymize/aggregate, then the
   shared-set consumer (returns as detection context per D5, never as a trigger).
   Participation (contribute / consume) is a per-deployment opt-in input.
+- **Egress filter is a shared prerequisite (2026-06-10, rule 9):** this same
+  default-deny filter gates THREE things, not just D6 — (a) D6 cross-customer
+  sharing, (b) the D7 threat feed, and (c) the **cross-boundary use of Track E
+  axis-4 `ExploitsObserved` and axis-5 `ExposureSignals`** (exploit signatures +
+  tooling/C2 fingerprints). Those axis-4/5 signals may persist **locally** (rule 5,
+  scope-isolated) but **nothing crosses a deployment boundary** until this filter
+  is built, default-deny, per-field-justified. **Founder decision A2 (2026-06-10):
+  the egress filter is its OWN standalone milestone** (a shared prerequisite of
+  D6, D7, *and* Track E AX4/AX5 — built once, not folded silently into D6's
+  estimate). Tracked as `docs/ATTRITION_FIVE_AXIS_DESIGN.md` §15 F3.
+- **Coarsen the new per-axis fields (rule 9):** the existing export-coarsening
+  transform (`profile.ExportForm`/`ValidateProfileForSharing` — cadence→bands,
+  sequence→unordered-set-or-drop, cost→percentile buckets, tier→"reached T2+")
+  **extends** to the Track E fields under the same per-field-justified discipline:
+  `Axes` bitset → per-axis "engaged axis N" booleans or aggregated counts (never
+  the raw composition, which leaks the deployment's posture/floor config);
+  `TimeToDisengageSec` → bands/buckets; `PoisonClass`/`PoisonReached` → coarse class
+  + bucketed depth; `ExploitsObserved`/`ExposureSignals` → percentile buckets or
+  booleans, **and additionally blocked from crossing at all until this egress
+  filter clears them**. The LOCAL profile stays rich (for D5 matching + Model 2);
+  the cross-boundary form is a deliberate coarsened/aggregated transform (semantic,
+  not field-name-based), inheriting the "seen in ≥k scopes before sharing"
+  aggregation gate. The moat now compounds five-axis attrition intelligence, not
+  just profiles. See `docs/D2_D5_DESIGN.md` decision D/F.
 - **Demo truthfully:** stand up a **real second deployment/scope** so the network
   has something to cross *to*. The demo shows a fingerprint leaving deployment A
   through the filter (with raw/identifying candidates **dropped on screen**) and
@@ -442,17 +538,58 @@ this track's credible demo state rides on a learning window that now must includ
 - **Tests as invariants (this is the rule the whole product is sold on):** the
   filter drops every raw/environment-identifying field by default; nothing but
   cleared, anonymized patterns can cross; an un-opted-in scope neither contributes
-  nor is identifiable. One chokepoint, fully tested.
+  nor is identifiable; no-forbidden-field + export-rejects-identity. One chokepoint,
+  fully tested.
 - **Exit:** an anonymized pattern learned in A measurably sharpens B, and the
   egress filter provably lets nothing else cross. *(Needs D2; the long pole of
   this track.)*
 
-#### D7 — Threat-intelligence feed  · 3–5 days · *second product line*
+#### D7 — Threat-intelligence feed  · 3–5 days · *second product line* · ← **UNBUILT** (`feed/` is a `doc.go` stub; depends on D6)
 - `internal/intelligence/feed/`: a read view over the anonymized, aggregated set
-  (D6), with its own access control and rate limiting. Carries derived patterns
-  only, never customer data — inherits all D6 constraints.
+  (D6), with its own access control and rate limiting. Carries **five-axis-derived
+  patterns** (per-axis engagement bands, disengage-reason mixes, coarse
+  poison/exploit/exposure signals) — still **anonymized**, never customer data, and
+  inheriting every D6 / rule-9 constraint (including the default-deny egress filter
+  gate on the axis-4/5 signals).
 - **Exit:** an external consumer (SIEM/ISAC framing) reads the feed; it contains
   patterns only, proven by the same egress discipline. *(Needs D6.)*
+
+### Track E — five-axis attrition (the differentiator, deepened)  · ← **ALL PENDING**
+
+The 2026-06-10 reframe turns the shipped M6 attrition from "tarpit + token-burning"
+into a **five-axis model** — (1) velocity disruption, (2) **information poisoning**
+[the core differentiator], (3) opportunity-cost injection [subsumes token-burning],
+(4) exploit-inventory burn, (5) operational exposure — plus an **engagement contest**
+(time-to-disengage as a core metric) and the **opportunity-cost-on-a-velocity-dependent-adversary**
+framing. **`docs/ATTRITION_FIVE_AXIS_DESIGN.md` is the authoritative attrition build
+plan** (analogous to how `docs/D2_D5_DESIGN.md` backs D2/D5); this track is its
+sequencing summary — do not duplicate the full design here.
+
+These milestones are **namespaced AX0–AX5** (the design doc labels them M0–M5 *for
+attrition*, which collide with ROADMAP's existing M0–M11 — do **not** reuse those
+numbers). They **refactor delivered M6 code** per founder approval — they do NOT
+alter M6's DONE status or the §8 status log; M6 (the shipped 3-generator
+single-intensity-ladder attrition) is the foundation they build on top of.
+
+`AX0` is the single rule-3 contract change and the only one nobody else re-bumps;
+every other axis depends on it.
+
+| Milestone | Summary | Depends on | Effort |
+|---|---|---|---|
+| **AX0 — Integration spine** | The SINGLE rule-3 `StingOutcome` change (7 additive fields — `Axes uint32` (8), `TimeToDisengageSec` (9), `PoisonClass` (10), `PoisonReached` (11), `ExploitsObserved` (12), `ExposureSignals` (13), `DisengageReason` (14) — threaded through all six real sites; additive ⇒ gob/proto3-forward-safe, live-M7-window-safe; drift-guard needs `Axes`+`DisengageReason` same-named on both `attrition.Outcome` and `intelligence.StingOutcome`); the new `internal/harmless/decoy` shared package; `AttritionAxis` bitset + `StingFloor.Axes()`; axis-aware `selectAxes` (returns a SET, rotated per chunk on the existing single stream sharing one cursor + `Budget`); no-op `Stream.Observe` seam; per-axis `cost.Rollup` carriers. THE ONLY contract change. | — | L |
+| **AX1 — Velocity adaptive latency + time-to-disengage** | `adaptiveDelay`/`ramp`/`RampSaturate` (small default — escalation must fit the inline ~8 s transport; **no async 120 s path is promised**); time-to-disengage populated via the AX0 carrier + adapter disengage classifier. | AX0 (shares the stream/cursor — sequence alongside) | M |
+| **AX2 — Information poisoning** | `poison_field` generator — a single internally-consistent fabricated environment (the core differentiator, distinct from `fake_tree`); `PoisonClass`/`PoisonReached`. **D8 live-window flip `fake_tree`→`poison_field` needs founder signoff** (recon-feed/by-mechanism rollup/screenshots key on `fake_tree`). | AX0 | L |
+| **AX3 — Opportunity-cost + engagement/dashboard reframe** | No generator rewrite — presentation + rollups: lead with time/engagement, demote tokens/compute/$ to a qualified proxy, subordinate the M9 `RealMeter` (never merged), per-axis OVERLAPPING bars (never a partition); engagement rollups + views; the anti-regression framing guard test (`cost.go` "no economic cost"→"opportunity/attrition cost"). | AX0 + AX1 | M |
+| **AX4 — Exploit-inventory burn** | Attractive decoy services in negative space (a **canary touch** is the trigger — rule 8 unchanged) + an exploit-bait generator; capture the fired exploit as `ExploitsObserved` intelligence (passive, inside the perimeter — **never fire back**). | AX0 + the **egress filter** (D6/`internal/intelligence/network`) for any cross-boundary use | L |
+| **AX5 — Operational exposure** | Tier-3-only, **PASSIVE** in-perimeter capture (defender-owned sinks the attacker's tooling connects *into*; the defender never dials out — **no hack-back**); `ExposureSignals`; requires a NEW separately-reviewed in-perimeter harmlessness predicate (distinct from `CrossScan`). | AX0 + the **egress filter** + the new harmlessness-predicate review | XL |
+
+**Egress-filter prerequisite (rule 9, mirrors design §11):** axes 4/5 produce
+intelligence (exploit signatures, tooling/C2 fingerprints). The single default-deny
+egress filter (`internal/intelligence/network`, currently a `doc.go` stub — see D6)
+does NOT exist. AX4/AX5 may persist these signals **locally** (rule 5) but NOTHING
+crosses a deployment boundary until that filter is built, default-deny,
+per-field-justified. Building it is a **shared** prerequisite of D6, D7, and any
+axis-4/5 feed use — scope it once (under D6), not twice.
 
 ---
 
@@ -477,6 +614,15 @@ this track's credible demo state rides on a learning window that now must includ
 - **M9** (LLM attacker) lands last in the core demo **and** runs *during* the M7
   window so real adversary-interaction history accrues for D2/D3/D4; **M10**
   packages; **M11** (K8s) follows the first demo.
+- **Track E (five-axis attrition)** refactors the delivered M6 attrition on top of
+  the existing demo: **AX0** (the spine — the single rule-3 contract change) first
+  and alone; **AX1/AX2/AX3** then proceed (AX1 alongside AX0 since it shares the
+  stream/cursor; AX3 after AX1 for the engagement fields); **AX4/AX5** are gated on
+  the **egress filter** (D6/`internal/intelligence/network`) for any cross-boundary
+  use, so they sequence with or after that filter. Track E feeds the moat: its
+  per-axis `StingOutcome` fields are the input D2 (profile engagement signature),
+  D3 (opportunity-cost KPI), and D6 (coarsened export) now consume. See
+  `docs/ATTRITION_FIVE_AXIS_DESIGN.md`.
 
 ```
 local  ──► M1 ─┬─► M2 ───────────────────────────────┐
@@ -743,3 +889,24 @@ kgateway.dev, cncf.io). Full URLs captured in the research session.
   design-workflow → implement → on-box → adversarial-review. **Track B complete (M4
   + M5).** Next: M7 (learning window; m4/m5-demo is the substrate), M9 (LLM attacker
   + the live attrition pump), M8 (dashboard), or Track D.
+- **2026-06-10** — **Five-axis attrition reframe (forward-plan refactor, no
+  delivered history rewritten).** `docs/STING.md` + `docs/ATTRITION_FIVE_AXIS_DESIGN.md`
+  reframe attrition from "tarpit + token-burning" / "asymmetric economic cost" into
+  a **five-axis model** (velocity disruption, **information poisoning** [the core
+  differentiator], opportunity-cost injection, exploit-inventory burn, operational
+  exposure), an **engagement contest** (time-to-disengage as a core metric), and the
+  **opportunity-cost-on-a-velocity-dependent-adversary** framing. This roadmap was
+  brought into line: the §0 goal, locked-decision-8 forward note, and §1 demo beats
+  4 & 7 reframed; the forward Track D items D2 (per-axis engagement signature),
+  D3 (opportunity-cost KPI + per-axis overlapping subtotals), D4 (five-axis context),
+  D6 (coarsen the new per-axis fields through the egress filter; the filter now also
+  gates axis-4/5 cross-boundary use), and D7 (five-axis-derived patterns) inherit the
+  reframe. A **new namespaced Track E (AX0–AX5)** was added for the attrition build
+  itself (the design doc labels it M0–M5, which would collide with ROADMAP's M0–M11),
+  cross-linking `docs/ATTRITION_FIVE_AXIS_DESIGN.md` as authoritative; AX0 is the
+  single rule-3 `StingOutcome` change every other axis depends on, and AX4/AX5 are
+  gated on the egress filter (D6). Delivery markers reconciled: M1–M9 + D5 Phase 1
+  DONE; M7 LIVE & accruing; D2/D4-remainder/D5-Phase-2/D6/D7/M10/M11 and AX0–AX5
+  pending. **No delivered-milestone exit record or prior status-log entry was
+  rewritten** (rule a); rule 8 (canary touch is the only trigger) and rule 9 (single
+  egress filter) preserved throughout.
