@@ -1,8 +1,35 @@
 import PanelHead from './PanelHead';
 import { fmtInt, fmtK, fmtPct, fmtTime } from '@/lib/format';
-import type { AttackerCostView, RealAttackCostView } from '@/lib/types';
+import type { AttackerCostView, AxisCostView, EngagementView, RealAttackCostView } from '@/lib/types';
 
 const STING_TAG_STYLE = { color: 'var(--sting)', borderColor: 'rgba(255,77,96,0.4)' };
+
+// ByAxis renders the OVERLAPPING per-axis cost breakdown: one bar per axis, scaled
+// to the largest axis's imposed time. The bars OVERLAP (a flow counts toward every
+// axis its mechanism imposes), so they are deliberately NOT a 100%-stacked partition.
+function ByAxis({ axes }: { axes: AxisCostView[] | null | undefined }) {
+  if (!axes || axes.length === 0) return null;
+  const maxT = Math.max(...axes.map((a) => a.time_sec), 1);
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-dim)', marginBottom: 6 }}>
+        cost by axis · overlapping
+      </div>
+      {axes.map((a) => (
+        <div key={a.axis} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span className="mono" style={{ width: 92, fontSize: 11, color: 'var(--ink-dim)' }}>{a.axis}</span>
+          <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 3 }}>
+            <div style={{ width: `${Math.round((a.time_sec / maxT) * 100)}%`, height: '100%', background: 'var(--sting)', borderRadius: 3 }} />
+          </div>
+          <span className="mono" style={{ width: 56, fontSize: 11, textAlign: 'right' }}>{fmtTime(a.time_sec)}</span>
+        </div>
+      ))}
+      <div style={{ fontSize: 10, color: 'var(--ink-dim)', marginTop: 4, fontStyle: 'italic' }}>
+        a flow counts toward every axis it triggers — overlapping, not a partition
+      </div>
+    </div>
+  );
+}
 
 // fmtUSD: 0.4612 -> "$0.46", 2 -> "$2.00".
 function fmtUSD(n: number): string {
@@ -44,6 +71,29 @@ function RealMeter({ real }: { real: RealAttackCostView | undefined }) {
   );
 }
 
+// Engagement surfaces the engagement-contest story (design §8): median/p90 imposed
+// hold, and the disengage split — how many attackers GAVE UP before we capped them
+// (the engagement signal) vs were defender-capped vs exhausted the generator. Honest
+// empty: renders nothing until there is held time or a classified session.
+function Engagement({ e }: { e: EngagementView | undefined }) {
+  if (!e) return null;
+  const total = e.disengaged_early + e.generator_exhausted + e.defender_capped;
+  if (total === 0 && e.median_sec === 0) return null;
+  return (
+    <div style={{ marginTop: 10, fontFamily: 'var(--sans)', fontSize: 11, color: 'var(--ink-dim)', lineHeight: 1.6 }}>
+      <span style={{ color: 'var(--ink)', textTransform: 'uppercase', letterSpacing: '0.12em', fontSize: 10 }}>engagement</span>
+      {' · '}median {fmtTime(e.median_sec)} · p90 {fmtTime(e.p90_sec)}
+      {total > 0 && (
+        <>
+          <br />
+          <span style={{ color: 'var(--sting)' }}>{fmtPct(e.disengaged_early_fraction)} disengaged early</span>
+          {' '}— {e.disengaged_early} gave up · {e.defender_capped} capped · {e.generator_exhausted} exhausted
+        </>
+      )}
+    </div>
+  );
+}
+
 // AttackerCost is the hero-right panel: the economic inversion. Binds the whole
 // attacker_cost slice plus the M9 real_attack_cost meter. When no flow is in
 // active response (T2+T3 == 0) AND no real attack ledger is present it shows an
@@ -59,7 +109,7 @@ export default function AttackerCost({
   real?: RealAttackCostView | undefined;
 }) {
   const head = (
-    <PanelHead title="Attacker cost" preTags={[{ label: 'attrition · economics', style: STING_TAG_STYLE }]} />
+    <PanelHead title="Attacker cost" preTags={[{ label: 'attrition · opportunity cost', style: STING_TAG_STYLE }]} />
   );
 
   const active = cost?.active_response_count ?? 0;
@@ -153,14 +203,16 @@ export default function AttackerCost({
           <div className="k">time imposed</div>
         </div>
         <div className="cm">
-          <div className="v">{fmtK(cost.tokens_burned)}</div>
-          <div className="k">tokens burned</div>
+          <div className="v">{fmtTime(cost.engagement?.longest_sec ?? 0)}</div>
+          <div className="k">longest held</div>
         </div>
         <div className="cm">
-          <div className="v">{fmtInt(cost.requests_absorbed)}</div>
-          <div className="k">reqs absorbed</div>
+          <div className="v">{fmtK(cost.tokens_burned)}</div>
+          <div className="k">tokens (proxy)</div>
         </div>
       </div>
+      <ByAxis axes={cost.per_axis} />
+      <Engagement e={cost.engagement} />
       <RealMeter real={real} />
       <div className="inversion">
         <div className="inv-row att">
@@ -182,8 +234,9 @@ export default function AttackerCost({
           </div>
         </div>
         <div className="cost-note">
-          every fake-resource generator is ceiling-bounded — attrition burns the attacker&apos;s time, tokens and
-          compute, <b>never the defender&apos;s</b>.
+          every fake-resource generator is ceiling-bounded — attrition imposes <b>opportunity cost</b> on a
+          velocity-dependent adversary (its time, capacity and intelligence), <b>never the defender&apos;s</b>. tokens
+          are a qualified proxy, not a dollar bill.
         </div>
       </div>
     </section>

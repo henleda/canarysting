@@ -170,17 +170,48 @@ type TierStep struct {
 	IsActive    bool    `json:"is_active"`    // highest occupied tier
 }
 
-// AttackerCostView is the hero-right panel.
+// AttackerCostView is the hero-right panel. Framing (AX3): the headline is
+// OPPORTUNITY COST on a velocity-dependent adversary — imposed time + engagement —
+// NOT a dollar bill. TokensBurned is a qualified PROXY/estimate, demoted below the
+// time/engagement numbers; the M9 RealAttackCost ($) stays SEPARATE (never merged).
 type AttackerCostView struct {
-	ActiveResponseCount  int     `json:"active_response_count"` // T2+T3
-	Jailed               int     `json:"jailed"`                // T3
-	CounterAttacked      int     `json:"counter_attacked"`      // T2
-	TimeImposedSec       float64 `json:"time_imposed_sec"`
-	TokensBurned         float64 `json:"tokens_burned"`
-	RequestsAbsorbed     int64   `json:"requests_absorbed"`
-	BytesServed          int64   `json:"bytes_served"`
-	AttackerCostFraction float64 `json:"attacker_cost_fraction"` // active / total interactions
-	DefenderCostFlat     bool    `json:"defender_cost_flat"`     // structural invariant: always true
+	ActiveResponseCount  int            `json:"active_response_count"` // T2+T3
+	Jailed               int            `json:"jailed"`                // T3
+	CounterAttacked      int            `json:"counter_attacked"`      // T2
+	TimeImposedSec       float64        `json:"time_imposed_sec"`      // the headline
+	TokensBurned         float64        `json:"tokens_burned"`         // a PROXY/estimate, demoted below time
+	RequestsAbsorbed     int64          `json:"requests_absorbed"`
+	BytesServed          int64          `json:"bytes_served"`
+	AttackerCostFraction float64        `json:"attacker_cost_fraction"` // active / total interactions
+	DefenderCostFlat     bool           `json:"defender_cost_flat"`     // structural invariant: always true
+	PerAxis              []AxisCostView `json:"per_axis"`               // OVERLAPPING per-axis subtotals — never a partition
+	Engagement           EngagementView `json:"engagement"`             // the engagement contest
+}
+
+// AxisCostView is one OVERLAPPING per-axis subtotal: an interaction lands on EVERY
+// axis its mechanism imposes (fake_tree is poison + opportunity cost), so these are
+// independent bars and must NEVER be rendered as a partition summing to the total.
+type AxisCostView struct {
+	Axis    string  `json:"axis"`
+	TimeSec float64 `json:"time_sec"`
+	Tokens  float64 `json:"tokens"`
+	Count   int     `json:"count"`
+}
+
+// EngagementView is the engagement-contest metric: how long attrition held flows
+// (the imposed-hold distribution) and how those sessions ended. Time-to-disengage
+// is sourced from the REAL imposed hold + the adapter's D7 disengage classifier,
+// NOT an event-timestamp span. DisengagedEarly is the engagement signal (the
+// attacker gave up before any defender bound). (A "believed-longer-than-detect"
+// plausibility fraction is a documented fast-follow — D10/§8 — not shipped here.)
+type EngagementView struct {
+	MedianSec               float64 `json:"median_sec"`
+	P90Sec                  float64 `json:"p90_sec"`
+	LongestSec              float64 `json:"longest_sec"`
+	DisengagedEarly         int     `json:"disengaged_early"`
+	GeneratorExhausted      int     `json:"generator_exhausted"`
+	DefenderCapped          int     `json:"defender_capped"`
+	DisengagedEarlyFraction float64 `json:"disengaged_early_fraction"`
 }
 
 // KernelContainmentView is the secondary-band left panel.
@@ -447,6 +478,24 @@ func buildAttackerCost(summary cost.Summary) AttackerCostView {
 	if summary.Interactions > 0 {
 		frac = float64(summary.ActiveResponse()) / float64(summary.Interactions)
 	}
+	// Per-axis OVERLAPPING subtotals — emit only axes that actually saw traffic
+	// (honest empty otherwise). Order follows the axis ordinal.
+	var perAxis []AxisCostView
+	for i := 0; i < cost.NumAxes; i++ {
+		if summary.AxisCount[i] > 0 {
+			perAxis = append(perAxis, AxisCostView{
+				Axis:    cost.AxisNames[i],
+				TimeSec: summary.AxisTimeSec[i],
+				Tokens:  summary.AxisTokens[i],
+				Count:   summary.AxisCount[i],
+			})
+		}
+	}
+	classified := summary.DisengagedEarly + summary.GeneratorExhausted + summary.DefenderCapped
+	earlyFrac := 0.0
+	if classified > 0 {
+		earlyFrac = float64(summary.DisengagedEarly) / float64(classified)
+	}
 	return AttackerCostView{
 		ActiveResponseCount:  summary.ActiveResponse(),
 		Jailed:               summary.Jailed(),
@@ -457,6 +506,16 @@ func buildAttackerCost(summary cost.Summary) AttackerCostView {
 		BytesServed:          summary.BytesServed,
 		AttackerCostFraction: frac,
 		DefenderCostFlat:     true,
+		PerAxis:              perAxis,
+		Engagement: EngagementView{
+			MedianSec:               summary.EngagementMedianSec,
+			P90Sec:                  summary.EngagementP90Sec,
+			LongestSec:              summary.EngagementLongestSec,
+			DisengagedEarly:         summary.DisengagedEarly,
+			GeneratorExhausted:      summary.GeneratorExhausted,
+			DefenderCapped:          summary.DefenderCapped,
+			DisengagedEarlyFraction: earlyFrac,
+		},
 	}
 }
 
