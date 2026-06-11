@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { fmtBytes, fmtInt, fmtK, fmtTime } from '@/lib/format';
+import { fmtBytes, fmtInt, fmtK, fmtPct, fmtTime } from '@/lib/format';
 import { useSince } from './SinceProvider';
 import type { CostBreakdown } from '@/lib/types';
 
@@ -67,6 +67,33 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
             </tbody>
           </table>
         )}
+      </section>
+
+      <section className="detail-section">
+        <h3>engagement contest</h3>
+        <div className="cost-metrics">
+          <div className="cm"><div className="v">{fmtTime(data.engagement.median_sec)}</div><div className="k">median held</div></div>
+          <div className="cm"><div className="v">{fmtTime(data.engagement.p90_sec)}</div><div className="k">p90 held</div></div>
+          <div className="cm"><div className="v">{fmtTime(data.engagement.longest_sec)}</div><div className="k">longest held</div></div>
+        </div>
+        <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
+          <span style={{ color: 'var(--sting)' }}>{fmtPct(data.engagement.disengaged_early_fraction)} disengaged early</span>
+          {' '}— {data.engagement.disengaged_early} gave up · {data.engagement.defender_capped} capped · {data.engagement.generator_exhausted} exhausted
+        </div>
+      </section>
+
+      <section className="detail-section">
+        <h3>deception reactions</h3>
+        <div className="cost-metrics">
+          <div className="cm">
+            <div className="v" style={data.reactions.poison_reached > 0 ? { color: 'var(--sting)' } : undefined}>
+              {data.reactions.poison_reached > 0 ? data.reactions.poison_class || `stage ${data.reactions.poison_reached}` : '—'}
+            </div>
+            <div className="k">poison reached</div>
+          </div>
+          <div className="cm"><div className="v">{fmtInt(data.reactions.exploits_observed)}</div><div className="k">exploits fired</div></div>
+          <div className="cm"><div className="v">{fmtInt(data.reactions.exposure_signals)}</div><div className="k">tooling exposed</div></div>
+        </div>
       </section>
 
       <section className="detail-section">

@@ -254,6 +254,20 @@ type AdversaryIntelView struct {
 	KPI         IntelKPIView     `json:"kpi"`
 	ReconFeed   []ReconEvent     `json:"recon_feed"`            // T1, newest first, max 10
 	Fingerprint *FlowFingerprint `json:"fingerprint,omitempty"` // nil if no current flow
+	Reactions   AxisReactionView `json:"reactions"`             // AX2/AX4/AX5 deception-reaction signals
+}
+
+// AxisReactionView surfaces the AX2/AX4/AX5 reaction signals — what the attacker DID
+// in response to the deception, distinct from the imposed-cost KPI: how far into the
+// fabricated environment they walked (poison), how many real exploits they fired at
+// decoys, how many times they exposed their tooling. Counts only; deployment-local-
+// only (rule 9 — the egress filter gates any cross-boundary use). All zero on a
+// passive-floor window (these axes don't fire below their floors).
+type AxisReactionView struct {
+	ExploitsObserved int64  `json:"exploits_observed"` // AX4: exploits fired at decoys (in-perimeter)
+	ExposureSignals  int64  `json:"exposure_signals"`  // AX5: tooling/C2 fingerprints exposed
+	PoisonReached    int    `json:"poison_reached"`    // AX2: deepest fabricated-environment stage walked
+	PoisonClass      string `json:"poison_class"`      // AX2: class of that deepest stage ("" if none)
 }
 
 // IntelKPIView is the attacker-cost KPI card.
@@ -473,6 +487,36 @@ func buildLadder(summary cost.Summary, completedFolds uint64) ([4]TierStep, int)
 	return ladder, denom
 }
 
+// engagementView derives the engagement-contest view from a cost summary. Shared by
+// the Overview AttackerCost panel and the /cost drill-down so both report it identically.
+func engagementView(s cost.Summary) EngagementView {
+	classified := s.DisengagedEarly + s.GeneratorExhausted + s.DefenderCapped
+	earlyFrac := 0.0
+	if classified > 0 {
+		earlyFrac = float64(s.DisengagedEarly) / float64(classified)
+	}
+	return EngagementView{
+		MedianSec:               s.EngagementMedianSec,
+		P90Sec:                  s.EngagementP90Sec,
+		LongestSec:              s.EngagementLongestSec,
+		DisengagedEarly:         s.DisengagedEarly,
+		GeneratorExhausted:      s.GeneratorExhausted,
+		DefenderCapped:          s.DefenderCapped,
+		DisengagedEarlyFraction: earlyFrac,
+	}
+}
+
+// reactionView derives the AX2/AX4/AX5 deception-reaction view from a cost summary.
+// Shared by the AdversaryIntelligence panel and the /cost drill-down.
+func reactionView(s cost.Summary) AxisReactionView {
+	return AxisReactionView{
+		ExploitsObserved: s.ExploitsObserved,
+		ExposureSignals:  s.ExposureSignals,
+		PoisonReached:    s.PoisonReachedMax,
+		PoisonClass:      s.PoisonClassDeepest,
+	}
+}
+
 func buildAttackerCost(summary cost.Summary) AttackerCostView {
 	frac := 0.0
 	if summary.Interactions > 0 {
@@ -491,11 +535,6 @@ func buildAttackerCost(summary cost.Summary) AttackerCostView {
 			})
 		}
 	}
-	classified := summary.DisengagedEarly + summary.GeneratorExhausted + summary.DefenderCapped
-	earlyFrac := 0.0
-	if classified > 0 {
-		earlyFrac = float64(summary.DisengagedEarly) / float64(classified)
-	}
 	return AttackerCostView{
 		ActiveResponseCount:  summary.ActiveResponse(),
 		Jailed:               summary.Jailed(),
@@ -507,15 +546,7 @@ func buildAttackerCost(summary cost.Summary) AttackerCostView {
 		AttackerCostFraction: frac,
 		DefenderCostFlat:     true,
 		PerAxis:              perAxis,
-		Engagement: EngagementView{
-			MedianSec:               summary.EngagementMedianSec,
-			P90Sec:                  summary.EngagementP90Sec,
-			LongestSec:              summary.EngagementLongestSec,
-			DisengagedEarly:         summary.DisengagedEarly,
-			GeneratorExhausted:      summary.GeneratorExhausted,
-			DefenderCapped:          summary.DefenderCapped,
-			DisengagedEarlyFraction: earlyFrac,
-		},
+		Engagement:           engagementView(summary),
 	}
 }
 
@@ -588,6 +619,7 @@ func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryIn
 		},
 		ReconFeed:   buildReconFeed(events, now, maxReconItems),
 		Fingerprint: fp,
+		Reactions:   reactionView(summary),
 	}
 }
 

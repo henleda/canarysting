@@ -173,11 +173,23 @@ export interface FlowFingerprint {
   hash: string; // "fp:%04x·%04x·%04x"
 }
 
+// AxisReactionView surfaces the AX2/AX4/AX5 reaction signals — what the attacker DID
+// in response to the deception, distinct from the imposed-cost KPI. Counts only,
+// deployment-local-only; all zero on a passive-floor window (these axes fire only at
+// their floors).
+export interface AxisReactionView {
+  exploits_observed: number; // AX4: exploits fired at decoys (in-perimeter)
+  exposure_signals: number; // AX5: tooling/C2 fingerprints exposed
+  poison_reached: number; // AX2: deepest fabricated-environment stage walked
+  poison_class: string; // AX2: class of that deepest stage ("" if none)
+}
+
 // AdversaryIntelView is the secondary-band right panel (three facets).
 export interface AdversaryIntelView {
   kpi: IntelKPIView;
   recon_feed: ReconEvent[] | null; // T1, newest first, max 10
   fingerprint?: FlowFingerprint | null; // nil if no current flow (json: omitempty)
+  reactions: AxisReactionView; // AX2/AX4/AX5 deception-reaction signals
 }
 
 // Overview is the complete JSON payload served by GET /api/overview and pushed
@@ -309,6 +321,8 @@ export interface CostBreakdown {
   by_mechanism: MechanismCost[];
   time_series: CostBucket[];
   bucket_sec: number;
+  engagement: EngagementView; // the engagement contest (median/p90/longest + disengage split)
+  reactions: AxisReactionView; // AX2/AX4/AX5 deception-reaction signals
 }
 
 export interface ReconRow {

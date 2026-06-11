@@ -2,7 +2,7 @@ import Link from 'next/link';
 import PanelHead from './PanelHead';
 import { fmtBytes, fmtInt, fmtK, fmtOffsetLabel, fmtTimeLong } from '@/lib/format';
 import { WALL_LINK } from './LiveEscalation';
-import type { AdversaryIntelView, FlowFingerprint, ReconEvent } from '@/lib/types';
+import type { AdversaryIntelView, AxisReactionView, FlowFingerprint, ReconEvent } from '@/lib/types';
 
 // AdversaryIntelligence is the band-right cell (widest). Three facets in the
 // intel-grid: the attacker-cost KPI (board-level), the recon early-warning feed,
@@ -44,6 +44,7 @@ export default function AdversaryIntelligence({ intel }: { intel: AdversaryIntel
               </span>
             </div>
           </div>
+          <ReactionSignals r={intel?.reactions} />
         </div>
 
         {/* recon early-warning */}
@@ -77,6 +78,38 @@ export default function AdversaryIntelligence({ intel }: { intel: AdversaryIntel
         </div>
       </div>
     </section>
+  );
+}
+
+// ReactionSignals surfaces what the attacker DID in response to the deception (AX2/
+// AX4/AX5) — distinct from the imposed-cost legend above: how deep into the fabricated
+// environment they walked (poison), how many real exploits they fired at decoys, how
+// many times they exposed their tooling. Honest zeros on a passive-floor window; lights
+// up once the floor is raised. The values are local counts (rule 9; never the raw
+// payloads/UAs).
+function ReactionSignals({ r }: { r: AxisReactionView | undefined }) {
+  if (!r) return null;
+  const poison = r.poison_reached > 0 ? r.poison_class || `stage ${r.poison_reached}` : '—';
+  return (
+    <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-dim)', marginBottom: 4 }}>
+        deception reactions
+      </div>
+      <div className="legend">
+        <div className="lr">
+          <span className="lk">poison reached</span>
+          <span className="lv" style={r.poison_reached > 0 ? { color: 'var(--sting)' } : undefined}>{poison}</span>
+        </div>
+        <div className="lr">
+          <span className="lk">exploits fired</span>
+          <span className="lv">{fmtInt(r.exploits_observed)}</span>
+        </div>
+        <div className="lr">
+          <span className="lk">tooling exposed</span>
+          <span className="lv">{fmtInt(r.exposure_signals)}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
