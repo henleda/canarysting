@@ -311,7 +311,9 @@ func (s *stream) Next(ctx context.Context) (Chunk, DoneReason, error) {
 
 func (s *stream) finish(r DoneReason) (Chunk, DoneReason, error) {
 	s.out.Reason = r
-	s.out.DisengageReason = int(r) // in-stream default; the adapter refines it from holdCtx (AX1/D7)
+	// DisengageReason is the adapter's to set (D7): the stream cannot tell a client
+	// disconnect from the defender's max-hold deadline (both arrive as a cancelled
+	// ctx → DoneKilled). It stays contract.DisengageUnknown here.
 	return Chunk{}, r, nil
 }
 
@@ -337,7 +339,6 @@ func (s *stream) Close() error {
 	s.gov.CloseStream()
 	if s.out.Reason == NotDone {
 		s.out.Reason = DoneComplete
-		s.out.DisengageReason = int(DoneComplete)
 	}
 	return nil
 }

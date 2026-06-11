@@ -2,10 +2,39 @@ package envoy
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/sting/attrition"
 )
+
+// classifyDisengage maps how an inline attrition hold ended to a
+// contract.DisengageReason + the attacker-initiated disengage time (AX1 / D7).
+// ONLY the adapter can do this: attrition.Stream.Next sees a cancelled context as
+// DoneKilled and cannot tell a client disconnect (the attacker gave up) from the
+// defender's own AttritionMaxHold deadline. The hold context disambiguates them —
+// context.Canceled is a downstream/attacker disconnect, context.DeadlineExceeded is
+// our max-hold cap. This is a transport-fact mapping, not detection logic (rule 1).
+// timeToDisengageSec is the real imposed hold, reported ONLY when the attacker
+// disengaged first (the engagement signal); every defender-stop reports 0.
+func classifyDisengage(reason attrition.DoneReason, holdErr error, timeHeldSec float64) (disengageReason int, timeToDisengageSec float64) {
+	switch {
+	case errors.Is(holdErr, context.Canceled):
+		return contract.DisengageAttacker, timeHeldSec
+	case errors.Is(holdErr, context.DeadlineExceeded):
+		return contract.DisengageDefenderCapped, 0
+	}
+	// holdErr == nil: the stream ended on its own terms (or the kill switch tripped).
+	switch reason {
+	case attrition.DoneComplete:
+		return contract.DisengageGeneratorDone, 0
+	case attrition.DoneFlowBudget, attrition.DoneGlobalCeiling, attrition.DoneKilled:
+		return contract.DisengageDefenderCapped, 0
+	default:
+		return contract.DisengageUnknown, 0
+	}
+}
 
 // defaultAttritionBodyCap bounds the deception body assembled into a single
 // ext_proc ImmediateResponse. It must be << the attrition per-flow byte budget

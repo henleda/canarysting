@@ -632,15 +632,87 @@ func TestStreamIsConcurrencySafe(t *testing.T) {
 }
 
 func TestDelayIsClamped(t *testing.T) {
-	d := DripParams{ChunkBytes: 0, MinDelay: 0, MaxDelay: 0}.Normalized()
-	if d.MinDelay <= 0 || d.MaxDelay < d.MinDelay || d.ChunkBytes <= 0 {
+	d := DripParams{ChunkBytes: 0, MinDelay: 0, MaxDelay: 0, RampSaturate: 0}.Normalized()
+	if d.MinDelay <= 0 || d.MaxDelay < d.MinDelay || d.ChunkBytes <= 0 || d.RampSaturate <= 0 {
 		t.Fatalf("zero drip did not normalize to a sane band: %+v", d)
 	}
-	for i := 0; i < 1000; i++ {
-		got := dripDelay(uint64(i), i, d)
-		if got < d.MinDelay || got > d.MaxDelay {
-			t.Fatalf("delay %s out of band [%s,%s]", got, d.MinDelay, d.MaxDelay)
+	// adaptiveDelay must stay within [MinDelay, MaxDelay] at EVERY persistence —
+	// persist=0 (the pre-AX1 band), mid-ramp, at saturation, and well beyond it.
+	for _, persist := range []int{0, 1, d.RampSaturate / 2, d.RampSaturate, d.RampSaturate * 5} {
+		for i := 0; i < 1000; i++ {
+			got := adaptiveDelay(uint64(i), i, d, persist)
+			if got < d.MinDelay || got > d.MaxDelay {
+				t.Fatalf("persist %d: delay %s out of band [%s,%s]", persist, got, d.MinDelay, d.MaxDelay)
+			}
 		}
+	}
+}
+
+func TestDrivenStreamDelayEscalatesToCap(t *testing.T) {
+	// End-to-end (not just the pure ramp): drive a real stream and confirm the
+	// per-chunk delay floor escalates with persistence and, past RampSaturate, pins at
+	// MaxDelay — so a persistent flow's imposed hold genuinely grows (AX1 velocity).
+	d := DripParams{ChunkBytes: 64, MinDelay: time.Millisecond, MaxDelay: 100 * time.Millisecond, RampSaturate: 4}
+	a := mustNew(t, Config{Budget: testBudget(), Drip: d}) // FloorPassive => tarpit only (no rotation noise)
+	s := a.Open(verdict(contract.TierContain, 0x7A19))
+	defer s.Close()
+	var delays []time.Duration
+	for i := 0; i < 12; i++ {
+		c, done, err := s.Next(context.Background())
+		if err != nil || done != NotDone {
+			break
+		}
+		delays = append(delays, c.Delay)
+	}
+	dn := d.Normalized()
+	if len(delays) <= dn.RampSaturate || dn.MinDelay >= dn.MaxDelay {
+		t.Fatalf("escalation test vacuous: drove %d chunks, band [%s,%s]", len(delays), dn.MinDelay, dn.MaxDelay)
+	}
+	// Every chunk at idx >= RampSaturate has a saturated floor (== MaxDelay, no jitter
+	// room), proving the delay climbed to the ceiling under persistence.
+	for i := dn.RampSaturate; i < len(delays); i++ {
+		if delays[i] != dn.MaxDelay {
+			t.Fatalf("chunk %d delay = %s, want saturated MaxDelay %s (floor must escalate to the cap)", i, delays[i], dn.MaxDelay)
+		}
+	}
+	// The first chunk's floor is MinDelay, so the early delay can be below the cap —
+	// escalation is real, not a constant max.
+	if delays[0] > dn.MaxDelay {
+		t.Fatalf("first chunk delay %s exceeds MaxDelay %s", delays[0], dn.MaxDelay)
+	}
+}
+
+func TestAdaptiveDelayEscalatesWithPersistence(t *testing.T) {
+	// AX1: the delay FLOOR rises monotonically with persistence and saturates at
+	// MaxDelay, so a persistent flow pays growing latency. ramp() is the floor
+	// (jitter sits on top); check it directly.
+	d := DripParams{ChunkBytes: 64, MinDelay: 500 * time.Millisecond, MaxDelay: 2 * time.Second, RampSaturate: 8}.Normalized()
+	span := d.MaxDelay - d.MinDelay
+	prev := time.Duration(-1)
+	for persist := 0; persist <= d.RampSaturate; persist++ {
+		floor := d.MinDelay + ramp(persist, d.RampSaturate, span)
+		if floor < prev {
+			t.Fatalf("floor decreased at persist %d: %s < %s", persist, floor, prev)
+		}
+		prev = floor
+	}
+	if got := d.MinDelay + ramp(0, d.RampSaturate, span); got != d.MinDelay {
+		t.Fatalf("ramp(0) floor = %s, want MinDelay %s", got, d.MinDelay)
+	}
+	if got := d.MinDelay + ramp(d.RampSaturate, d.RampSaturate, span); got != d.MaxDelay {
+		t.Fatalf("ramp(saturate) floor = %s, want MaxDelay %s", got, d.MaxDelay)
+	}
+	if got := d.MinDelay + ramp(d.RampSaturate*100, d.RampSaturate, span); got != d.MaxDelay {
+		t.Fatalf("ramp beyond saturate floor = %s, want clamped to MaxDelay %s", got, d.MaxDelay)
+	}
+	// Division-safe / no panic on a zero or negative saturate (defensive; Normalized
+	// prevents it from reaching here in production).
+	if ramp(5, 0, span) < 0 || ramp(5, -3, span) < 0 {
+		t.Fatal("ramp with non-positive saturate must not be negative")
+	}
+	// persist<=0 reproduces the pre-AX1 fixed band: floor == MinDelay.
+	if got := adaptiveDelay(7, 7, d, 0); got < d.MinDelay || got > d.MaxDelay {
+		t.Fatalf("persist=0 delay %s out of band", got)
 	}
 }
 
