@@ -155,6 +155,6 @@ The guardrails never relax across tiers: the canary touch is the only trigger (`
 ## 9. Open items
 
 - The concrete schema of the adversary-interaction event and the fingerprint, validated against real design-partner data.
-- The anonymization method for fingerprints and the formal definition of "cannot re-identify," reviewed before the network ships.
+- ~~The anonymization method for fingerprints and the formal definition of "cannot re-identify," reviewed before the network ships.~~ **RESOLVED 2026-06-11** — defined and founder-approved in `docs/EGRESS_FILTER_DESIGN.md` §5 (the 3-part predicate: no singling-out via k-anonymity / no linkability via a quasi-identifier name denylist / no inference via no-raw-enumerable-hash + no-raw-counts), enforced executably by `internal/intelligence/network` (the single default-deny chokepoint, `Clear()` + `reidentify.go`). The anonymization/coarsening transform itself lands with D2/D6 (`profile.ExportForm`); the gate that re-verifies it ships with the egress-filter milestone.
 - The cost-proxy model that converts attrition measures into a credible dollar and token figure for the attacker-cost metric.
 - The `AI_BAIT.md` spec for Model 2, when that research is ready to build, with its own FTO review.
