@@ -42,6 +42,7 @@ sting_drip:
   chunk_bytes: 64                  # per-drip chunk size for the tarpit
   min_ms: 2000                     # 2s
   max_ms: 45000                    # 45s
+  ramp_saturate: 10                # AX1: chunks over which the per-flow delay floor ramps min->max (persistence is punished). Keep small; the inline hold is only ~8-16 chunks.
 
 # Runtime kill switch. true trips the shared Governor at load so attrition is a
 # no-op; canaryctl can flip it live, and the engine trips it on host pressure.

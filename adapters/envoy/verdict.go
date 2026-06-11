@@ -123,6 +123,14 @@ func (a *Adapter) attritionOrDeny(ctx context.Context, ev contract.SignalEvent, 
 		return immediateDeny(code, fallbackBody)
 	}
 
+	// Classify how the hold ended (AX1 / D7) and stamp the attacker-cost meter
+	// BEFORE reporting: the attrition stream can't tell a client disconnect from our
+	// max-hold deadline (both arrive as a cancelled ctx), but holdCtx can.
+	// TimeToDisengageSec lands only when the attacker disengaged first. This runs
+	// before defer cancel(), so holdCtx.Err() still distinguishes Canceled (attacker)
+	// from DeadlineExceeded (our cap).
+	outcome.DisengageReason, outcome.TimeToDisengageSec = classifyDisengage(outcome.Reason, holdCtx.Err(), outcome.TimeHeldSec)
+
 	// Report the outcome OFF the response path: the hold is already complete, so
 	// the report is non-blocking from a correctness standpoint, and a goroutine
 	// keeps the engine gRPC round-trip from extending the inline request.

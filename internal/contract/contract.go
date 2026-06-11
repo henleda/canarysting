@@ -196,6 +196,21 @@ type DriverObservation struct {
 	SuspectedExploit bool // the inbound shape matched a known exploit structural marker (a bool, never the payload)
 }
 
+// DisengageReason classifies WHY an attrition session ended, from the DRIVER's
+// vantage, and is the value carried in StingOutcome.DisengageReason. The attrition
+// stream cannot tell a client disconnect from the defender's own max-hold deadline
+// — both surface to Stream.Next as a cancelled context (DoneKilled) — so the
+// classification is the adapter's job (it holds the hold context; see
+// docs/ATTRITION_FIVE_AXIS_DESIGN.md §8.1 / decision D7). This is a transport-fact
+// mapping, not detection logic (rule 1). TimeToDisengageSec is non-zero ONLY for
+// DisengageAttacker (the engagement signal — the attacker gave up before we did).
+const (
+	DisengageUnknown        = 0 // not classified (async / non-adapter path)
+	DisengageAttacker       = 1 // attacker disconnected before any defender bound — the engagement signal
+	DisengageGeneratorDone  = 2 // the generator reached its natural bounded end
+	DisengageDefenderCapped = 3 // the defender stopped it (per-flow budget / host ceiling / max-hold / kill)
+)
+
 // OutcomeRecord is the post-attrition report the adapter sends to the engine so
 // the durable interaction event gains a real StingOutcome (the verdict-time
 // Submit committed the event with a zero outcome; attrition runs later, adapter-

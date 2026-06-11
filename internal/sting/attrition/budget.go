@@ -58,6 +58,15 @@ type DripParams struct {
 	ChunkBytes int           // tarpit per-chunk byte count
 	MinDelay   time.Duration // never 0 (an unpaced drip imposes no cost)
 	MaxDelay   time.Duration // stays under the ~60s crawler-disconnect timeout
+	// RampSaturate is the AX1 velocity-escalation knob: the per-flow chunk count
+	// over which the delay FLOOR ramps linearly from MinDelay up to MaxDelay, so a
+	// flow that keeps probing is punished with growing latency (persistence costs
+	// the attacker wall-clock time, self-hosting-proof). Kept SMALL by default —
+	// the only delivered transport is the inline ImmediateResponse hold (~8s over a
+	// 0.5–1s drip ⇒ ~8–16 chunks), so a large saturate would be unreachable and the
+	// escalation invisible. Normalized() floors zero/negative to a positive default,
+	// so adaptiveDelay can never divide by zero or mean zero escalation.
+	RampSaturate int
 }
 
 // Documented drip defaults.
@@ -65,11 +74,12 @@ const (
 	DefaultDripChunkBytes               = 64
 	DefaultDripMinDelay   time.Duration = 2 * time.Second
 	DefaultDripMaxDelay   time.Duration = 45 * time.Second
+	DefaultRampSaturate                 = 10 // chunks to ramp the delay floor MinDelay->MaxDelay (AX1)
 )
 
 // DefaultDrip returns the documented conservative drip pacing.
 func DefaultDrip() DripParams {
-	return DripParams{ChunkBytes: DefaultDripChunkBytes, MinDelay: DefaultDripMinDelay, MaxDelay: DefaultDripMaxDelay}
+	return DripParams{ChunkBytes: DefaultDripChunkBytes, MinDelay: DefaultDripMinDelay, MaxDelay: DefaultDripMaxDelay, RampSaturate: DefaultRampSaturate}
 }
 
 // Normalized floors zero/negative fields to defaults, caps ChunkBytes at the
@@ -90,6 +100,9 @@ func (d DripParams) Normalized() DripParams {
 	}
 	if d.MaxDelay < d.MinDelay {
 		d.MaxDelay = d.MinDelay
+	}
+	if d.RampSaturate <= 0 {
+		d.RampSaturate = DefaultRampSaturate
 	}
 	return d
 }

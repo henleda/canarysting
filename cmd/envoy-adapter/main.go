@@ -142,7 +142,10 @@ func main() {
 	// pulled) tracks REAL elapsed wall-time rather than over-counting one long
 	// DefaultDrip chunk (up to 45s) that the deadline cuts mid-sleep. The hold is
 	// hard-bounded by AttritionMaxHold on the adapter side regardless.
-	drip := attrition.DripParams{ChunkBytes: 64, MinDelay: 500 * time.Millisecond, MaxDelay: 1 * time.Second}
+	// RampSaturate 8 ≈ the inline hold budget (AttritionMaxHold 8s over a 0.5–1s
+	// drip ⇒ ~8–16 chunks), so the AX1 delay floor ramps MinDelay→MaxDelay within a
+	// single held flow — persistence is punished with visibly rising latency.
+	drip := attrition.DripParams{ChunkBytes: 64, MinDelay: 500 * time.Millisecond, MaxDelay: 1 * time.Second, RampSaturate: 8}
 	attr, err := attrition.New(attrition.Config{
 		Floor:  contract.StingFloor(*stingFloor),
 		Budget: budget,
@@ -222,11 +225,11 @@ func main() {
 					TokenCostProxy: out.TokenCostProxy,
 					DepthReached:   out.DepthReached,
 					DoneReason:     int(out.Reason),
-					// Five-axis fields (AX0 spine). Copy ALL of them at the composition
-					// root — a field missed here silently drops on the way to the durable
-					// store. Today attrition sets Axes (at Open) + DisengageReason (at
-					// finish); the adapter refines TimeToDisengageSec/DisengageReason from
-					// its hold context in AX1/D7, and AX2-AX5 populate the rest.
+					// Five-axis fields. Copy ALL of them at the composition root — a field
+					// missed here silently drops on the way to the durable store. attrition
+					// sets Axes (at Open); DisengageReason + TimeToDisengageSec are set by the
+					// adapter's classifyDisengage from the hold context (AX1/D7, in
+					// attritionOrDeny, before this fires); AX2-AX5 populate the rest.
 					Axes:               out.Axes,
 					TimeToDisengageSec: out.TimeToDisengageSec,
 					PoisonClass:        out.PoisonClass,

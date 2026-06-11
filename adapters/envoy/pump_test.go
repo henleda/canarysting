@@ -275,6 +275,70 @@ func TestAttritionOrDenyNoopFallsBack(t *testing.T) {
 	}
 }
 
+// TestAttritionOrDenyClassifiesDisengage proves the WIRED AX1/D7 path: attritionOrDeny
+// stamps DisengageReason + TimeToDisengageSec on the reported outcome, distinguishing an
+// attacker disconnect (the engagement signal — non-zero held time) from the defender's
+// own max-hold cap (zero). classifyDisengage's truth table is unit-tested separately;
+// this proves the call site feeds it the right holdCtx.Err().
+func TestAttritionOrDenyClassifiesDisengage(t *testing.T) {
+	// (1) Attacker disconnects mid-hold: the parent ctx is cancelled during the first
+	// hold, so holdCtx.Err()==Canceled -> DisengageAttacker with the real held time.
+	{
+		ctx, cancel := context.WithCancel(context.Background())
+		got := make(chan attrition.Outcome, 1)
+		a := adapterWithAttritor(t, liveAttritor(t), func(_ contract.SignalEvent, _ contract.Verdict, out attrition.Outcome) { got <- out })
+		cfg := a.cfg
+		cfg.attritionSleep = func(c context.Context, _ time.Duration) error {
+			cancel() // the attacker disconnects during the first hold
+			return c.Err()
+		}
+		a.cfg = cfg
+		a.attritionOrDeny(ctx, contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+		select {
+		case out := <-got:
+			if out.DisengageReason != contract.DisengageAttacker {
+				t.Fatalf("attacker disconnect: DisengageReason=%d, want DisengageAttacker(%d)", out.DisengageReason, contract.DisengageAttacker)
+			}
+			if out.TimeToDisengageSec <= 0 {
+				t.Fatalf("attacker disconnect: TimeToDisengageSec=%v, want >0 (the imposed held time)", out.TimeToDisengageSec)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("OnOutcome never fired (attacker-disconnect case)")
+		}
+	}
+	// (2) Defender max-hold cap: our deadline fires with no client disconnect, so
+	// holdCtx.Err()==DeadlineExceeded -> DisengageDefenderCapped with zero disengage time.
+	{
+		got := make(chan attrition.Outcome, 1)
+		a := adapterWithAttritor(t, liveAttritor(t), func(_ contract.SignalEvent, _ contract.Verdict, out attrition.Outcome) { got <- out })
+		cfg := a.cfg
+		cfg.AttritionMaxHold = 20 * time.Millisecond
+		cfg.attritionSleep = func(c context.Context, d time.Duration) error { // honor the hold deadline
+			tm := time.NewTimer(d)
+			defer tm.Stop()
+			select {
+			case <-c.Done():
+				return c.Err()
+			case <-tm.C:
+				return nil
+			}
+		}
+		a.cfg = cfg
+		a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+		select {
+		case out := <-got:
+			if out.DisengageReason != contract.DisengageDefenderCapped {
+				t.Fatalf("defender cap: DisengageReason=%d, want DisengageDefenderCapped(%d)", out.DisengageReason, contract.DisengageDefenderCapped)
+			}
+			if out.TimeToDisengageSec != 0 {
+				t.Fatalf("defender cap: TimeToDisengageSec=%v, want 0 (a defender stop is never an attacker disengage)", out.TimeToDisengageSec)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("OnOutcome never fired (defender-cap case)")
+		}
+	}
+}
+
 // OnOutcome fires (exactly once) with a non-zero cost meter; it is fire-and-
 // forget (a goroutine), so the test waits on a channel.
 func TestAttritionOrDenyOnOutcomeFires(t *testing.T) {
@@ -421,4 +485,34 @@ func adapterWithAttritor(t *testing.T, attr attrition.Attritor, onOutcome func(c
 	}
 	a.cfg = cfg
 	return a
+}
+
+// TestClassifyDisengage pins the AX1/D7 disengage classification: only a CANCELLED
+// hold context (a client/attacker disconnect) counts as the attacker disengaging
+// (and reports the real held time); our own max-hold DEADLINE and every other
+// defender stop report a defender-cap with zero disengage time. This is the one
+// place a client disconnect is told apart from our deadline — both reach the stream
+// as DoneKilled.
+func TestClassifyDisengage(t *testing.T) {
+	const held = 3.5
+	for _, tc := range []struct {
+		name     string
+		reason   attrition.DoneReason
+		holdErr  error
+		wantR    int
+		wantTime float64
+	}{
+		{"attacker disconnect", attrition.DoneKilled, context.Canceled, contract.DisengageAttacker, held},
+		{"defender max-hold deadline", attrition.DoneKilled, context.DeadlineExceeded, contract.DisengageDefenderCapped, 0},
+		{"generator exhausted", attrition.DoneComplete, nil, contract.DisengageGeneratorDone, 0},
+		{"per-flow budget", attrition.DoneFlowBudget, nil, contract.DisengageDefenderCapped, 0},
+		{"host ceiling", attrition.DoneGlobalCeiling, nil, contract.DisengageDefenderCapped, 0},
+		{"kill switch (no ctx error)", attrition.DoneKilled, nil, contract.DisengageDefenderCapped, 0},
+		{"noop", attrition.DoneNoOp, nil, contract.DisengageUnknown, 0},
+	} {
+		gotR, gotT := classifyDisengage(tc.reason, tc.holdErr, held)
+		if gotR != tc.wantR || gotT != tc.wantTime {
+			t.Errorf("%s: got (reason=%d, time=%.1f), want (reason=%d, time=%.1f)", tc.name, gotR, gotT, tc.wantR, tc.wantTime)
+		}
+	}
 }

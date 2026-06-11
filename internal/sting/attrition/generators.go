@@ -126,15 +126,46 @@ func randToken(h uint64, n int, alphabet string) string {
 
 func stingMarkerToken(h uint64) string { return stingMarker + randToken(h, 12, base32Alpha) }
 
-// dripDelay returns a deterministic per-(seed,idx) delay clamped to the drip band.
-// Delay is DATA: the driver waits it; attrition never sleeps.
-func dripDelay(seed uint64, idx int, d DripParams) time.Duration {
+// ramp is the AX1 linear escalation of the delay floor at a given persistence:
+// 0 at persist<=0, the full span at persist>=saturate, linear in between. Pure,
+// O(1), and division-safe (saturate is normalized positive by DripParams, and
+// re-guarded here). The multiply runs only for 0<persist<saturate — a small bound —
+// so it cannot overflow int64 for any real drip span.
+func ramp(persist, saturate int, span time.Duration) time.Duration {
+	if persist <= 0 || span <= 0 {
+		return 0
+	}
+	if saturate <= 0 {
+		saturate = DefaultRampSaturate
+	}
+	if persist >= saturate {
+		return span
+	}
+	return time.Duration(int64(span) * int64(persist) / int64(saturate))
+}
+
+// adaptiveDelay returns the AX1 escalating drip delay. The FLOOR ramps from
+// MinDelay toward MaxDelay as persistence (the per-flow chunk count) grows, then
+// jitters deterministically within [floor, MaxDelay] — so a persistent flow is
+// punished with monotonically rising latency (velocity disruption; the cost is
+// wall-clock time, which lands whoever owns the GPU) while early chunks keep the
+// original band. Delay is DATA: the driver waits it; attrition never sleeps. At
+// persist<=0 it is byte-identical to the pre-AX1 fixed-band drip.
+func adaptiveDelay(seed uint64, idx int, d DripParams, persist int) time.Duration {
 	span := d.MaxDelay - d.MinDelay
 	if span <= 0 {
 		return d.MinDelay
 	}
+	floor := d.MinDelay + ramp(persist, d.RampSaturate, span)
+	if floor > d.MaxDelay {
+		floor = d.MaxDelay // ramp caps at span, so this is defensive
+	}
+	jitterSpan := d.MaxDelay - floor
+	if jitterSpan <= 0 {
+		return floor
+	}
 	h := mix(seed, uint64(idx)+0xd31)
-	return d.MinDelay + time.Duration(h%uint64(span))
+	return floor + time.Duration(h%uint64(jitterSpan))
 }
 
 // truncateAtLine caps b at most cap bytes, cutting only at a newline so a chunk
@@ -160,7 +191,7 @@ func (tarpit) minTier() contract.Tier       { return contract.TierContain }
 
 func (tarpit) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	data := fillerChunk(cur.seed, cur.chunkIdx, p.Drip.ChunkBytes)
-	delay := dripDelay(cur.seed, cur.chunkIdx, p.Drip)
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
 	cur.chunkIdx++
 	return data, delay, true
 }
@@ -197,7 +228,7 @@ func (fakeMaze) minTier() contract.Tier       { return contract.TierContain }
 func (fakeMaze) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	path := mazePathFor(cur.seed, cur.depth, cur.chunkIdx)
 	data := mazeNode(cur.seed, path)
-	delay := dripDelay(cur.seed, cur.chunkIdx, p.Drip)
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
 	cur.depth++
 	if cur.depth > p.MaxDepth {
 		cur.depth = 0 // endless to the crawler, bounded to us
@@ -265,7 +296,7 @@ func (tokenBait) minTier() contract.Tier       { return contract.TierJail }
 
 func (tokenBait) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	data := baitBlob(cur.seed, cur.chunkIdx, cur.depth, p.MaxDepth)
-	delay := dripDelay(cur.seed, cur.chunkIdx, p.Drip)
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
 	cur.depth++
 	if cur.depth > p.MaxDepth {
 		cur.depth = 0

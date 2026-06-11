@@ -86,11 +86,13 @@ type Outcome struct {
 	// Five-axis carriers (AX0 spine). Same names as contract.StingOutcome /
 	// intelligence.StingOutcome so the composition root's copy can't silently drop
 	// one — TestOutcomeMapsToStingOutcome reflects intelligence.StingOutcome against
-	// this struct and fails on a missing name. Attrition itself populates Axes (at
-	// Open, the union of the active set) and defaults DisengageReason to the stream's
-	// end reason; the adapter refines TimeToDisengageSec/DisengageReason from its
-	// hold context (AX1/D7), and the AX2–AX5 generators populate the poison/exploit/
-	// exposure fields. All zero in AX0 except Axes + DisengageReason.
+	// this struct and fails on a missing name. Attrition populates ONLY Axes (at
+	// Open, the union of the active set's axes). DisengageReason and
+	// TimeToDisengageSec are written SOLELY by the adapter's classifyDisengage from
+	// its hold context (AX1/D7 — the stream cannot tell a client disconnect from the
+	// max-hold deadline, so it never classifies); the AX2–AX5 generators populate the
+	// poison/exploit/exposure fields. A raw attrition.Outcome therefore carries
+	// DisengageReason=0 (DisengageUnknown) on the non-adapter (scripted-harness) path.
 	Axes               contract.AttritionAxis // union of active generators' axes (OVERLAPPING, never a partition)
 	TimeToDisengageSec float64                // attacker-initiated disengage time (adapter, AX1/D7)
 	PoisonClass        string                 // information-poisoning reaction class (AX2)
