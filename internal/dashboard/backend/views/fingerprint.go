@@ -3,11 +3,11 @@ package views
 import (
 	"fmt"
 	"hash/fnv"
-	"math"
 	"sort"
 	"strings"
 
 	"github.com/canarysting/canarysting/internal/intelligence"
+	"github.com/canarysting/canarysting/internal/intelligence/stats"
 )
 
 // FlowFingerprint is the adversary behavioral fingerprint for one flow. It shows
@@ -71,10 +71,10 @@ func DeriveFingerprint(flowID uint64, events []intelligence.AdversaryInteraction
 	for i := 1; i < len(ordered); i++ {
 		gaps = append(gaps, ordered[i].Timestamp.Sub(ordered[i-1].Timestamp).Seconds())
 	}
-	cadence := median(gaps)
+	cadence := stats.Median(gaps)
 	var jitter float64
 	if len(gaps) >= 2 {
-		jitter = mad(gaps)
+		jitter = stats.MAD(gaps)
 	}
 
 	return &FlowFingerprint{
@@ -105,31 +105,4 @@ func fingerprintHash(flowID uint64, orderedTypes []string) string {
 	b := (v >> 16) & 0xFFFF
 	c := v & 0xFFFF
 	return fmt.Sprintf("fp:%04x·%04x·%04x", a, b, c)
-}
-
-// median returns the median of xs (0 for empty/single-element-aware callers).
-func median(xs []float64) float64 {
-	if len(xs) == 0 {
-		return 0
-	}
-	cp := append([]float64(nil), xs...)
-	sort.Float64s(cp)
-	n := len(cp)
-	if n%2 == 1 {
-		return cp[n/2]
-	}
-	return (cp[n/2-1] + cp[n/2]) / 2
-}
-
-// mad is the median absolute deviation from the median.
-func mad(xs []float64) float64 {
-	if len(xs) < 2 {
-		return 0
-	}
-	m := median(xs)
-	dev := make([]float64, len(xs))
-	for i, x := range xs {
-		dev[i] = math.Abs(x - m)
-	}
-	return median(dev)
 }
