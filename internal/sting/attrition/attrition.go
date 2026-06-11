@@ -112,7 +112,7 @@ type BoundedAttritor struct {
 	budget Budget
 	params genParams
 	gov    *Governor
-	gens   []generator // the floor's constructed generators, in least->most-aggressive ladder order (tarpit, fake_tree, poison_field, token_bait); only those whose axis() overlaps Floor.Axes() are built, and sel[last] is the headline Mechanism
+	gens   []generator // the floor's constructed generators, in least->most-aggressive ladder order (tarpit, fake_tree, poison_field, token_bait, exploit_bait, op_exposure); only those whose axis() overlaps Floor.Axes() are built, and sel[last] is the headline Mechanism (op_exposure at FloorAggressive+TierJail)
 }
 
 var _ Attritor = (*BoundedAttritor)(nil)

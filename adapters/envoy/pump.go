@@ -33,6 +33,18 @@ var exploitMarkers = []string{
 // set of TRANSPORT-SHAPE facts (the UA string the client SENT), not a learned detector
 // — a transport-fact digest, NOT engine detection (rule 1). Matched as a lowercased
 // substring of the user-agent only.
+//
+// PRECISION NOTE (leak-review): the set DELIBERATELY keeps the generic scripting/HTTP
+// clients (curl/wget/python-requests/go-http-client/okhttp/java/libwww) alongside the
+// dedicated offensive tools (sqlmap/nuclei/nmap/...). Those generic libs are also used
+// by benign east-west services, so on their own they are weak signal — but the
+// false-positive blast radius is bounded by construction: ToolingExposed only feeds
+// ExposureSignals on a Tier-3-JAILED, canary-touching attrition flow (a legitimate
+// internal service never reaches that gate), ExposureSignals is a write-only-out local
+// COUNT, and it never affects tiering/triggering. Keeping the generic libs also lets a
+// scripted/LLM attacker that uses a default Go/Python client register the axis. If a
+// real east-west deployment shows noise, trim the generic libs to the dedicated-tool
+// subset — this is a documented recall-over-precision choice, not an oversight.
 var toolingMarkers = []string{
 	"curl/", "wget/", "python-requests", "python-urllib", "go-http-client", "libwww",
 	"java/", "okhttp", "httpx", "zgrab", "nikto", "sqlmap", "nmap", "masscan",
