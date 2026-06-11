@@ -222,6 +222,18 @@ func main() {
 					TokenCostProxy: out.TokenCostProxy,
 					DepthReached:   out.DepthReached,
 					DoneReason:     int(out.Reason),
+					// Five-axis fields (AX0 spine). Copy ALL of them at the composition
+					// root — a field missed here silently drops on the way to the durable
+					// store. Today attrition sets Axes (at Open) + DisengageReason (at
+					// finish); the adapter refines TimeToDisengageSec/DisengageReason from
+					// its hold context in AX1/D7, and AX2-AX5 populate the rest.
+					Axes:               out.Axes,
+					TimeToDisengageSec: out.TimeToDisengageSec,
+					PoisonClass:        out.PoisonClass,
+					PoisonReached:      out.PoisonReached,
+					ExploitsObserved:   out.ExploitsObserved,
+					ExposureSignals:    out.ExposureSignals,
+					DisengageReason:    out.DisengageReason,
 				},
 			}
 			if err := outcomeReporter.ReportOutcome(rec); err != nil {

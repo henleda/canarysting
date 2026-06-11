@@ -49,6 +49,16 @@ message StingOutcome {
   double token_cost_proxy = 5;
   int32 depth_reached = 6;
   int32 done_reason = 7; // attrition.DoneReason int value
+  // Five-axis fields (AX0 spine; docs/ATTRITION_FIVE_AXIS_DESIGN.md §9.1). All
+  // additive ⇒ proto3-forward-safe. Only axes is populated today; the rest are
+  // carriers for AX1-AX5 + the adapter disengage classifier.
+  uint32 axes = 8;                 // active attrition axes bitset (contract.AttritionAxis)
+  double time_to_disengage_sec = 9;
+  string poison_class = 10;
+  int32 poison_reached = 11;
+  int64 exploits_observed = 12;
+  int64 exposure_signals = 13;
+  int32 disengage_reason = 14;
 }
 
 // OutcomeRecord is the adapter's post-attrition report. socket_cookie is the

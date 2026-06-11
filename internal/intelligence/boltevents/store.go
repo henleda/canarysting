@@ -103,6 +103,18 @@ func (s *Store) AmendOutcome(rec contract.OutcomeRecord) error {
 			RequestsAbsrb:  rec.Outcome.RequestsAbsrb,
 			TokenCostProxy: rec.Outcome.TokenCostProxy,
 			DepthReached:   rec.Outcome.DepthReached,
+			// Five-axis fields (AX0 spine). Persist them or they never reach
+			// cost.Rollup / the D2 profiler / the dashboard. Additive on the existing
+			// gob struct (no new blob type), so TestEventTypeHasNoOutcomeDiscriminator*
+			// stays green and old blobs zero-fill. DoneReason stays adapter/engine-path
+			// only (intentionally not persisted, as before).
+			Axes:               uint32(rec.Outcome.Axes),
+			TimeToDisengageSec: rec.Outcome.TimeToDisengageSec,
+			PoisonClass:        rec.Outcome.PoisonClass,
+			PoisonReached:      rec.Outcome.PoisonReached,
+			ExploitsObserved:   rec.Outcome.ExploitsObserved,
+			ExposureSignals:    rec.Outcome.ExposureSignals,
+			DisengageReason:    rec.Outcome.DisengageReason,
 		},
 	}
 	var buf bytes.Buffer

@@ -46,6 +46,20 @@ type StingOutcome struct {
 	// DepthReached is the deepest maze/nesting level the attacker descended — a
 	// behavioral reaction signal for the D2 adversary profiler (docs/STING.md).
 	DepthReached int
+
+	// Five-axis fields (added by the AX0 spine; docs/ATTRITION_FIVE_AXIS_DESIGN.md
+	// §9.1). They MUST stay same-named with attrition.Outcome (the drift-guard
+	// reflects this struct against it). Additive ⇒ gob-forward-safe; old persisted
+	// blobs decode these as zero. The D2 adversary profiler reads them as the
+	// per-axis engagement signature (docs/D2_D5_DESIGN.md); ExploitsObserved /
+	// ExposureSignals are deployment-local-only until the egress filter ships (rule 9).
+	Axes               uint32  // active attrition axes (bitset; see contract.AttritionAxis) — OVERLAPPING, never a partition
+	TimeToDisengageSec float64 // attacker-initiated disengage time (non-zero only when the attacker disconnected)
+	PoisonClass        string  // information-poisoning reaction class (credential|topology|success)
+	PoisonReached      int     // deepest poison-field stage the attacker consumed
+	ExploitsObserved   int64   // exploits fired at decoys, captured in-perimeter (AX4)
+	ExposureSignals    int64   // operational-exposure signals captured (AX5)
+	DisengageReason    int     // disengage classification: attacker-disengaged | generator-exhausted | defender-capped
 }
 
 // EventStore is the per-scope, deployment-local store of interaction events.

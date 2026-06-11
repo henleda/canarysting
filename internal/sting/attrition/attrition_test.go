@@ -262,47 +262,55 @@ func TestFloorIsRespected(t *testing.T) {
 	for _, tc := range cases {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		for _, tier := range []contract.Tier{contract.TierContain, contract.TierJail} {
-			mech := a.selectGenerator(tier).mechanism()
-			if !tc.allowed[mech] {
-				t.Fatalf("floor %d tier %d ran disallowed mechanism %q", tc.floor, tier, mech)
+			for _, g := range a.selectAxes(tier) {
+				if !tc.allowed[g.mechanism()] {
+					t.Fatalf("floor %d tier %d ran disallowed mechanism %q", tc.floor, tier, g.mechanism())
+				}
 			}
 		}
 	}
 }
 
 func TestGeneratorSelectionTable(t *testing.T) {
-	// Pins the EXACT mechanism per (floor, tier), so a mutation that makes a tier
-	// raise intensity (e.g. tierIntensity returning 2 for both tiers) is caught.
-	// At FloorAggressive, Tier 2 must be the gentler form (fake_tree), Tier 3 the
-	// full adversarial form (token_bait) — docs/STING.md.
+	// Pins the EXACT active axis SET per (floor, tier) AND the headline mechanism
+	// (the most-aggressive member — the D3 by-mechanism KPI). Under the five-axis
+	// model a tier composes a SET (velocity+poison from TierContain), but a higher
+	// tier must never raise the floor's ceiling, and the headline must equal the old
+	// single-generator selection so the KPI stays stable: FloorAggressive Tier 2 is
+	// the gentler form (fake_tree), Tier 3 the full adversarial form (token_bait).
+	mechSet := func(gs []generator) map[string]bool {
+		m := map[string]bool{}
+		for _, g := range gs {
+			m[g.mechanism()] = true
+		}
+		return m
+	}
 	for _, tc := range []struct {
-		floor contract.StingFloor
-		tier  contract.Tier
-		mech  string
+		floor    contract.StingFloor
+		tier     contract.Tier
+		set      []string
+		headline string
 	}{
-		{contract.FloorPassive, contract.TierContain, MechTarpit},
-		{contract.FloorPassive, contract.TierJail, MechTarpit},
-		{contract.FloorModerate, contract.TierContain, MechFakeTree},
-		{contract.FloorModerate, contract.TierJail, MechFakeTree},
-		{contract.FloorAggressive, contract.TierContain, MechFakeTree},
-		{contract.FloorAggressive, contract.TierJail, MechTokenBait},
+		{contract.FloorPassive, contract.TierContain, []string{MechTarpit}, MechTarpit},
+		{contract.FloorPassive, contract.TierJail, []string{MechTarpit}, MechTarpit},
+		{contract.FloorModerate, contract.TierContain, []string{MechTarpit, MechFakeTree}, MechFakeTree},
+		{contract.FloorModerate, contract.TierJail, []string{MechTarpit, MechFakeTree}, MechFakeTree},
+		{contract.FloorAggressive, contract.TierContain, []string{MechTarpit, MechFakeTree}, MechFakeTree},
+		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechTokenBait}, MechTokenBait},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
-		if got := a.selectGenerator(tc.tier).mechanism(); got != tc.mech {
-			t.Fatalf("floor %d tier %d: selected %q, want %q", tc.floor, tc.tier, got, tc.mech)
+		sel := a.selectAxes(tc.tier)
+		got := mechSet(sel)
+		if len(got) != len(tc.set) {
+			t.Fatalf("floor %d tier %d: set %v, want exactly %v", tc.floor, tc.tier, got, tc.set)
 		}
-	}
-}
-
-func TestFloorMaxMatchesConstructedGenerators(t *testing.T) {
-	// floorMax is defense-in-depth: it is redundant with the construction gates
-	// (gens is built to exactly the floor). This pins that relationship so the
-	// redundancy is intentional — floorMax can never permit an index the gens slice
-	// does not contain, and vice versa.
-	for _, floor := range []contract.StingFloor{contract.FloorPassive, contract.FloorModerate, contract.FloorAggressive} {
-		a := mustNew(t, Config{Floor: floor, Budget: testBudget(), Drip: fastDrip()})
-		if floorMax(floor) != len(a.gens)-1 {
-			t.Fatalf("floor %d: floorMax=%d but gens has %d entries (top index %d)", floor, floorMax(floor), len(a.gens), len(a.gens)-1)
+		for _, m := range tc.set {
+			if !got[m] {
+				t.Fatalf("floor %d tier %d: set %v missing %q", tc.floor, tc.tier, got, m)
+			}
+		}
+		if h := sel[len(sel)-1].mechanism(); h != tc.headline {
+			t.Fatalf("floor %d tier %d: headline %q, want %q", tc.floor, tc.tier, h, tc.headline)
 		}
 	}
 }
@@ -326,26 +334,70 @@ func TestAggressiveIsNeverSilentDefault(t *testing.T) {
 }
 
 func TestNoTierAloneRaisesFloor(t *testing.T) {
-	idxOf := func(a *BoundedAttritor, g generator) int {
-		for i := range a.gens {
-			if a.gens[i].mechanism() == g.mechanism() {
-				return i
-			}
-		}
-		return -1
-	}
+	// At a floor below aggressive, NO tier — however high — may surface token_bait
+	// (the aggressive-only generator), and every selected generator's axes must be
+	// unlocked by the floor. The set is constructed per floor.Axes(), so a tier can
+	// only NARROW it (by minTier), never add a higher generator.
 	for _, floor := range []contract.StingFloor{contract.FloorPassive, contract.FloorModerate} {
 		a := mustNew(t, Config{Floor: floor, Budget: testBudget(), Drip: fastDrip()})
-		maxIdx := floorMax(floor)
 		for _, tier := range []contract.Tier{contract.TierContain, contract.TierJail} {
-			g := a.selectGenerator(tier)
-			if g.mechanism() == MechTokenBait {
-				t.Fatalf("floor %d tier %d reached token_bait — a tier raised the floor", floor, tier)
-			}
-			if idx := idxOf(a, g); idx > maxIdx {
-				t.Fatalf("floor %d tier %d selected ladder index %d above floorMax %d", floor, tier, idx, maxIdx)
+			for _, g := range a.selectAxes(tier) {
+				if g.mechanism() == MechTokenBait {
+					t.Fatalf("floor %d tier %d reached token_bait — a tier raised the floor", floor, tier)
+				}
+				if g.axis()&floor.Axes() == 0 {
+					t.Fatalf("floor %d tier %d selected %q whose axes (%05b) are not unlocked by the floor (%05b)",
+						floor, tier, g.mechanism(), g.axis(), floor.Axes())
+				}
 			}
 		}
+	}
+}
+
+func TestSelectAxesComposition(t *testing.T) {
+	// FloorAggressive at TierJail composes ALL three generators on one flow, so the
+	// stream's Outcome.Axes unions velocity + information-poisoning + opportunity-cost
+	// (an OVERLAPPING set — fake_tree carries both poison and opp-cost — never a
+	// partition). FloorPassive imposes velocity only. Axes is set at Open and must
+	// survive driving the rotation.
+	agg := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
+	s := agg.Open(verdict(contract.TierJail, 0xA11))
+	defer s.Close()
+	_, out := drive(t, s, 6) // enough chunks for the rotation to visit each generator
+	if want := contract.AxisVelocity | contract.AxisPoison | contract.AxisOppCost; out.Axes != want {
+		t.Fatalf("aggressive+jail Outcome.Axes = %05b, want %05b (velocity|poison|oppcost)", out.Axes, want)
+	}
+
+	pas := mustNew(t, Config{Budget: testBudget(), Drip: fastDrip()}) // zero Floor == passive
+	ps := pas.Open(verdict(contract.TierContain, 0xB22))
+	defer ps.Close()
+	_, pout := drive(t, ps, 4)
+	if pout.Axes != contract.AxisVelocity {
+		t.Fatalf("passive Outcome.Axes = %05b, want velocity-only %05b", pout.Axes, contract.AxisVelocity)
+	}
+}
+
+func TestTokenProxyKeysOffRotatedGenerator(t *testing.T) {
+	// Per-chunk TokenCostProxy must bill the CURRENTLY-ACTIVE (rotated) generator,
+	// not the frozen headline Mechanism. At FloorAggressive+TierJail the set is
+	// {tarpit, fakeMaze, tokenBait}; only token_bait bills at baitTokenRatio (3.0),
+	// tarpit/fake_tree at the plain divisor (1/4). A regression freezing it to the
+	// headline (token_bait) would bill EVERY chunk at 3.0x — a ~12x over-attribution
+	// into the attacker-cost hero / D3 KPI. Bracket the accumulated proxy STRICTLY
+	// between the all-plain and all-bait bounds to prove a genuine per-generator mix.
+	a := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
+	s := a.Open(verdict(contract.TierJail, 0xF00D))
+	_, out := drive(t, s, 90) // many chunks so the 3-way rotation is well sampled
+	if out.BytesServed == 0 {
+		t.Fatal("no bytes served")
+	}
+	allBait := float64(out.BytesServed) * baitTokenRatio
+	allPlain := float64(out.BytesServed) / plainTokenDivisor
+	if out.TokenCostProxy >= allBait {
+		t.Fatalf("TokenCostProxy %.0f >= all-bait bound %.0f: proxy is frozen to the bait headline, not keyed per rotated generator", out.TokenCostProxy, allBait)
+	}
+	if out.TokenCostProxy <= allPlain {
+		t.Fatalf("TokenCostProxy %.0f <= all-plain bound %.0f: the token_bait chunks are not billed at the bait ratio", out.TokenCostProxy, allPlain)
 	}
 }
 
@@ -469,7 +521,9 @@ func TestGenSelfTestCatchesUnboundedGenerator(t *testing.T) {
 
 type unboundedGen struct{}
 
-func (unboundedGen) mechanism() string { return "unbounded" }
+func (unboundedGen) mechanism() string            { return "unbounded" }
+func (unboundedGen) axis() contract.AttritionAxis { return contract.AxisVelocity }
+func (unboundedGen) minTier() contract.Tier       { return contract.TierContain }
 func (unboundedGen) next(cur *cursor, _ genParams) ([]byte, time.Duration, bool) {
 	cur.chunkIdx++
 	return make([]byte, maxChunkBytes+1), time.Second, true // one byte over the per-chunk cap
@@ -478,7 +532,9 @@ func (g unboundedGen) selfTest(n int, p genParams) error { return genSelfTest(g,
 
 type harmfulGen struct{}
 
-func (harmfulGen) mechanism() string { return "harmful" }
+func (harmfulGen) mechanism() string            { return "harmful" }
+func (harmfulGen) axis() contract.AttritionAxis { return contract.AxisVelocity }
+func (harmfulGen) minTier() contract.Tier       { return contract.TierContain }
 func (harmfulGen) next(cur *cursor, _ genParams) ([]byte, time.Duration, bool) {
 	cur.chunkIdx++
 	return []byte("beacon https://attacker.evil.com/exfil\n"), time.Second, true // routable host
