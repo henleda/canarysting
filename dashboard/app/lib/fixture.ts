@@ -176,6 +176,14 @@ export const fixtureOverview: Overview = {
       persists_tarpit: true,
       hash: 'fp:a3f1·9c08·b27d',
     },
+    // AX2/AX4/AX5 reaction signals (demo posture: the attacker walked all the way into
+    // the fabricated env, fired real exploits at decoys, and exposed tooling).
+    reactions: {
+      exploits_observed: 6,
+      exposure_signals: 11,
+      poison_reached: 3,
+      poison_class: 'success',
+    },
   },
 
   // M9 live cost meter (fixture: a run mid-burn at ~$2.31 of a $5 cap).
@@ -264,6 +272,16 @@ export const fixtureCostBreakdown: CostBreakdown = {
     event_count: i % 5 === 0 ? 1 : 0,
   })),
   bucket_sec: 150,
+  engagement: {
+    median_sec: 6.4,
+    p90_sec: 8.0,
+    longest_sec: 8.0,
+    disengaged_early: 7,
+    generator_exhausted: 2,
+    defender_capped: 13,
+    disengaged_early_fraction: 0.318,
+  },
+  reactions: { exploits_observed: 6, exposure_signals: 11, poison_reached: 3, poison_class: 'success' },
 };
 
 export const fixtureReconTimeline: ReconTimeline = {

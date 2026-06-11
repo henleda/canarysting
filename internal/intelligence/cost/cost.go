@@ -54,6 +54,18 @@ type Summary struct {
 	DisengagedEarly      int     // sessions the ATTACKER ended before any defender bound (DisengageAttacker) — the engagement signal
 	GeneratorExhausted   int     // sessions that reached the generator's natural end
 	DefenderCapped       int     // sessions the defender stopped (budget / ceiling / max-hold / kill)
+
+	// Reaction signals (AX2/AX4/AX5), aggregated across the window. These count what
+	// the attacker DID in response to the deception — distinct from the imposed-cost
+	// totals above: how far into the fabricated environment they walked (poison), how
+	// many real exploits they fired at decoys, how many times they exposed their
+	// tooling. Deployment-local-only (rule 9; the egress filter gates any
+	// cross-boundary use). Zero on a passive-floor window (these axes don't fire below
+	// their floors); they light up once the operator raises the floor.
+	ExploitsObserved   int64  // AX4: total exploits fired at decoys, captured in-perimeter
+	ExposureSignals    int64  // AX5: total tooling/C2 fingerprints exposed, captured in-perimeter
+	PoisonReachedMax   int    // AX2: deepest fabricated-environment stage any flow walked
+	PoisonClassDeepest string // AX2: class label of that deepest stage ("" if none)
 }
 
 // Rollup aggregates a scope's interaction events into the attacker-cost summary.
@@ -73,6 +85,14 @@ func Rollup(events []intelligence.AdversaryInteractionEvent) Summary {
 		}
 		if e.Tier >= 0 && e.Tier < len(s.TierCounts) {
 			s.TierCounts[e.Tier]++
+		}
+		// Reaction signals (AX2/AX4/AX5): sum the exploit/exposure counts; track the
+		// deepest poison stage any flow walked + its class.
+		s.ExploitsObserved += e.Sting.ExploitsObserved
+		s.ExposureSignals += e.Sting.ExposureSignals
+		if e.Sting.PoisonReached > s.PoisonReachedMax {
+			s.PoisonReachedMax = e.Sting.PoisonReached
+			s.PoisonClassDeepest = e.Sting.PoisonClass
 		}
 		// Per-axis OVERLAPPING subtotals: an interaction contributes to EVERY axis
 		// its mechanism imposed (never a partition).

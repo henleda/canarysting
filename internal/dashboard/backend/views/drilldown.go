@@ -20,6 +20,7 @@ import (
 
 	"github.com/canarysting/canarysting/internal/engine/baseline"
 	"github.com/canarysting/canarysting/internal/intelligence"
+	"github.com/canarysting/canarysting/internal/intelligence/cost"
 )
 
 // sessionGap is the idle threshold that separates two sessions on the same
@@ -140,11 +141,13 @@ type CostBucket struct {
 
 // CostBreakdown is the /api/cost payload.
 type CostBreakdown struct {
-	Total       FlowCost        `json:"total"`
-	ByFlow      []FlowRow       `json:"by_flow"`      // TimeHeldSec desc
-	ByMechanism []MechanismCost `json:"by_mechanism"` // empty-mechanism events omitted (decision J)
-	TimeSeries  []CostBucket    `json:"time_series"`  // zero-filled
-	BucketSec   int             `json:"bucket_sec"`
+	Total       FlowCost         `json:"total"`
+	ByFlow      []FlowRow        `json:"by_flow"`      // TimeHeldSec desc
+	ByMechanism []MechanismCost  `json:"by_mechanism"` // empty-mechanism events omitted (decision J)
+	TimeSeries  []CostBucket     `json:"time_series"`  // zero-filled
+	BucketSec   int              `json:"bucket_sec"`
+	Engagement  EngagementView   `json:"engagement"` // the engagement contest (median/p90/longest + disengage split)
+	Reactions   AxisReactionView `json:"reactions"`  // AX2/AX4/AX5 deception-reaction signals
 }
 
 // ReconRow is one T1 early-warning row, scoped to its SESSION's escalation.
@@ -460,6 +463,12 @@ func DeriveCostBreakdown(events []intelligence.AdversaryInteractionEvent, now ti
 	}
 
 	cb.TimeSeries = buildCostTimeSeries(events, now, bucketDur)
+
+	// Engagement + the AX2/AX4/AX5 reaction signals, from the same rollup the home
+	// wall uses (so the drill-down never disagrees with the Overview).
+	sum := cost.Rollup(events)
+	cb.Engagement = engagementView(sum)
+	cb.Reactions = reactionView(sum)
 	return cb
 }
 
