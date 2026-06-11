@@ -278,10 +278,10 @@ func TestGeneratorSelectionTable(t *testing.T) {
 	// model a tier composes a SET (velocity + the poison generators from TierContain),
 	// but a higher tier must never raise the floor's ceiling. AX2 made poison_field
 	// the Tier-2 headline at the poison floors (the D8 fake_tree->poison_field flip);
-	// AX4 made exploit_bait the Tier-3 aggressive headline (the token_bait->exploit_bait
-	// flip — token_bait still rotates in the set, but exploit_bait is sel[last]). AX5's
-	// op_exposure rotates in the Tier-3 set too (passive observation) but is inserted
-	// BEFORE exploit_bait, so exploit_bait stays the headline (no second flip).
+	// AX4 made exploit_bait the Tier-3 headline; AX5 then made op_exposure the
+	// Tier-3 APEX headline (op_exposure sits last in the ladder — operational exposure
+	// is the deepest outcome). token_bait + exploit_bait still ROTATE in the Tier-3 set
+	// (their axes join Outcome.Axes) but op_exposure is sel[last].
 	mechSet := func(gs []generator) map[string]bool {
 		m := map[string]bool{}
 		for _, g := range gs {
@@ -300,7 +300,7 @@ func TestGeneratorSelectionTable(t *testing.T) {
 		{contract.FloorModerate, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
 		{contract.FloorModerate, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
 		{contract.FloorAggressive, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
-		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison, MechTokenBait, MechOpExposure, MechExploitBait}, MechExploitBait},
+		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison, MechTokenBait, MechExploitBait, MechOpExposure}, MechOpExposure},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		sel := a.selectAxes(tc.tier)
@@ -324,17 +324,17 @@ func TestAggressiveIsNeverSilentDefault(t *testing.T) {
 	for _, tier := range []contract.Tier{contract.TierObserve, contract.TierTag, contract.TierContain, contract.TierJail} {
 		s := def.Open(verdict(tier, 0xDEAD))
 		_, out := drive(t, s, 64)
-		if out.Mechanism == MechTokenBait || out.Mechanism == MechExploitBait {
+		if out.Mechanism == MechTokenBait || out.Mechanism == MechExploitBait || out.Mechanism == MechOpExposure {
 			t.Fatalf("default (passive) config emitted %q at tier %d — an aggressive-only generator went silent", out.Mechanism, tier)
 		}
 	}
-	// Teeth: the only way to reach the aggressive headline (exploit_bait, the AX4
-	// flip) is explicit FloorAggressive + Tier 3.
+	// Teeth: the only way to reach the aggressive headline (op_exposure, the AX5 apex)
+	// is explicit FloorAggressive + Tier 3.
 	agg := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
 	s := agg.Open(verdict(contract.TierJail, 0xBEEF))
 	_, out := drive(t, s, 4)
-	if out.Mechanism != MechExploitBait {
-		t.Fatalf("explicit aggressive + Tier 3 did not reach exploit_bait (test would be vacuous): %q", out.Mechanism)
+	if out.Mechanism != MechOpExposure {
+		t.Fatalf("explicit aggressive + Tier 3 did not reach op_exposure (test would be vacuous): %q", out.Mechanism)
 	}
 }
 
