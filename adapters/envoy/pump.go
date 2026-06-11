@@ -3,11 +3,54 @@ package envoy
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/sting/attrition"
 )
+
+// exploitMarkers are FIXED, documented structural byte-shapes a request carries when
+// an automated exploit is fired at it (path traversal, known exposed-config probes,
+// JNDI/SQLi/LFI/XSS shapes). They are a closed, hand-maintained set of TRANSPORT-SHAPE
+// facts — not a learned or scored detector — so matching them here is a transport-fact
+// digest, NOT engine detection logic (rule 1). The shapes are deliberately SPECIFIC to
+// keep the count honest: bare "${" / "{{" / " union " / " select " were dropped because
+// they over-match benign query strings; the kept SQLi/JNDI shapes ("union select",
+// "' or '", "${jndi:") are specific enough not to fire on ordinary traffic. Matched
+// against the full lowercased :path (query included — probes commonly live in the query).
+var exploitMarkers = []string{
+	"../", "..%2f", "..\\", "%00", // path traversal / null byte
+	"/.git/", "/actuator", "/.env", "/.aws/", "/cgi-bin/", "/wp-admin", // exposed-config / common automated targets
+	"${jndi:",                               // JNDI injection (specific)
+	"/etc/passwd", "union select", "' or '", // LFI / SQLi (specific shapes)
+	"<script", "onerror=", // XSS shapes
+}
+
+// digestObservation maps a request's TRANSPORT SHAPE (the method + path the adapter
+// already extracted) into the structured contract.DriverObservation the attrition
+// stream's Observe seam consumes — counts/bools ONLY, never raw bytes/addresses
+// (rule 9). SuspectedExploit is true iff the lowercased path carries a fixed
+// structural exploit marker. Like classifyDisengage, this is a transport-fact digest,
+// NOT detection logic (rule 1): the engine already decided the tier; this only
+// annotates the inbound shape so AX4 can COUNT exploits fired at the decoy
+// (Outcome.ExploitsObserved). It NEVER reaches back at the attacker (docs/STING.md
+// "not hack-back").
+func digestObservation(obs RequestObservation) contract.DriverObservation {
+	p := strings.ToLower(obs.Path)
+	suspected := false
+	for _, m := range exploitMarkers {
+		if strings.Contains(p, m) {
+			suspected = true
+			break
+		}
+	}
+	return contract.DriverObservation{
+		RequestCount:     1, // one inbound request drives this attrition stream
+		DistinctDecoys:   1, // this canary touch; flow-level enumeration breadth aggregates downstream
+		SuspectedExploit: suspected,
+	}
+}
 
 // classifyDisengage maps how an inline attrition hold ended to a
 // contract.DisengageReason + the attacker-initiated disengage time (AX1 / D7).

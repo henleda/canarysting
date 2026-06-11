@@ -39,11 +39,12 @@ func (r DoneReason) String() string {
 // Stable mechanism labels. NEVER change once shipped: intelligence.StingOutcome.
 // Mechanism and the D3 attacker-cost KPI aggregate by these exact strings.
 const (
-	MechNoOp      = "noop"
-	MechTarpit    = "tarpit"
-	MechFakeTree  = "fake_tree"
-	MechTokenBait = "token_bait"
-	MechPoison    = "poison_field" // AX2: a single internally-consistent fabricated environment
+	MechNoOp        = "noop"
+	MechTarpit      = "tarpit"
+	MechFakeTree    = "fake_tree"
+	MechTokenBait   = "token_bait"
+	MechPoison      = "poison_field" // AX2: a single internally-consistent fabricated environment
+	MechExploitBait = "exploit_bait" // AX4: attractive harmless decoy services that burn the attacker's exploit inventory
 )
 
 // Token-cost proxy multipliers. These are documented estimates over emitted
@@ -118,6 +119,8 @@ func AxesForMechanism(mech string) contract.AttritionAxis {
 		return contract.AxisPoison
 	case MechTokenBait:
 		return contract.AxisOppCost
+	case MechExploitBait:
+		return contract.AxisExploitBurn
 	default:
 		return 0
 	}

@@ -258,7 +258,7 @@ func TestFloorIsRespected(t *testing.T) {
 	}{
 		{contract.FloorPassive, map[string]bool{MechTarpit: true}},
 		{contract.FloorModerate, map[string]bool{MechTarpit: true, MechFakeTree: true, MechPoison: true}},
-		{contract.FloorAggressive, map[string]bool{MechTarpit: true, MechFakeTree: true, MechPoison: true, MechTokenBait: true}},
+		{contract.FloorAggressive, map[string]bool{MechTarpit: true, MechFakeTree: true, MechPoison: true, MechTokenBait: true, MechExploitBait: true}},
 	}
 	for _, tc := range cases {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
@@ -278,7 +278,8 @@ func TestGeneratorSelectionTable(t *testing.T) {
 	// model a tier composes a SET (velocity + the poison generators from TierContain),
 	// but a higher tier must never raise the floor's ceiling. AX2 made poison_field
 	// the Tier-2 headline at the poison floors (the D8 fake_tree->poison_field flip);
-	// token_bait stays the Tier-3 aggressive headline.
+	// AX4 made exploit_bait the Tier-3 aggressive headline (the token_bait->exploit_bait
+	// flip — token_bait still rotates in the set, but exploit_bait is sel[last]).
 	mechSet := func(gs []generator) map[string]bool {
 		m := map[string]bool{}
 		for _, g := range gs {
@@ -297,7 +298,7 @@ func TestGeneratorSelectionTable(t *testing.T) {
 		{contract.FloorModerate, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
 		{contract.FloorModerate, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
 		{contract.FloorAggressive, contract.TierContain, []string{MechTarpit, MechFakeTree, MechPoison}, MechPoison},
-		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison, MechTokenBait}, MechTokenBait},
+		{contract.FloorAggressive, contract.TierJail, []string{MechTarpit, MechFakeTree, MechPoison, MechTokenBait, MechExploitBait}, MechExploitBait},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		sel := a.selectAxes(tc.tier)
@@ -321,16 +322,17 @@ func TestAggressiveIsNeverSilentDefault(t *testing.T) {
 	for _, tier := range []contract.Tier{contract.TierObserve, contract.TierTag, contract.TierContain, contract.TierJail} {
 		s := def.Open(verdict(tier, 0xDEAD))
 		_, out := drive(t, s, 64)
-		if out.Mechanism == MechTokenBait {
-			t.Fatalf("default (passive) config emitted token_bait at tier %d — aggressive went silent", tier)
+		if out.Mechanism == MechTokenBait || out.Mechanism == MechExploitBait {
+			t.Fatalf("default (passive) config emitted %q at tier %d — an aggressive-only generator went silent", out.Mechanism, tier)
 		}
 	}
-	// Teeth: the only way to reach token_bait is explicit FloorAggressive + Tier 3.
+	// Teeth: the only way to reach the aggressive headline (exploit_bait, the AX4
+	// flip) is explicit FloorAggressive + Tier 3.
 	agg := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
 	s := agg.Open(verdict(contract.TierJail, 0xBEEF))
 	_, out := drive(t, s, 4)
-	if out.Mechanism != MechTokenBait {
-		t.Fatalf("explicit aggressive + Tier 3 did not reach token_bait (test would be vacuous): %q", out.Mechanism)
+	if out.Mechanism != MechExploitBait {
+		t.Fatalf("explicit aggressive + Tier 3 did not reach exploit_bait (test would be vacuous): %q", out.Mechanism)
 	}
 }
 
@@ -356,17 +358,17 @@ func TestNoTierAloneRaisesFloor(t *testing.T) {
 }
 
 func TestSelectAxesComposition(t *testing.T) {
-	// FloorAggressive at TierJail composes ALL three generators on one flow, so the
-	// stream's Outcome.Axes unions velocity + information-poisoning + opportunity-cost
-	// (an OVERLAPPING set — fake_tree carries both poison and opp-cost — never a
-	// partition). FloorPassive imposes velocity only. Axes is set at Open and must
-	// survive driving the rotation.
+	// FloorAggressive at TierJail composes ALL the floor's generators on one flow, so
+	// the stream's Outcome.Axes unions velocity + information-poisoning + opportunity-
+	// cost + exploit-burn (an OVERLAPPING set — fake_tree carries both poison and
+	// opp-cost — never a partition). FloorPassive imposes velocity only. Axes is set at
+	// Open and must survive driving the rotation.
 	agg := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
 	s := agg.Open(verdict(contract.TierJail, 0xA11))
 	defer s.Close()
-	_, out := drive(t, s, 6) // enough chunks for the rotation to visit each generator
-	if want := contract.AxisVelocity | contract.AxisPoison | contract.AxisOppCost; out.Axes != want {
-		t.Fatalf("aggressive+jail Outcome.Axes = %05b, want %05b (velocity|poison|oppcost)", out.Axes, want)
+	_, out := drive(t, s, 8) // enough chunks for the rotation to visit each generator
+	if want := contract.AxisVelocity | contract.AxisPoison | contract.AxisOppCost | contract.AxisExploitBurn; out.Axes != want {
+		t.Fatalf("aggressive+jail Outcome.Axes = %05b, want %05b (velocity|poison|oppcost|exploit)", out.Axes, want)
 	}
 
 	pas := mustNew(t, Config{Budget: testBudget(), Drip: fastDrip()}) // zero Floor == passive
@@ -498,6 +500,55 @@ func TestPoisonFieldBoundedAndHarmless(t *testing.T) {
 	}
 }
 
+func TestExploitBaitBoundedAndHarmless(t *testing.T) {
+	// AX4: exploit_bait loops (endless, budget-bounded), and every attractive surface
+	// it emits is within the per-chunk cap, marker-tagged, and provably harmless (no
+	// live secret, no routable host — it only LOOKS exploitable).
+	cur := cursor{seed: 0xBEEF}
+	p := genParams{MaxDepth: DefaultMaxDepth, Drip: DefaultDrip()}
+	for i := 0; i < 64; i++ {
+		data, _, ok := exploitBait{}.next(&cur, p)
+		if !ok {
+			t.Fatalf("exploit_bait ended at chunk %d; it must loop (a self-end would terminate the rotated stream)", i)
+		}
+		if len(data) == 0 || len(data) > maxChunkBytes {
+			t.Fatalf("chunk %d size %d out of (0, %d]", i, len(data), maxChunkBytes)
+		}
+		if err := harmless.CrossScan(data); err != nil {
+			t.Fatalf("chunk %d not provably harmless: %v", i, err)
+		}
+		if !strings.Contains(string(data), stingMarker) {
+			t.Fatalf("chunk %d missing the sting marker", i)
+		}
+	}
+}
+
+func TestObserveAccumulatesExploits(t *testing.T) {
+	// AX4 capture: Stream.Observe counts the exploit-shaped inbound observations the
+	// driver digests (passive, in-perimeter) as Outcome.ExploitsObserved. Capture is
+	// orthogonal to the active generator set; a non-acting (noop) stream never captures.
+	a := mustNew(t, Config{Floor: contract.FloorAggressive, Budget: testBudget(), Drip: fastDrip()})
+	s := a.Open(verdict(contract.TierJail, 0xE4))
+	defer s.Close()
+	s.Observe(contract.DriverObservation{SuspectedExploit: true})
+	s.Observe(contract.DriverObservation{SuspectedExploit: false}) // benign shape: no increment
+	s.Observe(contract.DriverObservation{SuspectedExploit: true})
+	if got := s.Outcome().ExploitsObserved; got != 2 {
+		t.Fatalf("ExploitsObserved = %d, want 2 (one per suspected-exploit observation)", got)
+	}
+	ns := a.Open(verdict(contract.TierObserve, 0xE5)) // below TierContain => noop stream
+	ns.Observe(contract.DriverObservation{SuspectedExploit: true})
+	if got := ns.Outcome().ExploitsObserved; got != 0 {
+		t.Fatalf("noop stream captured ExploitsObserved=%d, want 0 (never acts)", got)
+	}
+}
+
+func TestAxesForMechanismExploit(t *testing.T) {
+	if got := AxesForMechanism(MechExploitBait); got != contract.AxisExploitBurn {
+		t.Fatalf("AxesForMechanism(exploit_bait) = %05b, want %05b (AxisExploitBurn)", got, contract.AxisExploitBurn)
+	}
+}
+
 func TestTokenBaitNotConstructedBelowAggressive(t *testing.T) {
 	for _, tc := range []struct {
 		floor contract.StingFloor
@@ -505,7 +556,7 @@ func TestTokenBaitNotConstructedBelowAggressive(t *testing.T) {
 	}{
 		{contract.FloorPassive, 1},
 		{contract.FloorModerate, 3},
-		{contract.FloorAggressive, 4},
+		{contract.FloorAggressive, 5},
 	} {
 		a := mustNew(t, Config{Floor: tc.floor, Budget: testBudget(), Drip: fastDrip()})
 		if len(a.gens) != tc.gens {

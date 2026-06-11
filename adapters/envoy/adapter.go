@@ -272,7 +272,7 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 		return immediateDeny(typev3.StatusCode_Forbidden, "forbidden\n")
 	}
 	a.observe(ev, v)
-	return a.responseWithAttrition(ctx, ev, v)
+	return a.responseWithAttrition(ctx, ev, v, digestObservation(obs))
 }
 
 // responseWithAttrition applies the verdict, substituting a live attrition hold
@@ -283,7 +283,7 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 // Tiers 0/1 and async verdicts NEVER reach the pump (CLAUDE.md rule 6): they take
 // the unchanged responseForVerdict path (CONTINUE +/- tag, or kernel-enforced
 // async). Only inline Tier 2/3 reach attritionOrDeny.
-func (a *Adapter) responseWithAttrition(ctx context.Context, ev contract.SignalEvent, v contract.Verdict) *extprocv3.ProcessingResponse {
+func (a *Adapter) responseWithAttrition(ctx context.Context, ev contract.SignalEvent, v contract.Verdict, digest contract.DriverObservation) *extprocv3.ProcessingResponse {
 	if v.Tier <= contract.TierTag || v.Mode == contract.ModeAsync {
 		return responseForVerdict(v)
 	}
@@ -293,7 +293,7 @@ func (a *Adapter) responseWithAttrition(ctx context.Context, ev contract.SignalE
 		code = typev3.StatusCode_Forbidden
 		fallback = "forbidden\n"
 	}
-	return a.attritionOrDeny(ctx, ev, v, code, fallback)
+	return a.attritionOrDeny(ctx, ev, v, code, fallback, digest)
 }
 
 // fireAsync submits a signal off the request path, bounded by AsyncMaxInflight so

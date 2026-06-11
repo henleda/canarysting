@@ -90,12 +90,18 @@ func immediateDenyWithBody(code typev3.StatusCode, body []byte) *extprocv3.Proce
 // FORGET (a goroutine) so the engine round-trip never blocks/extends the response.
 //
 // This is the M6 live pump that the M4 seam anticipated.
-func (a *Adapter) attritionOrDeny(ctx context.Context, ev contract.SignalEvent, v contract.Verdict, code typev3.StatusCode, fallbackBody string) *extprocv3.ProcessingResponse {
+func (a *Adapter) attritionOrDeny(ctx context.Context, ev contract.SignalEvent, v contract.Verdict, code typev3.StatusCode, fallbackBody string, digest contract.DriverObservation) *extprocv3.ProcessingResponse {
 	if a.cfg.Attritor == nil {
 		return immediateDeny(code, fallbackBody)
 	}
 	s := a.cfg.Attritor.Open(v)
 	defer s.Close()
+
+	// AX4: feed the inbound request's transport-shape digest to the stream's Observe
+	// seam BEFORE pumping, so an exploit fired at this decoy is captured in-perimeter
+	// as Outcome.ExploitsObserved (counts/bools only; never a reach-back). A no-op
+	// stream's Observe is itself a no-op, so this is safe on the fallback path.
+	s.Observe(digest)
 
 	// Hard-bound the inline hold: the deception body is returned as ONE ext_proc
 	// ImmediateResponse, so the whole hold must finish inside the proxy's
