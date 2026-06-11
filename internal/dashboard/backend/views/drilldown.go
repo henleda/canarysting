@@ -21,6 +21,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/baseline"
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/cost"
+	"github.com/canarysting/canarysting/internal/intelligence/recon"
 )
 
 // sessionGap is the idle threshold that separates two sessions on the same
@@ -532,19 +533,17 @@ func BucketDurFor(sinceSec int) time.Duration {
 func DeriveReconTimeline(events []intelligence.AdversaryInteractionEvent, now time.Time) ReconTimeline {
 	sessions := groupByFlowSessions(events)
 
-	// Cluster detection runs over ALL T1 events across sessions (cross-flow).
-	var allT1 []intelligence.AdversaryInteractionEvent
-	for _, s := range sessions {
-		for _, e := range s.Events {
-			if e.Tier == 1 {
-				allT1 = append(allT1, e)
-			}
-		}
+	// The recon SIGNAL (which T1 touches, their cluster membership + severity +
+	// description) comes from the single D4 source over ALL the scope's events, so the
+	// timeline and the home-wall feed never disagree. The timeline ADDS its view-layer
+	// framing: per-session escalation context (decision E).
+	sigByKey := map[string]recon.ReconSignal{}
+	for _, s := range recon.DeriveReconSignal(events) {
+		sigByKey[s.Key()] = s
 	}
-	if len(allT1) == 0 {
+	if len(sigByKey) == 0 {
 		return ReconTimeline{Rows: []ReconRow{}, TotalRecon: 0}
 	}
-	clustered := clusterMembers(allT1)
 
 	rows := []ReconRow{}
 	for _, s := range sessions {
@@ -554,9 +553,9 @@ func DeriveReconTimeline(events []intelligence.AdversaryInteractionEvent, now ti
 				peak = e.Tier
 			}
 		}
-		// EscalatedTier honors its documented contract: 0 unless the session
-		// actually escalated past T1 (peak >= 2). A T1-only session reports 0,
-		// not 1, so a future consumer can trust "0 == not escalated".
+		// EscalatedTier honors its documented contract: 0 unless the session actually
+		// escalated past T1 (peak >= 2). A T1-only session reports 0, not 1, so a
+		// future consumer can trust "0 == not escalated".
 		escTier := 0
 		if peak >= 2 {
 			escTier = peak
@@ -565,13 +564,8 @@ func DeriveReconTimeline(events []intelligence.AdversaryInteractionEvent, now ti
 			if e.Tier != 1 {
 				continue
 			}
+			sig := sigByKey[fmt.Sprintf("%d:%d", e.FlowID, e.Timestamp.UnixNano())]
 			offset := -now.Sub(e.Timestamp).Seconds()
-			adj := e.Features[featAdjacency]
-			isCluster := clustered[clusterKey(e)]
-			severity := "recon"
-			if adj >= reconAdjacencyThreshold || isCluster {
-				severity = "surfaced"
-			}
 			rows = append(rows, ReconRow{
 				FlowIDHex:     fmt.Sprintf("0x%x", e.FlowID),
 				FlowID:        e.FlowID,
@@ -579,8 +573,8 @@ func DeriveReconTimeline(events []intelligence.AdversaryInteractionEvent, now ti
 				Timestamp:     e.Timestamp,
 				OffsetLabel:   offsetLabel(offset),
 				CanaryType:    e.CanaryType,
-				Severity:      severity,
-				Description:   reconDescription(e, adj, isCluster),
+				Severity:      sig.Severity,
+				Description:   sig.Description,
 				Escalated:     peak >= 2,
 				EscalatedTier: escTier,
 			})

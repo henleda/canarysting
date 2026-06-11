@@ -30,6 +30,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/cost"
+	"github.com/canarysting/canarysting/internal/intelligence/recon"
 )
 
 // Feature-map keys written into AdversaryInteractionEvent.Features. These mirror
@@ -47,14 +48,10 @@ const (
 	// tarpitPersistSec is the TimeHeldSec threshold above which a flow is judged
 	// to have "persisted through the tarpit" (a behavioral fingerprint signal).
 	tarpitPersistSec = 30.0
-	// reconAdjacencyThreshold escalates a recon row from "recon" to "surfaced".
-	reconAdjacencyThreshold = 0.8
-	// reconClusterWindowSec / reconClusterMin define a recon cluster: this many
-	// Tier-1 touches from one flow within this window are all "surfaced".
-	reconClusterWindowSec = 90.0
-	reconClusterMin       = 3
-	maxReconItems         = 10
-	maxOKFlows            = 3
+	// Recon severity/cluster thresholds now live in internal/intelligence/recon (D4):
+	// the dashboard recon feed + timeline are thin views over recon.DeriveReconSignal.
+	maxReconItems = 10
+	maxOKFlows    = 3
 )
 
 // TapState mirrors tap.State (internal/dashboard/tap). It embeds the same
@@ -628,93 +625,28 @@ func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryIn
 // Severity escalates to "surfaced" on high adjacency novelty or cluster
 // membership; otherwise "recon". Never "detected".
 func buildReconFeed(events []intelligence.AdversaryInteractionEvent, now time.Time, maxItems int) []ReconEvent {
-	var t1 []intelligence.AdversaryInteractionEvent
-	for _, e := range events {
-		if e.Tier == 1 {
-			t1 = append(t1, e)
-		}
-	}
-	if len(t1) == 0 {
+	sigs := recon.DeriveReconSignal(events) // the D4 signal (oldest-first); severity/cluster/description derived once
+	if len(sigs) == 0 {
 		return nil
 	}
-
-	clustered := clusterMembers(t1)
-
-	// newest first
-	sort.SliceStable(t1, func(i, j int) bool { return t1[i].Timestamp.After(t1[j].Timestamp) })
-
+	// Home-wall feed framing: newest first, capped at maxItems.
+	sort.SliceStable(sigs, func(i, j int) bool { return sigs[i].Timestamp.After(sigs[j].Timestamp) })
 	feed := make([]ReconEvent, 0, maxItems)
-	for _, e := range t1 {
+	for _, s := range sigs {
 		if len(feed) >= maxItems {
 			break
 		}
-		offset := -now.Sub(e.Timestamp).Seconds()
-		adj := e.Features[featAdjacency]
-		isCluster := clustered[clusterKey(e)]
-		severity := "recon"
-		switch {
-		case adj >= reconAdjacencyThreshold:
-			severity = "surfaced"
-		case isCluster:
-			severity = "surfaced"
-		}
+		offset := -now.Sub(s.Timestamp).Seconds()
 		feed = append(feed, ReconEvent{
-			FlowIDHex:   fmt.Sprintf("0x%x", e.FlowID),
+			FlowIDHex:   fmt.Sprintf("0x%x", s.FlowID),
 			OffsetSec:   offset,
 			OffsetLabel: offsetLabel(offset),
-			CanaryType:  e.CanaryType,
-			Description: reconDescription(e, adj, isCluster),
-			Severity:    severity,
+			CanaryType:  s.CanaryType,
+			Description: s.Description,
+			Severity:    s.Severity,
 		})
 	}
 	return feed
-}
-
-// clusterKey is the per-event membership key for the recon cluster set. A
-// composite "flowID:tsNanos" string is used (not ts^flowID) because XOR can
-// collide across distinct flows/timestamps, which would mislabel an unrelated
-// touch as clustered.
-func clusterKey(e intelligence.AdversaryInteractionEvent) string {
-	return fmt.Sprintf("%d:%d", e.FlowID, e.Timestamp.UnixNano())
-}
-
-// clusterMembers returns the set of T1 events (keyed by clusterKey) that belong
-// to a cluster: reconClusterMin+ touches from one flow within reconClusterWindow.
-func clusterMembers(t1 []intelligence.AdversaryInteractionEvent) map[string]bool {
-	byFlow := map[uint64][]intelligence.AdversaryInteractionEvent{}
-	for _, e := range t1 {
-		byFlow[e.FlowID] = append(byFlow[e.FlowID], e)
-	}
-	out := map[string]bool{}
-	for _, grp := range byFlow {
-		sort.SliceStable(grp, func(i, j int) bool { return grp[i].Timestamp.Before(grp[j].Timestamp) })
-		// sliding window
-		for i := range grp {
-			j := i
-			for j < len(grp) && grp[j].Timestamp.Sub(grp[i].Timestamp).Seconds() <= reconClusterWindowSec {
-				j++
-			}
-			if j-i >= reconClusterMin {
-				for k := i; k < j; k++ {
-					out[clusterKey(grp[k])] = true
-				}
-			}
-		}
-	}
-	return out
-}
-
-func reconDescription(e intelligence.AdversaryInteractionEvent, adj float64, cluster bool) string {
-	switch {
-	case adj >= reconAdjacencyThreshold:
-		return fmt.Sprintf("new adjacency · 0x%x→%s", e.FlowID, e.CanaryType)
-	case cluster:
-		return fmt.Sprintf("cluster · 0x%x repeated probing", e.FlowID)
-	case e.CanaryType != "":
-		return "quiet probe · " + e.CanaryType
-	default:
-		return "touch · 0x" + fmt.Sprintf("%x", e.FlowID)
-	}
 }
 
 func offsetLabel(offsetSec float64) string {
