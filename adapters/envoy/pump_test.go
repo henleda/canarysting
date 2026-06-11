@@ -212,7 +212,7 @@ func TestPumpStreamNilSleepDefaultsReal(t *testing.T) {
 // A live attritor at T2 inline produces a 429 with a non-empty deception body.
 func TestAttritionOrDenyLiveStream(t *testing.T) {
 	a := adapterWithAttritor(t, liveAttritor(t), nil)
-	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 	ir := r.GetImmediateResponse()
 	if ir == nil || ir.GetStatus().GetCode() != typev3.StatusCode_TooManyRequests {
 		t.Fatalf("want 429 immediate, got %+v", r)
@@ -238,7 +238,7 @@ func TestAttritionOrDenyHoldBoundedByMaxHold(t *testing.T) {
 		return ctx.Err()
 	}
 	start := time.Now()
-	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("hold not bounded by AttritionMaxHold (60ms): took %v", elapsed)
 	}
@@ -256,7 +256,7 @@ func TestAttritionOrDenyHoldBoundedByMaxHold(t *testing.T) {
 // A nil attritor falls back to the plain deny (existing immediateDeny body).
 func TestAttritionOrDenyNilAttritorFallsBack(t *testing.T) {
 	a := adapterWithAttritor(t, nil, nil)
-	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierJail, Mode: contract.ModeInline}, typev3.StatusCode_Forbidden, "forbidden\n")
+	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierJail, Mode: contract.ModeInline}, typev3.StatusCode_Forbidden, "forbidden\n", contract.DriverObservation{})
 	ir := r.GetImmediateResponse()
 	if ir == nil || ir.GetStatus().GetCode() != typev3.StatusCode_Forbidden {
 		t.Fatalf("want 403 immediate, got %+v", r)
@@ -271,7 +271,7 @@ func TestAttritionOrDenyNoopFallsBack(t *testing.T) {
 	a := adapterWithAttritor(t, liveAttritor(t), nil)
 	// Tier 1 verdict => Open returns a noop stream => empty body => fallback.
 	v := contract.Verdict{Flow: contract.FlowIdentity{SocketCookie: 9}, Tier: contract.TierTag, Mode: contract.ModeInline}
-	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, v, typev3.StatusCode_TooManyRequests, "rate limited\n")
+	r := a.attritionOrDeny(context.Background(), contract.SignalEvent{}, v, typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 	ir := r.GetImmediateResponse()
 	if ir == nil || string(ir.GetBody()) != "rate limited\n" {
 		t.Fatalf("noop should fall back to plain body, got %+v", r)
@@ -296,7 +296,7 @@ func TestAttritionOrDenyClassifiesDisengage(t *testing.T) {
 			return c.Err()
 		}
 		a.cfg = cfg
-		a.attritionOrDeny(ctx, contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+		a.attritionOrDeny(ctx, contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 		select {
 		case out := <-got:
 			if out.DisengageReason != contract.DisengageAttacker {
@@ -327,7 +327,7 @@ func TestAttritionOrDenyClassifiesDisengage(t *testing.T) {
 			}
 		}
 		a.cfg = cfg
-		a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+		a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 		select {
 		case out := <-got:
 			if out.DisengageReason != contract.DisengageDefenderCapped {
@@ -349,7 +349,7 @@ func TestAttritionOrDenyOnOutcomeFires(t *testing.T) {
 	a := adapterWithAttritor(t, liveAttritor(t), func(_ contract.SignalEvent, _ contract.Verdict, out attrition.Outcome) {
 		got <- out
 	})
-	a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+	a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 	select {
 	case out := <-got:
 		if out.BytesServed == 0 {
@@ -374,7 +374,7 @@ func TestAttritionOrDenyOnOutcomeDoesNotBlockResponse(t *testing.T) {
 	type result struct{ body []byte }
 	done := make(chan result, 1)
 	go func() {
-		r := a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n")
+		r := a.attritionOrDeny(context.Background(), contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}}, t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n", contract.DriverObservation{})
 		done <- result{body: r.GetImmediateResponse().GetBody()}
 	}()
 
@@ -448,7 +448,7 @@ func TestResponseWithAttritionTier1NeverPumps(t *testing.T) {
 	a := adapterWithAttritor(t, liveAttritor(t), func(contract.SignalEvent, contract.Verdict, attrition.Outcome) {
 		t.Fatal("OnOutcome must not fire for a Tier-1 verdict")
 	})
-	r := a.responseWithAttrition(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierTag, Mode: contract.ModeInline})
+	r := a.responseWithAttrition(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierTag, Mode: contract.ModeInline}, contract.DriverObservation{})
 	if r.GetImmediateResponse() != nil {
 		t.Fatalf("Tier 1 must CONTINUE, got immediate %+v", r)
 	}
@@ -464,11 +464,88 @@ func TestResponseWithAttritionAsyncNeverPumps(t *testing.T) {
 	a := adapterWithAttritor(t, liveAttritor(t), func(contract.SignalEvent, contract.Verdict, attrition.Outcome) {
 		t.Fatal("OnOutcome must not fire for an async verdict")
 	})
-	r := a.responseWithAttrition(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierJail, Mode: contract.ModeAsync})
+	r := a.responseWithAttrition(context.Background(), contract.SignalEvent{}, contract.Verdict{Tier: contract.TierJail, Mode: contract.ModeAsync}, contract.DriverObservation{})
 	if r.GetImmediateResponse() != nil {
 		t.Fatalf("async tier must CONTINUE at L7, got immediate %+v", r)
 	}
 	time.Sleep(20 * time.Millisecond)
+}
+
+// TestDigestObservationMarksExploit pins the AX4 transport-fact digest: a path
+// carrying a fixed structural exploit marker sets SuspectedExploit; a benign path
+// (including query strings that merely LOOK SQL-ish) does not. Exercises EVERY marker
+// in exploitMarkers positively + benign negatives, so a future marker edit that
+// over-matches (false positive) or drops a marker (false negative) fails here.
+func TestDigestObservationMarksExploit(t *testing.T) {
+	// One bad path per marker (case is normalized; some carry the marker in the query).
+	exploit := []string{
+		"/api/../../etc/passwd", // ../  AND /etc/passwd
+		"/x?f=..%2f..%2fetc",    // ..%2f
+		"/x?f=..\\..\\win.ini",  // ..\
+		"/img/a%00.png",         // %00
+		"/.git/config",          // /.git/
+		"/actuator/env",         // /actuator
+		"/config/.env",          // /.env
+		"/.aws/credentials",     // /.aws/
+		"/cgi-bin/test.sh",      // /cgi-bin/
+		"/wp-admin/",            // /wp-admin
+		"/x?p=${jndi:ldap://h}", // ${jndi:
+		"/q?f=1 union select 2", // union select
+		"/login?u=' or '1'='1",  // ' or '
+		"/s?q=<script>alert(1)", // <script
+		"/i?x=<img onerror=x>",  // onerror=
+	}
+	for _, p := range exploit {
+		if d := digestObservation(RequestObservation{Method: "GET", Path: p}); !d.SuspectedExploit {
+			t.Fatalf("exploit-shaped path %q: SuspectedExploit=false, want true", p)
+		}
+	}
+	// Benign — including deliberately SQL-ish / template-ish queries that the dropped
+	// over-broad markers (" union ", " select ", bare "${"/"{{", " or ") would have
+	// false-triggered on.
+	benign := []string{
+		"/orders", "/products/42", "/api/health", "/v2/catalog/items",
+		"/search?q=red or blue", "/union-members", "/select-a-size",
+		"/price?amount=${total}", "/env-overview", "/git-status",
+	}
+	for _, p := range benign {
+		d := digestObservation(RequestObservation{Method: "GET", Path: p})
+		if d.SuspectedExploit {
+			t.Fatalf("benign path %q: SuspectedExploit=true, want false (over-match)", p)
+		}
+		if d.RequestCount != 1 || d.DistinctDecoys != 1 {
+			t.Fatalf("path %q: digest counts = %+v, want RequestCount/DistinctDecoys = 1", p, d)
+		}
+	}
+}
+
+// TestAttritionOrDenyCapturesExploit proves the WIRED AX4 capture path through the
+// REAL digestObservation (not a hand-built digest): an exploit-shaped request path is
+// digested to SuspectedExploit, reaches the stream's Observe seam, and surfaces as
+// Outcome.ExploitsObserved on the reported outcome (captured in-perimeter; no
+// reach-back). A benign path digests to ExploitsObserved=0 — no false capture.
+func TestAttritionOrDenyCapturesExploit(t *testing.T) {
+	run := func(path string) attrition.Outcome {
+		got := make(chan attrition.Outcome, 1)
+		a := adapterWithAttritor(t, liveAttritor(t), func(_ contract.SignalEvent, _ contract.Verdict, out attrition.Outcome) { got <- out })
+		a.attritionOrDeny(context.Background(),
+			contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}},
+			t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n",
+			digestObservation(RequestObservation{Method: "GET", Path: path})) // the REAL digest
+		select {
+		case out := <-got:
+			return out
+		case <-time.After(2 * time.Second):
+			t.Fatal("OnOutcome never fired")
+			return attrition.Outcome{}
+		}
+	}
+	if out := run("/api/../../etc/passwd"); out.ExploitsObserved < 1 {
+		t.Fatalf("exploit-shaped path: ExploitsObserved=%d, want >=1 (digest -> Observe -> outcome)", out.ExploitsObserved)
+	}
+	if out := run("/orders"); out.ExploitsObserved != 0 {
+		t.Fatalf("benign path: ExploitsObserved=%d, want 0 (no false capture)", out.ExploitsObserved)
+	}
 }
 
 // adapterWithAttritor builds an Adapter (reusing the package fakes) with an

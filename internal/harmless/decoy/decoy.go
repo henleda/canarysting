@@ -72,3 +72,35 @@ func ReservedHost(seed uint64) string {
 	tld := reservedTLDs[seed%uint64(len(reservedTLDs))]
 	return label + tld
 }
+
+// ExploitBaitService renders an attractive-but-INERT fake service surface for axis-4
+// (exploit-inventory burn, docs/ATTRITION_FIVE_AXIS_DESIGN.md §6): a vulnerable-LOOKING
+// banner + a list of enticing "exposed" endpoints + a reserved-namespace object store.
+// The point is a decoy juicy enough that an attacker spends a real exploit on it — the
+// exploit fires at OUR bounded generator (it reaches nothing) and reveals the
+// attacker's tooling. Every element is provably harmless: a fabricated banner (no real
+// product/CVE implied), RELATIVE endpoint paths (never a scheme://routable host), an
+// object-store/admin URL on a RESERVED host, and EXAMPLE-namespace creds — so it
+// authenticates to nothing and routes nowhere (harmless.CrossScan passes for all
+// seeds, proven in decoy_test.go). It is decoy text only — NEVER a beacon or hack-back
+// (docs/STING.md). Pure function of the seed.
+func ExploitBaitService(seed uint64) string {
+	svc := token(seed, 6, lowerAlnum)
+	ver := token(mix(seed, 1), 3, lowerAlnum)
+	store := ReservedHost(mix(seed, 2))
+	admin := ReservedHost(mix(seed, 3))
+	key := ExampleAWSKeyID(mix(seed, 4))
+	var b strings.Builder
+	// A vulnerable-looking banner + debug flags: catnip for an automated scanner.
+	b.WriteString("Server: acme-" + svc + "/0." + ver + " (debug build)\n")
+	b.WriteString("X-Debug: enabled\nX-Powered-By: internal-gateway\n")
+	// Enticing "exposed, unauthenticated" endpoints — RELATIVE paths (no scheme://),
+	// the classic high-value exploit targets, so a scanner fires its kit at them.
+	b.WriteString("Exposed (unauthenticated) endpoints:\n")
+	b.WriteString("  /actuator/env\n  /.git/config\n  /api/v1/internal/" + token(mix(seed, 5), 12, lowerAlnum) + "\n  /debug/pprof/\n")
+	// An object store + admin console on RESERVED (non-routable) hosts, with an
+	// EXAMPLE (non-authenticating) key — looks like leaked access, reaches nothing.
+	b.WriteString("Object store: s3://" + store + "/backups   key=" + key + "\n")
+	b.WriteString("Admin console: http://" + admin + "/admin   (default creds)\n")
+	return b.String()
+}

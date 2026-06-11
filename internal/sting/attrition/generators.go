@@ -425,6 +425,48 @@ func poisonPage(seed uint64, stage int) []byte {
 	return truncateAtLine([]byte(b.String()), mazePageCap)
 }
 
+// --- exploit_bait (FloorAggressive): attractive harmless decoy services that burn
+// the attacker's exploit inventory. AX4 — exploit-inventory burn. ---
+//
+// Serves an endless-looking stream of attractive-but-INERT fake service surfaces
+// (vulnerable-looking banners + enticing "exposed" endpoints + reserved-host object
+// stores), so a decoy is juicy enough that an attacker spends a REAL exploit on it.
+// The exploit fires at this bounded generator (it reaches nothing — no real service,
+// no routable host) and, captured in-perimeter via Stream.Observe, reveals the
+// attacker's tooling as Outcome.ExploitsObserved. The cost is the attacker's finite,
+// non-replenishable exploit inventory + the OPSEC of burning it on a fake. NEVER fires
+// back (docs/STING.md "not hack-back") — capture is passive observation inside the
+// perimeter only. Bounded/harmless exactly like the others (decoy.ExploitBaitService
+// is CrossScan-clean for all seeds; proven at construction). It LOOPS (ok always true),
+// varying the surface per chunk, like poison_field — under the rotated stream a
+// self-end would cut off the other axes. Cross-boundary use of ExploitsObserved is
+// gated on the egress filter (rule 9; §6). See docs/ATTRITION_FIVE_AXIS_DESIGN.md §6.
+
+type exploitBait struct{}
+
+func (exploitBait) mechanism() string            { return MechExploitBait }
+func (exploitBait) axis() contract.AttritionAxis { return contract.AxisExploitBurn }
+func (exploitBait) minTier() contract.Tier       { return contract.TierJail }
+
+func (exploitBait) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
+	data := exploitBaitPage(cur.seed, cur.chunkIdx)
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
+	cur.chunkIdx++
+	return data, delay, true
+}
+
+func (g exploitBait) selfTest(samples int, p genParams) error { return genSelfTest(g, samples, p) }
+
+// exploitBaitPage renders one attractive fake-service surface as a pure function of
+// (seed, idx), varied per chunk so the surface looks endless, tagged with the sting
+// marker, and bounded at mazePageCap. All content is provably harmless (relative
+// paths, reserved hosts, EXAMPLE creds) via decoy.ExploitBaitService.
+func exploitBaitPage(seed uint64, idx int) []byte {
+	h := mix(seed, uint64(idx))
+	body := "# " + stingMarkerToken(h) + "\n" + decoy.ExploitBaitService(h) + "\n"
+	return truncateAtLine([]byte(body), mazePageCap)
+}
+
 // --- shared construction self-test ---
 
 // genSelfTest drives each generator over sampled flows and asserts every chunk is

@@ -143,9 +143,12 @@ func New(cfg Config) (*BoundedAttritor, error) {
 	// Ladder order least->most aggressive; the most-aggressive constructed generator
 	// is the headline Mechanism (sel[last]). poisonField sits after fakeMaze, so at
 	// the poison floors (Moderate+) it is the Tier-2 headline (the D8 fake_tree->
-	// poison_field flip); tokenBait stays the Tier-3 aggressive headline.
+	// poison_field flip). At FloorAggressive+TierJail, exploitBait sits last, so it is
+	// the Tier-3 headline (the AX4 token_bait->exploit_bait flip); tokenBait still
+	// rotates in the set (its opportunity-cost still accrues) but is no longer the
+	// headline Mechanism.
 	var gens []generator
-	for _, g := range []generator{tarpit{}, fakeMaze{}, poisonField{}, tokenBait{}} {
+	for _, g := range []generator{tarpit{}, fakeMaze{}, poisonField{}, tokenBait{}, exploitBait{}} {
 		if g.axis()&floorAxes != 0 {
 			gens = append(gens, g)
 		}
@@ -337,13 +340,21 @@ func (s *stream) finish(r DoneReason) (Chunk, DoneReason, error) {
 	return Chunk{}, r, nil
 }
 
-// Observe feeds a structured digest of the attacker's inbound interaction for the
-// future axis-4 (exploit-inventory burn) and axis-5 (operational exposure)
-// reaction signals. It is a no-op seam in AX0 — the call site exists so the driver
-// (adapter) is stable; AX4/AX5 populate Outcome.ExploitsObserved/ExposureSignals
-// from the digest. Counts/bools/enums only (rule 9 — DriverObservation carries no
-// raw bytes/addresses).
-func (s *stream) Observe(contract.DriverObservation) {}
+// Observe feeds a structured digest of the attacker's inbound interaction (AX4
+// reaction signal). When the digested shape matched an exploit structural marker
+// (a bool the driver derived from the request shape — counts/bools only, rule 9, no
+// raw bytes/addresses), it increments Outcome.ExploitsObserved: a count of exploits
+// the attacker FIRED AT our decoys, captured passively INSIDE the perimeter. The
+// platform never fires back, never reaches the attacker (docs/STING.md "not
+// hack-back"). Cross-boundary use of ExploitsObserved is gated on the egress filter
+// (rule 9; §6). Capture is orthogonal to the active generator set — an exploit fired
+// at any decoy is intelligence — so it accrues whenever Observe reports one. (AX5's
+// ExposureSignals will populate here similarly.)
+func (s *stream) Observe(obs contract.DriverObservation) {
+	if obs.SuspectedExploit {
+		s.out.ExploitsObserved++
+	}
+}
 
 func (s *stream) Outcome() Outcome { return s.out }
 
