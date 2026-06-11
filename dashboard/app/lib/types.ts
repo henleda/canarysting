@@ -48,17 +48,44 @@ export interface EscalationView {
   ladder_caption: string;
 }
 
-// AttackerCostView is the hero-right panel.
+// AxisCostView is one OVERLAPPING per-axis subtotal: a flow lands on EVERY axis its
+// mechanism imposes, so these are independent bars — NEVER a partition that sums to
+// the total.
+export interface AxisCostView {
+  axis: string;
+  time_sec: number;
+  tokens: number;
+  count: number;
+}
+
+// EngagementView is the engagement-contest metric: how long attrition held flows
+// (imposed-hold distribution) and how those sessions ended. Time-to-disengage comes
+// from the REAL imposed hold + the adapter's disengage classifier, not a timestamp span.
+export interface EngagementView {
+  median_sec: number;
+  p90_sec: number;
+  longest_sec: number;
+  disengaged_early: number;
+  generator_exhausted: number;
+  defender_capped: number;
+  disengaged_early_fraction: number;
+}
+
+// AttackerCostView is the hero-right panel. Framing (AX3): the headline is
+// OPPORTUNITY COST on a velocity-dependent adversary — imposed time + engagement —
+// not a dollar bill. tokens_burned is a qualified PROXY, demoted below time.
 export interface AttackerCostView {
   active_response_count: number; // T2+T3
   jailed: number; // T3
   counter_attacked: number; // T2
-  time_imposed_sec: number;
-  tokens_burned: number;
+  time_imposed_sec: number; // the headline
+  tokens_burned: number; // a PROXY/estimate, demoted below time
   requests_absorbed: number;
   bytes_served: number;
   attacker_cost_fraction: number; // active / total interactions
   defender_cost_flat: boolean; // structural invariant: always true
+  per_axis: AxisCostView[] | null; // OVERLAPPING per-axis subtotals — never a partition
+  engagement: EngagementView; // the engagement contest
 }
 
 // RealAttackCostView is the M9 live cost meter: the attacker's GROUND-TRUTH

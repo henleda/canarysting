@@ -9,7 +9,44 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/calibration"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/intelligence"
+	"github.com/canarysting/canarysting/internal/intelligence/cost"
 )
+
+// TestBuildAttackerCost pins the AX3 view derivation: PerAxis emits ONLY axes with
+// traffic (in ordinal order), and the engagement view derives DisengagedEarlyFraction
+// from the disengage buckets. (The per-axis subtotals OVERLAP; this only checks the
+// view layer faithfully surfaces the cost.Summary it is handed.)
+func TestBuildAttackerCost(t *testing.T) {
+	var sum cost.Summary
+	sum.Interactions = 4
+	sum.TimeImposedSec = 100
+	sum.TierCounts = [4]int{0, 0, 3, 1}           // 3 contain + 1 jail
+	sum.AxisCount[0], sum.AxisTimeSec[0] = 4, 100 // velocity
+	sum.AxisCount[1], sum.AxisTimeSec[1] = 2, 60  // poison
+	// opportunity(2)/exploit(3)/exposure(4) stay zero -> must be omitted
+	sum.DisengagedEarly, sum.GeneratorExhausted, sum.DefenderCapped = 3, 1, 4
+	sum.EngagementMedianSec, sum.EngagementLongestSec = 6, 8
+
+	v := buildAttackerCost(sum)
+	if len(v.PerAxis) != 2 {
+		t.Fatalf("PerAxis = %d entries, want 2 (only nonzero axes emitted)", len(v.PerAxis))
+	}
+	if v.PerAxis[0].Axis != cost.AxisNames[0] || v.PerAxis[1].Axis != cost.AxisNames[1] {
+		t.Fatalf("PerAxis order/labels wrong: %+v", v.PerAxis)
+	}
+	if v.PerAxis[0].TimeSec != 100 || v.PerAxis[1].TimeSec != 60 {
+		t.Fatalf("PerAxis times wrong: %+v", v.PerAxis)
+	}
+	if got := v.Engagement.DisengagedEarlyFraction; got < 0.374 || got > 0.376 { // 3/(3+1+4)
+		t.Fatalf("DisengagedEarlyFraction = %v, want ~0.375", got)
+	}
+	if v.Engagement.MedianSec != 6 || v.Engagement.LongestSec != 8 {
+		t.Fatalf("engagement median/longest = %v/%v, want 6/8", v.Engagement.MedianSec, v.Engagement.LongestSec)
+	}
+	if !v.DefenderCostFlat {
+		t.Fatal("DefenderCostFlat must always be true")
+	}
+}
 
 var base = time.Date(2026, 6, 9, 14, 0, 0, 0, time.UTC)
 

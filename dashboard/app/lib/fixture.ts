@@ -92,6 +92,22 @@ export const fixtureOverview: Overview = {
     bytes_served: 12163481, // ~11.6 MiB
     attacker_cost_fraction: 0.0019, // 0.19%
     defender_cost_flat: true,
+    // OVERLAPPING per-axis subtotals — velocity+poison sum to more than the flat
+    // time_imposed because a flow lands on every axis it triggers (fake_tree is both).
+    per_axis: [
+      { axis: 'velocity', time_sec: 252, tokens: 9100, count: 22 },
+      { axis: 'poison', time_sec: 188, tokens: 21300, count: 17 },
+      { axis: 'opportunity', time_sec: 96, tokens: 30100, count: 9 },
+    ],
+    engagement: {
+      median_sec: 6.4,
+      p90_sec: 8.0,
+      longest_sec: 8.0,
+      disengaged_early: 7,
+      generator_exhausted: 2,
+      defender_capped: 13,
+      disengaged_early_fraction: 0.318,
+    },
   },
 
   kernel_containment: {
