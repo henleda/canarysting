@@ -548,6 +548,59 @@ func TestAttritionOrDenyCapturesExploit(t *testing.T) {
 	}
 }
 
+// TestDigestObservationMarksTooling pins the AX5 transport-fact digest: a user-agent
+// carrying a fixed automation-tool/C2 marker sets ToolingExposed; a browser or empty
+// UA does not. It reads only the UA the client SENT — never a callback/reach-back.
+func TestDigestObservationMarksTooling(t *testing.T) {
+	tools := []string{
+		"curl/8.4.0", "Wget/1.21", "python-requests/2.31", "Go-http-client/1.1",
+		"sqlmap/1.7", "Nuclei - Open-source", "Nmap Scripting Engine", "masscan/1.3", "okhttp/4.9",
+	}
+	for _, ua := range tools {
+		d := digestObservation(RequestObservation{Method: "GET", Path: "/orders", Headers: map[string]string{"user-agent": ua}})
+		if !d.ToolingExposed {
+			t.Fatalf("tool UA %q: ToolingExposed=false, want true", ua)
+		}
+	}
+	for _, ua := range []string{
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/121.0",
+		"", // absent UA is deliberately NOT flagged (too noisy to be a signal)
+	} {
+		d := digestObservation(RequestObservation{Method: "GET", Path: "/orders", Headers: map[string]string{"user-agent": ua}})
+		if d.ToolingExposed {
+			t.Fatalf("non-tool UA %q: ToolingExposed=true, want false", ua)
+		}
+	}
+}
+
+// TestAttritionOrDenyCapturesExposure proves the WIRED AX5 capture path through the REAL
+// digestObservation: a tool-fingerprinted request surfaces as Outcome.ExposureSignals on
+// the reported outcome (passive, in-perimeter — no callback); a browser UA captures none.
+func TestAttritionOrDenyCapturesExposure(t *testing.T) {
+	run := func(ua string) attrition.Outcome {
+		got := make(chan attrition.Outcome, 1)
+		a := adapterWithAttritor(t, liveAttritor(t), func(_ contract.SignalEvent, _ contract.Verdict, out attrition.Outcome) { got <- out })
+		a.attritionOrDeny(context.Background(),
+			contract.SignalEvent{Scope: "s", Flow: contract.FlowIdentity{SocketCookie: 0xC0FFEE}},
+			t2Verdict(), typev3.StatusCode_TooManyRequests, "rate limited\n",
+			digestObservation(RequestObservation{Method: "GET", Path: "/orders", Headers: map[string]string{"user-agent": ua}}))
+		select {
+		case out := <-got:
+			return out
+		case <-time.After(2 * time.Second):
+			t.Fatal("OnOutcome never fired")
+			return attrition.Outcome{}
+		}
+	}
+	if out := run("sqlmap/1.7"); out.ExposureSignals < 1 {
+		t.Fatalf("tool UA: ExposureSignals=%d, want >=1 (digest -> Observe -> outcome)", out.ExposureSignals)
+	}
+	if out := run("Mozilla/5.0 (X11; Linux x86_64) Firefox/121.0"); out.ExposureSignals != 0 {
+		t.Fatalf("browser UA: ExposureSignals=%d, want 0 (no false capture)", out.ExposureSignals)
+	}
+}
+
 // adapterWithAttritor builds an Adapter (reusing the package fakes) with an
 // injected fast (record-only) sleep so attrition tests never wait wall-clock
 // seconds, plus the given attritor and outcome hook.

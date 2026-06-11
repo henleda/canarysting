@@ -45,6 +45,7 @@ const (
 	MechTokenBait   = "token_bait"
 	MechPoison      = "poison_field" // AX2: a single internally-consistent fabricated environment
 	MechExploitBait = "exploit_bait" // AX4: attractive harmless decoy services that burn the attacker's exploit inventory
+	MechOpExposure  = "op_exposure"  // AX5: attractive internal-ops surface that elicits the attacker's tooling/C2 fingerprint (captured passively)
 )
 
 // Token-cost proxy multipliers. These are documented estimates over emitted
@@ -121,6 +122,8 @@ func AxesForMechanism(mech string) contract.AttritionAxis {
 		return contract.AxisOppCost
 	case MechExploitBait:
 		return contract.AxisExploitBurn
+	case MechOpExposure:
+		return contract.AxisOpExposure
 	default:
 		return 0
 	}

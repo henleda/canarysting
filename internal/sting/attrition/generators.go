@@ -467,6 +467,46 @@ func exploitBaitPage(seed uint64, idx int) []byte {
 	return truncateAtLine([]byte(body), mazePageCap)
 }
 
+// --- op_exposure (FloorAggressive): attractive internal-operations surface whose
+// passive job is to elicit the attacker's recon TOOLING fingerprint. AX5 —
+// operational exposure. ---
+//
+// Serves an endless-looking stream of attractive-but-INERT internal-ops surfaces
+// (deploy manifests, monitoring, service-mesh topology, a secrets backend), so the
+// attacker keeps ENUMERATING — and in doing so reveals their tooling/C2 fingerprint
+// in the SHAPE of the requests they make to us (user-agent, header set, cadence). That
+// fingerprint is captured PASSIVELY, in-perimeter, via Stream.Observe ->
+// Outcome.ExposureSignals — the platform NEVER dials out, beacons, or runs a callback
+// sink (docs/STING.md no-hack-back; the live in-perimeter sink is DEFERRED behind the
+// F4 predicate, docs/AX5_HARMLESSNESS_DESIGN.md). Bounded/harmless exactly like the
+// others (decoy.OpsSurface is CrossScan-clean for all seeds; proven at construction),
+// LOOPS (ok always true) like poison_field/exploit_bait. minTier=TierJail,
+// FloorAggressive only.
+
+type opExposure struct{}
+
+func (opExposure) mechanism() string            { return MechOpExposure }
+func (opExposure) axis() contract.AttritionAxis { return contract.AxisOpExposure }
+func (opExposure) minTier() contract.Tier       { return contract.TierJail }
+
+func (opExposure) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
+	data := opExposurePage(cur.seed, cur.chunkIdx)
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
+	cur.chunkIdx++
+	return data, delay, true
+}
+
+func (g opExposure) selfTest(samples int, p genParams) error { return genSelfTest(g, samples, p) }
+
+// opExposurePage renders one attractive internal-ops surface as a pure function of
+// (seed, idx), varied per chunk, marker-tagged, bounded at mazePageCap. Provably
+// harmless (relative paths, reserved hosts, EXAMPLE creds) via decoy.OpsSurface.
+func opExposurePage(seed uint64, idx int) []byte {
+	h := mix(seed, uint64(idx))
+	body := "# " + stingMarkerToken(h) + "\n" + decoy.OpsSurface(h) + "\n"
+	return truncateAtLine([]byte(body), mazePageCap)
+}
+
 // --- shared construction self-test ---
 
 // genSelfTest drives each generator over sampled flows and asserts every chunk is

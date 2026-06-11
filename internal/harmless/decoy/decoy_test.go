@@ -56,6 +56,7 @@ func TestBuildersHarmlessByConstruction(t *testing.T) {
 			"AWS_SECRET_ACCESS_KEY=" + ExampleAWSSecret(mix(seed, 1)),
 			"DATABASE_URL=postgres://svc:decoy@" + ReservedHost(seed) + ":5432/payments",
 			ExploitBaitService(seed), // AX4: the attractive-but-inert exploit-bait surface
+			OpsSurface(seed),         // AX5: the attractive-but-inert internal-ops surface
 		}, "\n") + "\n"
 		if err := harmless.CrossScan([]byte(body)); err != nil {
 			t.Fatalf("seed %d: decoy body not provably harmless: %v\nbody:\n%s", seed, err, body)
@@ -95,5 +96,11 @@ func TestDeterministic(t *testing.T) {
 	}
 	if ExploitBaitService(1) == ExploitBaitService(2) {
 		t.Fatal("distinct seeds produced identical exploit-bait surfaces")
+	}
+	if OpsSurface(42) != OpsSurface(42) {
+		t.Fatal("OpsSurface is not deterministic for a fixed seed")
+	}
+	if OpsSurface(1) == OpsSurface(2) {
+		t.Fatal("distinct seeds produced identical ops surfaces")
 	}
 }
