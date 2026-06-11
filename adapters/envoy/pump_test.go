@@ -70,8 +70,11 @@ func TestPumpStreamBytesAccumulate(t *testing.T) {
 	if out.BytesServed != int64(len(body)) {
 		t.Fatalf("BytesServed = %d, want %d (== body len, whole stream under the cap)", out.BytesServed, len(body))
 	}
-	if out.Mechanism != attrition.MechFakeTree {
-		t.Fatalf("mechanism = %q, want %q (moderate floor, T2)", out.Mechanism, attrition.MechFakeTree)
+	// AX2 (the D8 flip): at FloorModerate+TierContain the active set is
+	// {tarpit, fakeMaze, poisonField} and the headline (most-aggressive) mechanism is
+	// poison_field — the core information-poisoning differentiator — not fake_tree.
+	if out.Mechanism != attrition.MechPoison {
+		t.Fatalf("mechanism = %q, want %q (moderate floor, T2 — the AX2 poison_field headline)", out.Mechanism, attrition.MechPoison)
 	}
 }
 

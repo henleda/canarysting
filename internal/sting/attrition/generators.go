@@ -63,9 +63,10 @@ type genParams struct {
 // defender holds O(1) memory per flow no matter how deep or long the attacker
 // walks. There is no stored tree and no cache.
 type cursor struct {
-	seed     uint64
-	chunkIdx int
-	depth    int
+	seed        uint64
+	chunkIdx    int
+	depth       int
+	poisonStage int // AX2: poison_field's stage counter (its own, so rotation with fakeMaze/tokenBait doesn't clobber depth). Fixed-size; never a stored slice.
 }
 
 // generator produces a bounded, harmless deception stream. Implementations are
@@ -344,6 +345,84 @@ func baitBlob(seed uint64, idx, depth, maxDepth int) []byte {
 	}
 	b.WriteByte('\n')
 	return truncateAtLine([]byte(b.String()), baitBlobCap)
+}
+
+// --- poison_field (FloorModerate): a single internally-consistent fabricated
+// environment. AX2 — information poisoning, the core differentiator. ---
+//
+// Distinct from fake_tree (an endless directory MAZE): poison_field serves a small,
+// FIXED set of pages — a credential set, a service inventory/topology, and a
+// "successful" result — that all reference the SAME fabricated reserved hosts, so
+// the environment is INTERNALLY CONSISTENT under inspection (re-fetching any page is
+// idempotent and agrees with the others). The cost is not compute; it is that an
+// autonomous agent acts on bad intelligence. The host set is RECOMPUTED from the
+// seed every chunk (NEVER stored — the cursor stays fixed-size), and the stage
+// counter loops, so it is "endless" and budget/hold-bounded like the other
+// generators. (It loops rather than self-ending on purpose: under the rotated stream
+// a single generator returning ok=false would end the WHOLE stream and cut off the
+// other axes; re-serving the consistent environment is itself plausible-under-
+// inspection. See docs/ATTRITION_FIVE_AXIS_DESIGN.md §4.)
+
+type poisonField struct{}
+
+func (poisonField) mechanism() string            { return MechPoison }
+func (poisonField) axis() contract.AttritionAxis { return contract.AxisPoison }
+func (poisonField) minTier() contract.Tier       { return contract.TierContain }
+
+func (poisonField) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
+	data := poisonPage(cur.seed, cur.poisonStage%len(poisonClasses))
+	delay := adaptiveDelay(cur.seed, cur.chunkIdx, p.Drip, cur.chunkIdx)
+	cur.poisonStage++
+	cur.chunkIdx++
+	return data, delay, true
+}
+
+func (g poisonField) selfTest(samples int, p genParams) error { return genSelfTest(g, samples, p) }
+
+// poisonClasses names the stages of the fabricated environment, in walk order. The
+// reached index is carried out as Outcome.PoisonClass / PoisonReached — how far into
+// the deception the actor walked (a D2 reaction signal, NOT time-to-disengage).
+var poisonClasses = [...]string{"credential", "topology", "success"}
+
+// poisonClassForStage maps the deepest stage REACHED (a 1-based count of stages
+// walked) to its class label; "" when no poison page was served.
+func poisonClassForStage(reached int) string {
+	if reached <= 0 {
+		return ""
+	}
+	if reached > len(poisonClasses) {
+		reached = len(poisonClasses)
+	}
+	return poisonClasses[reached-1]
+}
+
+// poisonPage renders ONE page of the fabricated environment for a stage, as a pure
+// function of (seed, stage). Every page references the SAME three fabricated hosts
+// (recomputed here, never stored), all under RFC-reserved domains, with
+// EXAMPLE-namespace credentials — so it is provably harmless (harmless.CrossScan,
+// proven at construction) yet internally consistent across stages. Bounded at
+// mazePageCap.
+func poisonPage(seed uint64, stage int) []byte {
+	h0 := decoy.ReservedHost(mix(seed, 0))
+	h1 := decoy.ReservedHost(mix(seed, 1))
+	h2 := decoy.ReservedHost(mix(seed, 2))
+	mk := stingMarkerToken(mix(seed, uint64(100+stage)))
+	var b strings.Builder
+	switch stage {
+	case 0: // credential set referencing the same hosts
+		fmt.Fprintf(&b, "# %s service credentials\n[default]\n", mk)
+		fmt.Fprintf(&b, "aws_access_key_id = %s\naws_secret_access_key = %s\n", decoy.ExampleAWSKeyID(mix(seed, 3)), decoy.ExampleAWSSecret(mix(seed, 4)))
+		fmt.Fprintf(&b, "db_primary = postgres://svc:decoy@%s:5432/payments\n", h0)
+		fmt.Fprintf(&b, "session_cache = redis://%s:6379\n", h1)
+	case 1: // topology / inventory listing the SAME hosts
+		fmt.Fprintf(&b, "# %s service inventory\n", mk)
+		fmt.Fprintf(&b, "payments-db    %s    role=primary\n", h0)
+		fmt.Fprintf(&b, "session-cache  %s    role=cache\n", h1)
+		fmt.Fprintf(&b, "internal-api   %s    role=gateway\n", h2)
+	default: // a fake "successful" result referencing the same environment
+		fmt.Fprintf(&b, "# %s\n{\"status\":\"ok\",\"authenticated\":true,\"primary\":\"%s\",\"records\":4821}\n", mk, h0)
+	}
+	return truncateAtLine([]byte(b.String()), mazePageCap)
 }
 
 // --- shared construction self-test ---

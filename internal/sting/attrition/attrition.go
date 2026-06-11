@@ -112,7 +112,7 @@ type BoundedAttritor struct {
 	budget Budget
 	params genParams
 	gov    *Governor
-	gens   []generator // index 0 tarpit; 1 fake_tree (>=moderate); 2 token_bait (==aggressive)
+	gens   []generator // the floor's constructed generators, in least->most-aggressive ladder order (tarpit, fake_tree, poison_field, token_bait); only those whose axis() overlaps Floor.Axes() are built, and sel[last] is the headline Mechanism
 }
 
 var _ Attritor = (*BoundedAttritor)(nil)
@@ -140,8 +140,12 @@ func New(cfg Config) (*BoundedAttritor, error) {
 	// dedicated opportunity-cost (tokenBait) / exploit / exposure generators are not
 	// even constructed below their floor — aggressive can never be a silent default.
 	floorAxes := cfg.Floor.Axes()
+	// Ladder order least->most aggressive; the most-aggressive constructed generator
+	// is the headline Mechanism (sel[last]). poisonField sits after fakeMaze, so at
+	// the poison floors (Moderate+) it is the Tier-2 headline (the D8 fake_tree->
+	// poison_field flip); tokenBait stays the Tier-3 aggressive headline.
 	var gens []generator
-	for _, g := range []generator{tarpit{}, fakeMaze{}, tokenBait{}} {
+	for _, g := range []generator{tarpit{}, fakeMaze{}, poisonField{}, tokenBait{}} {
 		if g.axis()&floorAxes != 0 {
 			gens = append(gens, g)
 		}
@@ -305,6 +309,22 @@ func (s *stream) Next(ctx context.Context) (Chunk, DoneReason, error) {
 	s.out.TimeHeldSec = s.held.Seconds()
 	if s.cur.depth > s.out.DepthReached {
 		s.out.DepthReached = s.cur.depth
+	}
+	// AX2 poison reaction signal: how far into the fabricated environment the actor
+	// walked. cur.poisonStage is touched ONLY by poison_field (0 otherwise), so this
+	// stays empty for non-poison flows. PoisonReached is the count of distinct stages
+	// walked (capped at the stage count); PoisonClass is the deepest stage's class.
+	// This is a D2 reaction signal, NOT time-to-disengage (an indifferent crawler
+	// advances it too — read it jointly with the disengage classifier).
+	if s.cur.poisonStage > 0 {
+		reached := s.cur.poisonStage
+		if reached > len(poisonClasses) {
+			reached = len(poisonClasses)
+		}
+		if reached > s.out.PoisonReached {
+			s.out.PoisonReached = reached
+			s.out.PoisonClass = poisonClassForStage(reached)
+		}
 	}
 	return Chunk{Data: data, Delay: delay}, NotDone, nil
 }

@@ -43,6 +43,7 @@ const (
 	MechTarpit    = "tarpit"
 	MechFakeTree  = "fake_tree"
 	MechTokenBait = "token_bait"
+	MechPoison    = "poison_field" // AX2: a single internally-consistent fabricated environment
 )
 
 // Token-cost proxy multipliers. These are documented estimates over emitted
@@ -113,6 +114,8 @@ func AxesForMechanism(mech string) contract.AttritionAxis {
 		return contract.AxisVelocity
 	case MechFakeTree:
 		return contract.AxisPoison | contract.AxisOppCost
+	case MechPoison:
+		return contract.AxisPoison
 	case MechTokenBait:
 		return contract.AxisOppCost
 	default:
