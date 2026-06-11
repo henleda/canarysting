@@ -22,7 +22,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/harmless"
+	"github.com/canarysting/canarysting/internal/harmless/decoy"
 )
 
 // stingMarker is a non-secret correlation marker embedded in attrition output. It
@@ -70,6 +72,15 @@ type cursor struct {
 // pure functions of the cursor + params: no I/O, no sleep, no unbounded recursion.
 type generator interface {
 	mechanism() string
+	// axis reports which attrition axis(es) this generator imposes — a bitset,
+	// since one generator can land on more than one (fake_tree is BOTH information
+	// poisoning and opportunity cost). The Attritor unions the active set's axes
+	// into Outcome.Axes; the per-axis cost rollup reads that bitset.
+	axis() contract.AttritionAxis
+	// minTier is the lowest engine tier at which this generator may run. The
+	// gentler axes (velocity, information poisoning) act from TierContain; the
+	// dedicated opportunity-cost / exploit / exposure generators gate at TierJail.
+	minTier() contract.Tier
 	// next advances the cursor and returns the next chunk plus the delay the
 	// driver should wait before pulling again. ok=false signals the generator's
 	// natural bounded end (the tarpit/maze/bait are "endless", so they return true
@@ -115,11 +126,6 @@ func randToken(h uint64, n int, alphabet string) string {
 
 func stingMarkerToken(h uint64) string { return stingMarker + randToken(h, 12, base32Alpha) }
 
-// exampleKeyID/exampleSecret draw from the AWS documentation EXAMPLE namespace, so
-// they authenticate to nothing — the same harmlessness basis as the canary catalog.
-func exampleKeyID(h uint64) string  { return "AKIA" + randToken(h, 9, upperAlnum) + "EXAMPLE" }
-func exampleSecret(h uint64) string { return randToken(h, 30, secretAlpha) + "EXAMPLEKEY" }
-
 // dripDelay returns a deterministic per-(seed,idx) delay clamped to the drip band.
 // Delay is DATA: the driver waits it; attrition never sleeps.
 func dripDelay(seed uint64, idx int, d DripParams) time.Duration {
@@ -148,7 +154,9 @@ func truncateAtLine(b []byte, cap int) []byte {
 
 type tarpit struct{}
 
-func (tarpit) mechanism() string { return MechTarpit }
+func (tarpit) mechanism() string            { return MechTarpit }
+func (tarpit) axis() contract.AttritionAxis { return contract.AxisVelocity }
+func (tarpit) minTier() contract.Tier       { return contract.TierContain }
 
 func (tarpit) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	data := fillerChunk(cur.seed, cur.chunkIdx, p.Drip.ChunkBytes)
@@ -182,7 +190,9 @@ func fillerChunk(seed uint64, idx, n int) []byte {
 
 type fakeMaze struct{}
 
-func (fakeMaze) mechanism() string { return MechFakeTree }
+func (fakeMaze) mechanism() string            { return MechFakeTree }
+func (fakeMaze) axis() contract.AttritionAxis { return contract.AxisPoison | contract.AxisOppCost }
+func (fakeMaze) minTier() contract.Tier       { return contract.TierContain }
 
 func (fakeMaze) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	path := mazePathFor(cur.seed, cur.depth, cur.chunkIdx)
@@ -232,7 +242,7 @@ func mazeNode(seed uint64, path string) []byte {
 func envLeaf(h uint64) string {
 	return fmt.Sprintf(
 		"-rw-------  1 svc svc   512  .env\nAWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nDATABASE_URL=postgres://svc:decoy@db.payments.example:5432/payments\n# %s\n",
-		exampleKeyID(h), exampleSecret(mix(h, 1)), stingMarkerToken(mix(h, 2)))
+		decoy.ExampleAWSKeyID(h), decoy.ExampleAWSSecret(mix(h, 1)), stingMarkerToken(mix(h, 2)))
 }
 
 // --- token_bait (FloorAggressive): token-maximizing, parser-hostile bait ---
@@ -249,7 +259,9 @@ func envLeaf(h uint64) string {
 
 type tokenBait struct{}
 
-func (tokenBait) mechanism() string { return MechTokenBait }
+func (tokenBait) mechanism() string            { return MechTokenBait }
+func (tokenBait) axis() contract.AttritionAxis { return contract.AxisOppCost }
+func (tokenBait) minTier() contract.Tier       { return contract.TierJail }
 
 func (tokenBait) next(cur *cursor, p genParams) ([]byte, time.Duration, bool) {
 	data := baitBlob(cur.seed, cur.chunkIdx, cur.depth, p.MaxDepth)

@@ -73,6 +73,16 @@ func TestStingOutcomeRoundTrip(t *testing.T) {
 		TokenCostProxy: 1024.0,
 		DepthReached:   9,
 		DoneReason:     5, // DoneComplete
+		// Five-axis fields set to DISTINCT non-zero values: convert.go has no
+		// reflection guard, so a field dropped in either direction must surface as a
+		// DeepEqual mismatch here (both-zero would pass silently).
+		Axes:               contract.AxisVelocity | contract.AxisOppCost | contract.AxisOpExposure,
+		TimeToDisengageSec: 3.5,
+		PoisonClass:        "credential",
+		PoisonReached:      4,
+		ExploitsObserved:   2,
+		ExposureSignals:    1,
+		DisengageReason:    1,
 	}
 	if got := StingOutcomeFromProto(StingOutcomeToProto(s)); !reflect.DeepEqual(got, s) {
 		t.Fatalf("sting-outcome round-trip lost data:\n got %+v\nwant %+v", got, s)

@@ -60,6 +60,10 @@ type Stream interface {
 	Next(ctx context.Context) (Chunk, DoneReason, error)
 	// Outcome is the running attacker-cost meter (final after the stream ends).
 	Outcome() Outcome
+	// Observe feeds a structured digest of the attacker's inbound interaction for
+	// the future axis-4/5 reaction signals. No-op in AX0; counts/bools/enums only
+	// (rule 9). The seam exists so the driver (adapter) has a stable call site.
+	Observe(contract.DriverObservation)
 	// Close releases the governor slot + reserved bytes. Idempotent.
 	Close() error
 }
@@ -129,12 +133,18 @@ func New(cfg Config) (*BoundedAttritor, error) {
 
 	params := genParams{MaxDepth: cfg.Budget.MaxDepth, Drip: cfg.Drip}
 
-	gens := []generator{tarpit{}} // the passive substrate, always present
-	if cfg.Floor >= contract.FloorModerate {
-		gens = append(gens, fakeMaze{})
-	}
-	if cfg.Floor == contract.FloorAggressive {
-		gens = append(gens, tokenBait{})
+	// Construct only generators whose axis(es) the operator floor unlocks (overlap
+	// test against StingFloor.Axes()). The ladder order — tarpit, fakeMaze,
+	// tokenBait — is preserved so the most-aggressive constructed generator stays
+	// the headline Mechanism. Because FloorPassive.Axes() is AxisVelocity only, the
+	// dedicated opportunity-cost (tokenBait) / exploit / exposure generators are not
+	// even constructed below their floor — aggressive can never be a silent default.
+	floorAxes := cfg.Floor.Axes()
+	var gens []generator
+	for _, g := range []generator{tarpit{}, fakeMaze{}, tokenBait{}} {
+		if g.axis()&floorAxes != 0 {
+			gens = append(gens, g)
+		}
 	}
 
 	for _, g := range gens {
@@ -187,61 +197,50 @@ func (a *BoundedAttritor) Open(v contract.Verdict) Stream {
 		return &noopStream{reason: DoneGlobalCeiling}
 	}
 
-	gen := a.selectGenerator(v.Tier)
+	sel := a.selectAxes(v.Tier)
+	if len(sel) == 0 {
+		// Unreachable in practice — tarpit (minTier=TierContain) is always
+		// constructed and Open only proceeds at Tier>=TierContain — but never return
+		// a live stream with no generator. Release the slot gate 4 reserved.
+		a.gov.CloseStream()
+		return &noopStream{reason: DoneNoOp}
+	}
+	var axes contract.AttritionAxis
+	for _, g := range sel {
+		axes |= g.axis()
+	}
+	headline := sel[len(sel)-1] // most-aggressive permitted generator: the KPI Mechanism
 	return &stream{
-		gen:    gen,
+		gens:   sel,
 		gov:    a.gov,
 		budget: a.budget,
 		params: a.params,
 		cur:    cursor{seed: a.cfg.Seed ^ v.Flow.SocketCookie},
-		out:    Outcome{Mechanism: gen.mechanism()},
+		out:    Outcome{Mechanism: headline.mechanism(), Axes: axes},
 	}
 }
 
-// selectGenerator picks the generator by FLOOR (the operator cap) and tier (the
-// intensity within that cap). The chosen index is min(tierIntensity, floorMax),
-// so a higher tier never exceeds the floor's maximum generator, and no tier value
-// alone raises the floor.
-func (a *BoundedAttritor) selectGenerator(t contract.Tier) generator {
-	idx := tierIntensity(t)
-	if fm := floorMax(a.cfg.Floor); idx > fm {
-		idx = fm
+// selectAxes returns the active generator SET for a verdict's tier: every
+// constructed generator whose minTier() permits this tier. The set composes the
+// floor's unlocked axes that the tier allows — velocity + information poisoning
+// from TierContain, the dedicated opportunity-cost / exploit / exposure generators
+// only from TierJail. The stream rotates through the set per chunk (one shared
+// cursor + Budget), so cost accrues across axes while the headline Mechanism stays
+// the most-aggressive member (preserving the D3 by-mechanism KPI). Because a.gens
+// was already constructed per floor, no tier value alone can raise the floor.
+func (a *BoundedAttritor) selectAxes(t contract.Tier) []generator {
+	var sel []generator
+	for _, g := range a.gens {
+		if g.minTier() <= t {
+			sel = append(sel, g)
+		}
 	}
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(a.gens) {
-		idx = len(a.gens) - 1
-	}
-	return a.gens[idx]
-}
-
-// tierIntensity maps a tier to a generator-ladder intensity: Tier 2 -> 1 (the
-// gentler form), Tier 3 -> 2 (full adversarial). Tier < 2 never reaches here.
-func tierIntensity(t contract.Tier) int {
-	if t >= contract.TierJail {
-		return 2
-	}
-	return 1
-}
-
-// floorMax maps the operator floor to the highest ladder index it permits:
-// passive -> 0 (tarpit), moderate -> 1 (fake_tree), aggressive -> 2 (token_bait).
-// An unknown floor falls back to 0 (the LEAST aggressive) — never up.
-func floorMax(f contract.StingFloor) int {
-	switch f {
-	case contract.FloorAggressive:
-		return 2
-	case contract.FloorModerate:
-		return 1
-	default:
-		return 0
-	}
+	return sel
 }
 
 // stream is the live per-flow attrition session.
 type stream struct {
-	gen      generator
+	gens     []generator // the active axis set, rotated per chunk; ladder order, sel[last] is the headline
 	gov      *Governor
 	budget   Budget
 	params   genParams
@@ -277,7 +276,12 @@ func (s *stream) Next(ctx context.Context) (Chunk, DoneReason, error) {
 		return s.finish(DoneFlowBudget)
 	}
 
-	data, delay, ok := s.gen.next(&s.cur, s.params)
+	// Rotate the active generator per chunk so a multi-axis set imposes cost across
+	// all its axes on one flow, sharing ONE cursor + Budget (composition never
+	// multiplies the defender's bytes/hold). The index uses chunkIdx BEFORE next()
+	// advances it, so rotation is deterministic per flow.
+	active := s.gens[s.cur.chunkIdx%len(s.gens)]
+	data, delay, ok := active.next(&s.cur, s.params)
 	if !ok {
 		return s.finish(DoneComplete)
 	}
@@ -296,7 +300,7 @@ func (s *stream) Next(ctx context.Context) (Chunk, DoneReason, error) {
 
 	s.out.BytesServed += int64(len(data))
 	s.out.RequestsAbsrb++
-	s.out.TokenCostProxy += tokenProxy(s.out.Mechanism, len(data))
+	s.out.TokenCostProxy += tokenProxy(active.mechanism(), len(data))
 	s.held += delay
 	s.out.TimeHeldSec = s.held.Seconds()
 	if s.cur.depth > s.out.DepthReached {
@@ -307,8 +311,17 @@ func (s *stream) Next(ctx context.Context) (Chunk, DoneReason, error) {
 
 func (s *stream) finish(r DoneReason) (Chunk, DoneReason, error) {
 	s.out.Reason = r
+	s.out.DisengageReason = int(r) // in-stream default; the adapter refines it from holdCtx (AX1/D7)
 	return Chunk{}, r, nil
 }
+
+// Observe feeds a structured digest of the attacker's inbound interaction for the
+// future axis-4 (exploit-inventory burn) and axis-5 (operational exposure)
+// reaction signals. It is a no-op seam in AX0 — the call site exists so the driver
+// (adapter) is stable; AX4/AX5 populate Outcome.ExploitsObserved/ExposureSignals
+// from the digest. Counts/bools/enums only (rule 9 — DriverObservation carries no
+// raw bytes/addresses).
+func (s *stream) Observe(contract.DriverObservation) {}
 
 func (s *stream) Outcome() Outcome { return s.out }
 
@@ -324,6 +337,7 @@ func (s *stream) Close() error {
 	s.gov.CloseStream()
 	if s.out.Reason == NotDone {
 		s.out.Reason = DoneComplete
+		s.out.DisengageReason = int(DoneComplete)
 	}
 	return nil
 }
@@ -339,5 +353,7 @@ func (n *noopStream) Next(context.Context) (Chunk, DoneReason, error) {
 }
 
 func (n *noopStream) Outcome() Outcome { return Outcome{Mechanism: MechNoOp, Reason: n.reason} }
+
+func (n *noopStream) Observe(contract.DriverObservation) {}
 
 func (n *noopStream) Close() error { return nil }

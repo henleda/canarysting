@@ -90,6 +90,38 @@ const (
 	FloorAggressive                   // full adversarial, token-maximizing
 )
 
+// AttritionAxis is a bitset of the cost dimensions an attrition session imposes.
+// Multi-dimensional attrition composes several on one flow (a single generator can
+// land on more than one), so this is a SET, never one value. Every axis imposes
+// opportunity cost on a velocity-dependent adversary regardless of how the attacker
+// is hosted; the dollar/metered framing never leads. See docs/STING.md and
+// docs/ATTRITION_FIVE_AXIS_DESIGN.md.
+type AttritionAxis uint32
+
+const (
+	AxisVelocity    AttritionAxis = 1 << iota // latency / tarpit
+	AxisPoison                                // information poisoning (fabricated environmental state)
+	AxisOppCost                               // opportunity-cost injection (subsumes token-burning)
+	AxisExploitBurn                           // exploit-inventory burn
+	AxisOpExposure                            // operational exposure
+)
+
+// Axes returns the set of attrition axes an operator floor unlocks. This is the
+// single source of truth for the floor→axis map. It lives here, not in the engine:
+// the engine emits only a Tier and never sees the floor (rules 1/2); the floor is
+// bound into the Attritor at the composition root. Passive unlocks velocity only,
+// so an unset (zero-value) floor can never silently reach the aggressive axes.
+func (f StingFloor) Axes() AttritionAxis {
+	switch f {
+	case FloorAggressive:
+		return AxisVelocity | AxisPoison | AxisOppCost | AxisExploitBurn | AxisOpExposure
+	case FloorModerate:
+		return AxisVelocity | AxisPoison
+	default: // FloorPassive (the zero value)
+		return AxisVelocity
+	}
+}
+
 // Verdict is the engine's output for a flow. Adapters and the sting layer act
 // on it; neither re-derives identity or re-decides the tier.
 type Verdict struct {
@@ -135,6 +167,33 @@ type StingOutcome struct {
 	TokenCostProxy float64 // estimated attacker tokens imposed
 	DepthReached   int     // deepest maze/nesting level reached
 	DoneReason     int     // attrition.DoneReason int value (why the stream ended)
+
+	// Five-axis carriers (added once by the AX0 spine; see
+	// docs/ATTRITION_FIVE_AXIS_DESIGN.md §9.1). All additive ⇒ gob/proto3-forward-
+	// safe (old blobs zero-fill, the live M7 window is safe). Today only Axes is
+	// populated; the rest are written by the axis milestones (AX1–AX5) and the
+	// adapter disengage classifier, and stay zero until then.
+	Axes               AttritionAxis // union of the active generators' axes (OVERLAPPING — never a partition that sums to the total)
+	TimeToDisengageSec float64       // attacker-initiated disengage time; non-zero ONLY when the attacker disconnected (adapter classifier, AX1/D7)
+	PoisonClass        string        // information-poisoning reaction class (credential|topology|success); "" until AX2
+	PoisonReached      int           // deepest poison-field stage the attacker consumed (AX2)
+	ExploitsObserved   int64         // exploits fired at decoys, captured in-perimeter (AX4); deployment-local-only until the egress filter (rule 9)
+	ExposureSignals    int64         // operational-exposure signals captured (AX5); deployment-local-only until the egress filter (rule 9)
+	DisengageReason    int           // adapter disengage classification: attacker-disengaged | generator-exhausted | defender-capped (AX1/D7)
+}
+
+// DriverObservation is a structured digest of an attacker's inbound interaction
+// that the driver (the Envoy adapter) MAY feed into Stream.Observe to supply the
+// future axis-4 (exploit-inventory burn) and axis-5 (operational exposure)
+// reaction signals. It MUST carry counts/bools/enums ONLY — never raw bytes,
+// addresses, headers, or decoy/payload contents (rule 9; the same "no raw payload"
+// invariant StingOutcome holds). TestDriverObservationCarriesNoRawData asserts it
+// has no byte-slice or address-shaped field. It ships as a defined-but-unused seam
+// (AX0); it is populated only when the axis-4/5 generators land.
+type DriverObservation struct {
+	RequestCount     int  // requests the attacker made on this flow (a count, never the requests)
+	DistinctDecoys   int  // distinct decoys touched — coarse enumeration breadth (a count, never the paths)
+	SuspectedExploit bool // the inbound shape matched a known exploit structural marker (a bool, never the payload)
 }
 
 // OutcomeRecord is the post-attrition report the adapter sends to the engine so

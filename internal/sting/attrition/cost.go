@@ -1,5 +1,7 @@
 package attrition
 
+import "github.com/canarysting/canarysting/internal/contract"
+
 // DoneReason discriminates WHY an attrition stream ended. The driver stops on any
 // non-NotDone value; the intelligence layer (D1/D3) records the reason, so the
 // three "we stopped ourselves" cases (per-flow budget, host ceiling, kill) are
@@ -80,4 +82,38 @@ type Outcome struct {
 	TokenCostProxy float64    // estimated attacker tokens imposed
 	Reason         DoneReason // why the stream ended (NotDone while live)
 	DepthReached   int        // deepest maze/nesting level the attacker reached (D2 reaction signal)
+
+	// Five-axis carriers (AX0 spine). Same names as contract.StingOutcome /
+	// intelligence.StingOutcome so the composition root's copy can't silently drop
+	// one — TestOutcomeMapsToStingOutcome reflects intelligence.StingOutcome against
+	// this struct and fails on a missing name. Attrition itself populates Axes (at
+	// Open, the union of the active set) and defaults DisengageReason to the stream's
+	// end reason; the adapter refines TimeToDisengageSec/DisengageReason from its
+	// hold context (AX1/D7), and the AX2–AX5 generators populate the poison/exploit/
+	// exposure fields. All zero in AX0 except Axes + DisengageReason.
+	Axes               contract.AttritionAxis // union of active generators' axes (OVERLAPPING, never a partition)
+	TimeToDisengageSec float64                // attacker-initiated disengage time (adapter, AX1/D7)
+	PoisonClass        string                 // information-poisoning reaction class (AX2)
+	PoisonReached      int                    // deepest poison-field stage consumed (AX2)
+	ExploitsObserved   int64                  // exploits fired at decoys, captured in-perimeter (AX4)
+	ExposureSignals    int64                  // operational-exposure signals captured (AX5)
+	DisengageReason    int                    // disengage classification (adapter refines; AX1/D7)
+}
+
+// AxesForMechanism maps a frozen Mechanism label to the axis set that mechanism
+// imposes. It is the consumer-side (intelligence/dashboard) counterpart to a
+// generator's axis(): those layers see only the Mechanism string on a persisted
+// StingOutcome, so this lets them recover the axes without importing attrition's
+// generators. Keep it in lockstep with each generator's axis(). Unknown ⇒ 0.
+func AxesForMechanism(mech string) contract.AttritionAxis {
+	switch mech {
+	case MechTarpit:
+		return contract.AxisVelocity
+	case MechFakeTree:
+		return contract.AxisPoison | contract.AxisOppCost
+	case MechTokenBait:
+		return contract.AxisOppCost
+	default:
+		return 0
+	}
 }

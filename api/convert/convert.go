@@ -104,6 +104,16 @@ func StingOutcomeToProto(s contract.StingOutcome) *pb.StingOutcome {
 		TokenCostProxy: s.TokenCostProxy,
 		DepthReached:   int32(s.DepthReached),
 		DoneReason:     int32(s.DoneReason),
+		// Five-axis fields (AX0 spine). Thread ALL of them — convert.go has no
+		// reflection guard, so a missed field would silently zero over gRPC; the
+		// round-trip literals in convert_test.go set every one to catch that.
+		Axes:               uint32(s.Axes),
+		TimeToDisengageSec: s.TimeToDisengageSec,
+		PoisonClass:        s.PoisonClass,
+		PoisonReached:      int32(s.PoisonReached),
+		ExploitsObserved:   s.ExploitsObserved,
+		ExposureSignals:    s.ExposureSignals,
+		DisengageReason:    int32(s.DisengageReason),
 	}
 }
 
@@ -114,13 +124,20 @@ func StingOutcomeFromProto(s *pb.StingOutcome) contract.StingOutcome {
 		return contract.StingOutcome{}
 	}
 	return contract.StingOutcome{
-		Mechanism:      s.GetMechanism(),
-		TimeHeldSec:    s.GetTimeHeldSec(),
-		BytesServed:    s.GetBytesServed(),
-		RequestsAbsrb:  s.GetRequestsAbsrb(),
-		TokenCostProxy: s.GetTokenCostProxy(),
-		DepthReached:   int(s.GetDepthReached()),
-		DoneReason:     int(s.GetDoneReason()),
+		Mechanism:          s.GetMechanism(),
+		TimeHeldSec:        s.GetTimeHeldSec(),
+		BytesServed:        s.GetBytesServed(),
+		RequestsAbsrb:      s.GetRequestsAbsrb(),
+		TokenCostProxy:     s.GetTokenCostProxy(),
+		DepthReached:       int(s.GetDepthReached()),
+		DoneReason:         int(s.GetDoneReason()),
+		Axes:               contract.AttritionAxis(s.GetAxes()),
+		TimeToDisengageSec: s.GetTimeToDisengageSec(),
+		PoisonClass:        s.GetPoisonClass(),
+		PoisonReached:      int(s.GetPoisonReached()),
+		ExploitsObserved:   s.GetExploitsObserved(),
+		ExposureSignals:    s.GetExposureSignals(),
+		DisengageReason:    int(s.GetDisengageReason()),
 	}
 }
 

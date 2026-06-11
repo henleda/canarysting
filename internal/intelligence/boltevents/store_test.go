@@ -187,7 +187,22 @@ func TestAmendOutcomeMergesIntoQuery(t *testing.T) {
 		SocketCookie:    0xABC,
 		Scope:           "scopeA",
 		TimestampUnixMs: now.UnixMilli(),
-		Outcome:         contract.StingOutcome{Mechanism: "fake_tree", TimeHeldSec: 2.5, BytesServed: 4096, RequestsAbsrb: 7, TokenCostProxy: 1024, DepthReached: 3},
+		Outcome: contract.StingOutcome{
+			Mechanism: "fake_tree", TimeHeldSec: 2.5, BytesServed: 4096, RequestsAbsrb: 7, TokenCostProxy: 1024, DepthReached: 3,
+			// Five-axis fields set to DISTINCT non-zero values (ExploitsObserved !=
+			// ExposureSignals so a transposition in the AmendOutcome copy fails). This
+			// is the ONLY value-level coverage of the durable-store mirror of the new
+			// fields — the drift-guard only checks names, convert_test only the gRPC
+			// boundary — so a dropped/swapped field here would otherwise silently zero
+			// axis data on the event feeding cost.Rollup / D2 / the dashboard.
+			Axes:               contract.AxisVelocity | contract.AxisOppCost,
+			TimeToDisengageSec: 1.5,
+			PoisonClass:        "topology",
+			PoisonReached:      4,
+			ExploitsObserved:   2,
+			ExposureSignals:    3,
+			DisengageReason:    2,
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +210,14 @@ func TestAmendOutcomeMergesIntoQuery(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d events, want 1 (outcome merged, not appended as an event)", len(got))
 	}
-	if got[0].Sting.BytesServed != 4096 || got[0].Sting.TimeHeldSec != 2.5 || got[0].Sting.Mechanism != "fake_tree" {
-		t.Fatalf("outcome not merged into event: %+v", got[0].Sting)
+	st := got[0].Sting
+	if st.BytesServed != 4096 || st.TimeHeldSec != 2.5 || st.Mechanism != "fake_tree" {
+		t.Fatalf("outcome not merged into event: %+v", st)
+	}
+	if st.Axes != uint32(contract.AxisVelocity|contract.AxisOppCost) || st.TimeToDisengageSec != 1.5 ||
+		st.PoisonClass != "topology" || st.PoisonReached != 4 ||
+		st.ExploitsObserved != 2 || st.ExposureSignals != 3 || st.DisengageReason != 2 {
+		t.Fatalf("five-axis fields not persisted/round-tripped by AmendOutcome: %+v", st)
 	}
 	if got[0].Score != 3 {
 		t.Fatalf("merge corrupted the event: Score = %v, want 3", got[0].Score)
