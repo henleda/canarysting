@@ -193,7 +193,8 @@ type StingOutcome struct {
 type DriverObservation struct {
 	RequestCount     int  // requests the attacker made on this flow (a count, never the requests)
 	DistinctDecoys   int  // distinct decoys touched — coarse enumeration breadth (a count, never the paths)
-	SuspectedExploit bool // the inbound shape matched a known exploit structural marker (a bool, never the payload)
+	SuspectedExploit bool // the inbound shape matched a known exploit structural marker (a bool, never the payload) — AX4
+	ToolingExposed   bool // the inbound shape carried a known automation-tool/C2 fingerprint (user-agent / header-set) — a bool, never the raw UA/headers (AX5 operational exposure)
 }
 
 // DisengageReason classifies WHY an attrition session ended, from the DRIVER's

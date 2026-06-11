@@ -27,15 +27,29 @@ var exploitMarkers = []string{
 	"<script", "onerror=", // XSS shapes
 }
 
-// digestObservation maps a request's TRANSPORT SHAPE (the method + path the adapter
-// already extracted) into the structured contract.DriverObservation the attrition
-// stream's Observe seam consumes — counts/bools ONLY, never raw bytes/addresses
-// (rule 9). SuspectedExploit is true iff the lowercased path carries a fixed
-// structural exploit marker. Like classifyDisengage, this is a transport-fact digest,
-// NOT detection logic (rule 1): the engine already decided the tier; this only
-// annotates the inbound shape so AX4 can COUNT exploits fired at the decoy
-// (Outcome.ExploitsObserved). It NEVER reaches back at the attacker (docs/STING.md
-// "not hack-back").
+// toolingMarkers are FIXED, documented automation-tool / C2 user-agent substrings.
+// A user-agent carrying one is an operational-exposure fingerprint (the attacker
+// revealed their recon tooling). Like exploitMarkers this is a closed, hand-maintained
+// set of TRANSPORT-SHAPE facts (the UA string the client SENT), not a learned detector
+// — a transport-fact digest, NOT engine detection (rule 1). Matched as a lowercased
+// substring of the user-agent only.
+var toolingMarkers = []string{
+	"curl/", "wget/", "python-requests", "python-urllib", "go-http-client", "libwww",
+	"java/", "okhttp", "httpx", "zgrab", "nikto", "sqlmap", "nmap", "masscan",
+	"nuclei", "wpscan", "gobuster", "feroxbuster", "ffuf", "dirbuster", "hydra",
+	"metasploit", "havij", "burp", "acunetix", "nessus", "qualys",
+}
+
+// digestObservation maps a request's TRANSPORT SHAPE (the method/path/user-agent the
+// adapter already extracted) into the structured contract.DriverObservation the
+// attrition stream's Observe seam consumes — counts/bools ONLY, never raw
+// bytes/addresses/headers (rule 9). SuspectedExploit (AX4) is true iff the lowercased
+// path carries a fixed structural exploit marker; ToolingExposed (AX5) is true iff the
+// user-agent carries a fixed automation-tool/C2 marker. Like classifyDisengage, this is
+// a transport-fact digest, NOT detection logic (rule 1): the engine already decided the
+// tier; this only annotates the inbound shape so AX4/AX5 can COUNT exploits fired at /
+// tooling exposed against the decoy. It NEVER reaches back at the attacker (docs/STING.md
+// "not hack-back") — both signals are read off bytes the attacker already sent us.
 func digestObservation(obs RequestObservation) contract.DriverObservation {
 	p := strings.ToLower(obs.Path)
 	suspected := false
@@ -45,10 +59,21 @@ func digestObservation(obs RequestObservation) contract.DriverObservation {
 			break
 		}
 	}
+	ua := strings.ToLower(obs.Headers["user-agent"])
+	tooling := false
+	if ua != "" {
+		for _, m := range toolingMarkers {
+			if strings.Contains(ua, m) {
+				tooling = true
+				break
+			}
+		}
+	}
 	return contract.DriverObservation{
 		RequestCount:     1, // one inbound request drives this attrition stream
 		DistinctDecoys:   1, // this canary touch; flow-level enumeration breadth aggregates downstream
 		SuspectedExploit: suspected,
+		ToolingExposed:   tooling,
 	}
 }
 

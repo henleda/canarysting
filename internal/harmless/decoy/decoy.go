@@ -104,3 +104,29 @@ func ExploitBaitService(seed uint64) string {
 	b.WriteString("Admin console: http://" + admin + "/admin   (default creds)\n")
 	return b.String()
 }
+
+// OpsSurface renders an attractive-but-INERT fake INTERNAL-OPERATIONS surface for
+// axis-5 (operational exposure, docs/AX5_HARMLESSNESS_DESIGN.md): an ops/observability
+// view — deploy manifests, a monitoring console, service-mesh topology, a secrets
+// backend — that entices an attacker to ENUMERATE the environment, and in doing so
+// reveal their recon TOOLING (captured passively from their request shape, never via a
+// callback). Distinct from ExploitBaitService (vulnerable services) and the poison
+// field (fabricated env STATE): this is the internal operational map. Every element is
+// provably harmless — RELATIVE paths, RESERVED (non-routable) hosts, EXAMPLE-namespace
+// creds — so it routes nowhere and authenticates to nothing (harmless.CrossScan passes
+// for all seeds, proven in decoy_test.go). Decoy text only — NEVER a beacon / sink /
+// reach-back (the no-hack-back hard line). Pure function of the seed.
+func OpsSurface(seed uint64) string {
+	mon := ReservedHost(seed)
+	mesh := ReservedHost(mix(seed, 1))
+	vault := ReservedHost(mix(seed, 2))
+	tok := token(mix(seed, 3), 12, lowerAlnum)
+	key := ExampleAWSKeyID(mix(seed, 4))
+	var b strings.Builder
+	b.WriteString("# internal operations console\n")
+	b.WriteString("deploy manifest: /ops/deploy/" + tok + ".yaml\n")
+	b.WriteString("monitoring: http://" + mon + "/grafana   runbooks: /ops/runbooks/" + token(mix(seed, 5), 8, lowerAlnum) + "\n")
+	b.WriteString("service mesh: " + mesh + " (mTLS, internal)\n")
+	b.WriteString("secrets backend: vault://" + vault + ":8200   bootstrap_key=" + key + "\n")
+	return b.String()
+}
