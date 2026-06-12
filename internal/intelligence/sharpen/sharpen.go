@@ -77,11 +77,13 @@ func NewStore(src EventSource) *Store {
 // RecordJail records that flow was JAILED (Tier 3) in scope at time at — confirmed-
 // malicious ground truth. It derives the flow's behavioral profile from its recent
 // events and adds it to the scope's confirmed set, keyed by BehavioralHash and counting
-// DISTINCT jailed flows. A no-op if the flow's profile cannot be derived (no events).
-func (s *Store) RecordJail(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) {
+// DISTINCT jailed flows. A no-op (returns nil) if the flow's profile cannot be derived
+// (no events). It RETURNS the derived profile so the composition root can feed the SAME
+// profile to the cross-scope ledger (D6e) without a second event-source query.
+func (s *Store) RecordJail(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) *profile.Profile {
 	p := s.deriveFlow(scope, flow, at)
 	if p == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,6 +102,7 @@ func (s *Store) RecordJail(scope contract.ScopeKey, flow contract.FlowIdentity, 
 	if at.After(e.lastJail) {
 		e.lastJail = at
 	}
+	return p
 }
 
 // Match implements baseline.Matcher: the [0,1] strength of flow's EMERGING behavior

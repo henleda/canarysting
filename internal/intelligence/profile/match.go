@@ -18,7 +18,13 @@ func (p *Profile) Similarity(o *Profile) float64 {
 	// object AND for two distinct profiles with the same behavior — including profiles
 	// with no probe sequence, which the evidence-based kernel below would otherwise
 	// score < 1.0.
-	if p == o || p.BehavioralHash == o.BehavioralHash {
+	//
+	// The hash fast-path requires a NON-ZERO hash (D6h): a sparse-lifted inbound
+	// cross-customer SharedPattern carries BehavioralHash==0 as a deliberate sentinel
+	// ("not a real behavioral identity"), so it must NEVER short-circuit to 1.0 against
+	// another zero-hash profile — it is scored only by the evidence kernel below. A
+	// real DeriveProfile hash is fnv-64a over a non-empty string and is never 0.
+	if p == o || (p.BehavioralHash != 0 && p.BehavioralHash == o.BehavioralHash) {
 		return 1
 	}
 	typeSim := jaccard(typeSet(p.OrderedTypes), typeSet(o.OrderedTypes))
