@@ -14,6 +14,7 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
+	"github.com/canarysting/canarysting/internal/intelligence/transport"
 )
 
 // D6e: a local Tier-3 jail records the jailed flow's coarse pattern into the cross-scope
@@ -62,6 +63,64 @@ func TestD6ContributeRecordsLocalJailWhenOptedIn(t *testing.T) {
 	}
 	if got := run(false).Patterns(); got != 0 {
 		t.Fatalf("Contribute=false: ledger recorded %d patterns, want 0 (no contribution without opt-in)", got)
+	}
+}
+
+// D6-3: on a local jail, the capturingEngine emits a cross-scope CONFIRMATION to the
+// aggregator's spool ONLY when contributing + a token + a spool path are all configured —
+// and the confirmation carries the OPAQUE token, never the raw ScopeKey.
+func TestD6_3EmitsConfirmationOnJailWhenConfigured(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	mkSrc := func() *fakeSharpenSource {
+		return &fakeSharpenSource{byScope: map[string][]intelligence.AdversaryInteractionEvent{
+			"scopeA": {{ScopeKey: "scopeA", FlowID: 1, CanaryType: ".env", Tier: 3, Timestamp: now, Sting: intelligence.StingOutcome{
+				Axes: uint32(contract.AxisVelocity | contract.AxisPoison), TimeHeldSec: 10,
+				PoisonReached: 2, PoisonClass: "topology", DisengageReason: contract.DisengageAttacker, TimeToDisengageSec: 5,
+			}}},
+		}}
+	}
+	run := func(configured bool) []transport.Confirmation {
+		ps, _, err := persist.Open(filepath.Join(t.TempDir(), "b.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ps.Close() })
+		l, _ := network.NewLedger()
+		spoolPath := filepath.Join(t.TempDir(), "confirm.ndjson")
+		ce := &capturingEngine{
+			inner:        fakeInner{tierByCookie: map[uint64]contract.Tier{1: contract.TierJail}},
+			events:       boltevents.New(ps),
+			sharpen:      sharpen.NewStore(mkSrc()),
+			pendingJails: map[uint64]struct{}{},
+			ledger:       l,
+			contribute:   true,
+		}
+		if configured {
+			ce.confirmSpool = transport.NewConfirmSpool(spoolPath)
+			ce.scopeToken = "tok-opaque-xyz"
+		}
+		if _, err := ce.Submit(contract.SignalEvent{Flow: contract.FlowIdentity{SocketCookie: 1}, Scope: "scopeA", Canary: ".env", Timestamp: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ce.ReportOutcome(contract.OutcomeRecord{SocketCookie: 1, Scope: "scopeA", Outcome: contract.StingOutcome{Axes: contract.AxisVelocity | contract.AxisPoison}, TimestampUnixMs: now.UnixMilli()}); err != nil {
+			t.Fatal(err)
+		}
+		confs, _ := transport.NewConfirmSpool(spoolPath).ReceiveConfirmations()
+		return confs
+	}
+
+	confs := run(true)
+	if len(confs) != 1 {
+		t.Fatalf("configured: emitted %d confirmations on a jail, want 1", len(confs))
+	}
+	if confs[0].Scope != "tok-opaque-xyz" {
+		t.Fatalf("confirmation scope = %q, want the OPAQUE token (never the raw ScopeKey 'scopeA')", confs[0].Scope)
+	}
+	if confs[0].Scope == "scopeA" {
+		t.Fatal("the raw ScopeKey leaked onto the confirmation wire (rule-9 / D63b)")
+	}
+	if got := run(false); len(got) != 0 {
+		t.Fatalf("unconfigured (no token/spool): emitted %d confirmations, want 0", len(got))
 	}
 }
 

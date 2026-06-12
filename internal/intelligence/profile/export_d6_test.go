@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -8,6 +9,26 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 )
+
+// D6-3 contributor→aggregator parity: a contributing deployment emits its coarse pattern
+// as json.Marshal(ToExportForm()); the aggregator MUST be able to ParseSharedPattern those
+// exact bytes (same 7 keys, same types). If ExportForm and SharedPattern ever drift, the
+// live confirmation wire silently breaks — this pins them together.
+func TestExportFormMarshalsToValidSharedPattern(t *testing.T) {
+	p := DeriveProfile([]intelligence.AdversaryInteractionEvent{
+		{CanaryType: ".env", Tier: 3, Timestamp: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC), Sting: intelligence.StingOutcome{
+			Axes: uint32(contract.AxisVelocity | contract.AxisPoison), TimeHeldSec: 10,
+			PoisonReached: 2, PoisonClass: "topology", DisengageReason: contract.DisengageAttacker, TimeToDisengageSec: 5,
+		}},
+	})
+	b, err := json.Marshal(p.ToExportForm())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := network.ParseSharedPattern(b); err != nil {
+		t.Fatalf("a contributor's json.Marshal(ExportForm) must parse as a SharedPattern at the aggregator: %v\n%s", err, b)
+	}
+}
 
 func d6ev(reason int, ttdSec, heldSec float64) intelligence.AdversaryInteractionEvent {
 	return intelligence.AdversaryInteractionEvent{
