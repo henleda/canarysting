@@ -107,6 +107,18 @@ func (l *Ledger) RecordForm(scope string, export any) (int, error) {
 	return len(set), nil
 }
 
+// Patterns reports how many DISTINCT coarse patterns this deployment has recorded — a
+// non-identifying contribution-status metric (e.g. "this deployment has contributed N
+// patterns to the network"). It exposes only a cardinality, never a pattern or a scope.
+func (l *Ledger) Patterns() int {
+	if l == nil {
+		return 0
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.seen)
+}
+
 // distinctScopes is the count ClearWithLedger reads. UNEXPORTED on purpose: only the
 // chokepoint (same package) may consult it, so the count's provenance stays inside the
 // package. Returns 0 for an unknown key (fail-closed: unknown => sub-k => deny).

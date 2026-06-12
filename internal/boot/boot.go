@@ -39,7 +39,10 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/engine/tiers"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
+	"github.com/canarysting/canarysting/internal/intelligence/network"
+	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
+	"github.com/canarysting/canarysting/internal/intelligence/transport"
 )
 
 // Options configures the composition.
@@ -61,6 +64,18 @@ type Options struct {
 	// version differs from this build (logged loudly) instead of refusing to start.
 	// Default false: refuse, so a learning window is never silently lost.
 	ResetOnSchemaMismatch bool
+
+	// --- D6 cross-customer network (independent opt-in toggles; default false) ---
+	// Contribute opts this deployment in to CONTRIBUTE anonymized patterns: a local
+	// Tier-3 jail records the jailed flow's coarse pattern into the cross-scope ledger
+	// (the producer half). Nothing crosses until a pattern reaches k>=3 distinct scopes.
+	Contribute bool
+	// Consume opts this deployment in to CONSUME the cross-customer set: received
+	// SharedPatterns sharpen M for matching local flows (detection context only, rule 8).
+	Consume bool
+	// SharedSpoolPath, when Consume is set, is the NDJSON spool of cleared patterns to
+	// load at boot (D6f file transport). "" => consume nothing.
+	SharedSpoolPath string
 }
 
 // Built holds the composed engine and the handles a binary wires further or
@@ -77,6 +92,8 @@ type Built struct {
 	Events          *boltevents.Store             // nil if no DB
 	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
 	Sharpen         *sharpen.Store                // D5-Phase-2 confirmed-malicious matcher; nil if no DB
+	Ledger          *network.Ledger               // D6 cross-scope SeenInScopes ledger; nil if no DB
+	SharedSet       *sharedset.Store              // D6 cross-customer consumer (detection context); nil if no DB
 
 	observer observe.Observer
 }
@@ -155,7 +172,36 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		// jails after a restart (bbolt persistence is a documented fast-follow; the live
 		// passive window has no jails, and a demo accrues the set in-session).
 		b.Sharpen = sharpen.NewStore(b.Events)
-		base.UseMatcher(b.Sharpen)
+
+		// D6 cross-customer network. The ledger is this deployment's trusted cross-scope
+		// SeenInScopes source (the producer half — fed by local jails when Contribute is
+		// set). The shared-set consumer holds patterns received from OTHER deployments and
+		// sharpens M for matching local flows — DETECTION CONTEXT ONLY (rule 8): it feeds
+		// the SAME single FingerprintMatch dimension as the local confirmed-malicious
+		// store, via a composite Matcher (max of the two). An inbound pattern can never
+		// trigger or count toward the local jail-floor (D6h). The shared set is empty
+		// unless Consume is set, so the composite is byte-identical to D5-Phase-2 alone
+		// until this deployment actually consumes the network.
+		if l, err := network.NewLedger(); err != nil {
+			log.Printf("boot: WARNING cross-scope ledger unavailable (%v); D6 contribution disabled (fail-closed)", err)
+		} else {
+			b.Ledger = l
+		}
+		b.SharedSet = sharedset.NewStore(b.Events)
+		base.UseMatcher(matcherSet{local: b.Sharpen, shared: b.SharedSet})
+
+		// Consume: load the received cross-customer patterns from the spool (D6f). Gated
+		// on the Consume opt-in (D6g) — an un-consuming deployment loads nothing.
+		if opts.Consume && opts.SharedSpoolPath != "" {
+			patterns, err := transport.NewSpool(opts.SharedSpoolPath).Receive()
+			if err != nil {
+				log.Printf("boot: WARNING some shared patterns failed to parse (skipped): %v", err)
+			}
+			for _, sp := range patterns {
+				b.SharedSet.Add(sp)
+			}
+			log.Printf("boot: D6 consume: loaded %d cross-customer pattern(s) from %s", b.SharedSet.Len(), opts.SharedSpoolPath)
+		}
 	}
 
 	// The OBSERVE-ONLY baseline path is wired only when a cgroup is given (i.e. on
@@ -213,7 +259,7 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}}
+		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
 		b.Engine = ce
 		b.OutcomeReporter = ce // the same capturing layer amends the durable store
 	} else {
@@ -277,12 +323,42 @@ type capturingEngine struct {
 	// outcome cannot leak it unboundedly.
 	mu           sync.Mutex
 	pendingJails map[uint64]struct{} // jailed flow cookies awaiting their outcome
+
+	// D6 contribution (producer half): on a local jail, the jailed flow's coarse
+	// pattern is recorded into the cross-scope ledger, gated on the Contribute opt-in.
+	// Nothing crosses until that pattern reaches k>=3 distinct scopes (the egress gate).
+	ledger     *network.Ledger // nil if no DB or the CSPRNG was unavailable (fail-closed)
+	contribute bool
 }
 
 // maxPendingJails bounds pendingJails: a Tier-3 jail enforced async/in-kernel may
 // never report an inline outcome, leaving its cookie pending. Past this cap we stop
 // marking (a missed sharpen is acceptable; an unbounded map is not).
 const maxPendingJails = 4096
+
+// matcherSet composes the local confirmed-malicious matcher (D5-Phase-2 sharpen) and the
+// cross-customer shared-set matcher (D6) into the SINGLE baseline.Matcher the engine
+// sees, returning the MAX of the two strengths — so a flow is sharpened by whichever of
+// {a locally-confirmed repeat, a cross-customer pattern} matches it more strongly, via
+// the SAME FingerprintMatch dimension and the SAME M_max cap. Both are weight context
+// only (rule 8). Nil members are skipped (a partial composition contributes 0).
+type matcherSet struct {
+	local  baseline.Matcher
+	shared baseline.Matcher
+}
+
+func (m matcherSet) Match(scope contract.ScopeKey, flow contract.FlowIdentity, at time.Time) float64 {
+	best := 0.0
+	if m.local != nil {
+		best = m.local.Match(scope, flow, at)
+	}
+	if m.shared != nil {
+		if s := m.shared.Match(scope, flow, at); s > best {
+			best = s
+		}
+	}
+	return best
+}
 
 func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
 	v, err := e.inner.Submit(ev)
@@ -333,7 +409,15 @@ func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
 		}
 		e.mu.Unlock()
 		if jailed {
-			e.sharpen.RecordJail(rec.Scope, contract.FlowIdentity{SocketCookie: rec.SocketCookie}, time.UnixMilli(rec.TimestampUnixMs))
+			p := e.sharpen.RecordJail(rec.Scope, contract.FlowIdentity{SocketCookie: rec.SocketCookie}, time.UnixMilli(rec.TimestampUnixMs))
+			// D6e (contribution): a local jail is this scope's confirmed-malice ground
+			// truth — record its coarse pattern into the cross-scope ledger so the SAME
+			// pattern, once exhibited by k>=3 distinct scopes, may cross the egress gate.
+			// Gated on the Contribute opt-in; the SAME derived profile feeds both stores
+			// (no second query). Recording is NOT an export — nothing crosses here.
+			if p != nil && e.contribute && e.ledger != nil {
+				_, _ = e.ledger.RecordForm(string(rec.Scope), p.ToExportForm())
+			}
 		}
 	}
 	return err
