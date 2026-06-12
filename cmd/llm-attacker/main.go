@@ -45,6 +45,8 @@ func main() {
 		canaryCSV     = flag.String("canary-paths", "", "scripted: comma-separated probe set (default: the five demo canaries)")
 		mazeDepth     = flag.Int("maze-depth", 3, "scripted: child links to follow from the first deception body")
 		keyFile       = flag.String("key-file", "", "API key file (else ANTHROPIC_API_KEY env)")
+		recordFile    = flag.String("record", "", "record this live run's LLM responses to a cassette file (for deterministic replay)")
+		cassetteFile  = flag.String("cassette", "", "REPLAY a recorded cassette: deterministic, $0, no key — replays the attacker's tool-call decisions against the live target with the recorded real cost")
 		tapAddr       = flag.String("tap-addr", "", "dashboard tap base URL for the live cost meter + proxy readback (optional)")
 		costOut       = flag.String("cost-out", "", "write the run-result ledger JSON to this path")
 		meterInterval = flag.Duration("meter-min-interval", 500*time.Millisecond, "min interval between live-meter POSTs to the tap")
@@ -71,14 +73,30 @@ func main() {
 	tool := attacker.NewHTTPTool(httpClient, *target)
 	budget := attacker.NewBudget(*hardCapUSD, *inPrice, *outPrice, *cachePrice)
 
-	// Resolve the client (real SDK, or none for scripted).
+	// Resolve the client: REPLAY a cassette (deterministic, $0, no key), or
+	// SCRIPTED (no client), or a live SDK run (optionally RECORDED to a cassette).
 	var client anthropic.Messager
-	if !*scripted {
+	var recorder *anthropic.RecordingClient
+	switch {
+	case *cassetteFile != "":
+		rc, err := anthropic.LoadCassette(*cassetteFile)
+		if err != nil {
+			log.Fatalf("llm-attacker: %v", err)
+		}
+		client = rc
+		log.Printf("llm-attacker: REPLAY cassette %s (%d recorded responses; $0, deterministic)", *cassetteFile, rc.Remaining())
+	case *scripted:
+		// client stays nil (the deterministic zero-API HTTP walk)
+	default:
 		key, err := resolveKey(*keyFile)
 		if err != nil {
 			log.Fatalf("llm-attacker: %v", err)
 		}
 		client = anthropic.New(key)
+		if *recordFile != "" {
+			recorder = anthropic.NewRecordingClient(client, *model)
+			client = recorder // transparent: same behavior, captures each response
+		}
 	}
 
 	agent := attacker.NewAgent(client, tool, budget, cfg)
@@ -96,13 +114,21 @@ func main() {
 	defer stop()
 
 	mode := "LLM(" + *model + ", effort=" + *effort + ")"
-	if *scripted {
+	switch {
+	case *cassetteFile != "":
+		mode = "REPLAY(" + *cassetteFile + ", $0)"
+	case *scripted:
 		mode = "SCRIPTED(zero-API)"
+	case *recordFile != "":
+		mode = "LLM(" + *model + ", effort=" + *effort + ") RECORDING->" + *recordFile
 	}
 	log.Printf("llm-attacker: mode=%s target=%s src-ip=%s cap=$%.2f max-turns=%d",
 		mode, *target, *srcIP, *hardCapUSD, *maxTurns)
 
 	res, err := agent.RunAttack(ctx)
+	// Save the cassette even on a partial/errored run, so a long recording is not
+	// lost. The recorder is nil unless -record was set on a live run.
+	saveCassette(recorder, *recordFile)
 	if err != nil {
 		log.Printf("llm-attacker: run error: %v", err)
 		printLedger(res, *tapAddr)
@@ -193,6 +219,19 @@ func printLedger(res attacker.RunResult, tapAddr string) {
 			log.Printf("[M9 RESULT] ASYMMETRY: attacker burned $%.4f real; defender cost flat/bounded", res.TotalUSD)
 		}
 	}
+}
+
+// saveCassette persists a recorded run's LLM responses for deterministic replay.
+// No-op if recording was not requested.
+func saveCassette(recorder *anthropic.RecordingClient, path string) {
+	if recorder == nil || path == "" {
+		return
+	}
+	if err := recorder.Save(path, "M9 five-axis demo cassette"); err != nil {
+		log.Printf("llm-attacker: save cassette %q: %v", path, err)
+		return
+	}
+	log.Printf("llm-attacker: recorded %d LLM responses to %s (replay with -cassette %s, $0)", recorder.Count(), path, path)
 }
 
 func writeCostOut(path string, res attacker.RunResult) {
