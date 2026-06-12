@@ -8,6 +8,10 @@
 #   ./run-attack.sh --budget 0.50 --max-turns 5  # smallest live smoke
 #   ./run-attack.sh --aggressive               # ask the SERVER to flip to
 #                                              #   single-touch escalation posture
+#   ./run-attack.sh --record FILE              # live run, recorded to a cassette
+#                                              #   (deterministic-replay spine)
+#   ./run-attack.sh --cassette FILE            # REPLAY a cassette: $0, no key,
+#                                              #   deterministic, real recorded cost
 #
 # D6 (both postures demoable): the realistic 3–5-touch escalation is the engine's
 # default; --aggressive trips Tier 2 on the first touch. Tier thresholds live on
@@ -33,6 +37,8 @@ MAX_TURNS=30
 MODEL=claude-opus-4-8
 EFFORT=high
 COST_OUT=/tmp/m9-cost.json
+RECORD=""
+CASSETTE=""
 
 # --- parse flags ---
 while [ $# -gt 0 ]; do
@@ -44,6 +50,8 @@ while [ $# -gt 0 ]; do
     --model)       MODEL="$2"; shift ;;
     --effort)      EFFORT="$2"; shift ;;
     --cost-out)    COST_OUT="$2"; shift ;;
+    --record)      RECORD="$2"; shift ;;
+    --cassette)    CASSETTE="$2"; shift ;;
     -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -73,12 +81,13 @@ if curl -fsS "$TAP_ADDR/healthz" >/dev/null 2>&1; then
   echo "  server tap: healthy"
 else
   echo "  server tap: NOT reachable at $TAP_ADDR/healthz"
-  if [ "$SCRIPTED" -eq 0 ]; then
+  # A cassette replay + a scripted run are $0 (no LLM call); only a live LLM run is paid.
+  if [ "$SCRIPTED" -eq 0 ] && [ -z "$CASSETTE" ]; then
     echo "  refusing to start a paid LLM run against an unverified target." >&2
-    echo "  (use --scripted for a \$0 run, or check the server units / tap binding.)" >&2
+    echo "  (use --scripted or --cassette for a \$0 run, or check the server units / tap binding.)" >&2
     exit 1
   fi
-  echo "  continuing scripted (\$0) run anyway."
+  echo "  continuing \$0 run anyway."
 fi
 
 # --- D6: posture (server-side) ---
@@ -126,16 +135,23 @@ fi
 
 # --- 4. assemble args ---
 ARGS=(-target "$TARGET" -src-ip "$SRC_IP" -tap-addr "$TAP_ADDR" -cost-out "$COST_OUT")
-if [ "$SCRIPTED" -eq 1 ]; then
+if [ -n "$CASSETTE" ]; then
+  # REPLAY: deterministic, $0, no key. The recorded LLM decisions drive real HTTP
+  # requests against the live target (real engine events + attrition); the recorded
+  # Usage drives the real cost meter.
+  [ -f "$CASSETTE" ] || { echo "  cassette not found: $CASSETTE" >&2; exit 1; }
+  ARGS+=(-cassette "$CASSETTE")
+elif [ "$SCRIPTED" -eq 1 ]; then
   ARGS+=(-scripted)
 else
   ARGS+=(-model "$MODEL" -effort "$EFFORT" -hard-cap-usd "$BUDGET" -max-turns "$MAX_TURNS")
+  [ -n "$RECORD" ] && ARGS+=(-record "$RECORD") # capture this live run for deterministic replay
   # key resolution: prefer the EnvironmentFile, else the env var (D4).
   if [ -f "$ETC/anthropic.key" ]; then
     ARGS+=(-key-file "$ETC/anthropic.key")
   elif [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "  no API key: create $ETC/anthropic.key (0600) or export ANTHROPIC_API_KEY" >&2
-    echo "  (or run with --scripted for a \$0 reference trace)" >&2
+    echo "  (or run with --scripted for a \$0 reference trace, or --cassette to replay)" >&2
     exit 1
   fi
 fi
