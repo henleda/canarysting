@@ -30,6 +30,7 @@ SCOPE=$SCOPE
 BASELINE_DB=/var/lib/canarysting/baseline.db
 GROUND_TRUTH=$ETC/ground-truth-registry.json
 DASHBOARD_TAP_ADDR=127.0.0.1:8088
+STING_FLOOR=1
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="
