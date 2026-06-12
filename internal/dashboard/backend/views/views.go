@@ -23,6 +23,7 @@ package views
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/canarysting/canarysting/internal/engine/baseline"
@@ -96,6 +97,12 @@ type Overview struct {
 	// proxy estimate) — the two are shown side by side, never merged. Present is
 	// false until an attack run posts a ledger.
 	RealAttackCost RealAttackCostView `json:"real_attack_cost"`
+
+	// Journey is the current attacker flow's legible ARC — recon -> escalation
+	// (with which axes fired at each tier crossing) -> disengage — as an ordered
+	// timeline, so the CISO sees the cascade as a story, not just a tier-count
+	// snapshot. Pure derivation over the current flow's events; absent if no flow.
+	Journey JourneyView `json:"journey"`
 }
 
 // RealAttackCostView is the M9 real-cost meter. It mirrors the tap's
@@ -153,6 +160,30 @@ type FlowView struct {
 	TouchCount    int       `json:"touch_count"`    // total events for this flow
 	LastSeen      time.Time `json:"last_seen"`
 	SparkSeries   []float64 `json:"spark_series"` // per-event score progression normalized to peak (0..1), timestamp order
+}
+
+// JourneyView is the current attacker flow's legible arc: an ordered sequence of
+// milestones (recon touch -> tier crossings, with the axes that fired -> disengage),
+// derived purely from that flow's events. It turns the tier-count snapshot into the
+// narrative a CISO follows in the demo. Present is false when there is no current flow.
+type JourneyView struct {
+	Present    bool               `json:"present"`
+	FlowIDHex  string             `json:"flow_id_hex"`
+	Milestones []JourneyMilestone `json:"milestones"`       // oldest-first
+	Latest     *JourneyMilestone  `json:"latest,omitempty"` // the "what's happening now" callout (the last milestone)
+}
+
+// JourneyMilestone is one beat in the attacker's arc. AxesFiring lists the OVERLAPPING
+// attrition axes active at a containment/jail crossing (decoded from the triggering
+// event's Sting.Axes via cost.AxesOf) — never a partition. Honest by construction: every
+// milestone traces to a real event; nothing is fabricated.
+type JourneyMilestone struct {
+	OffsetLabel string   `json:"offset_label"` // "−m:ss" relative to now (matches the recon feed)
+	Phase       string   `json:"phase"`        // "recon" | "contained" | "jailed" | "disengaged"
+	Tier        int      `json:"tier"`
+	Title       string   `json:"title"`                 // e.g. "Contained — attrition begins"
+	Detail      string   `json:"detail,omitempty"`      // e.g. "velocity + poison" or the disengage reason
+	AxesFiring  []string `json:"axes_firing,omitempty"` // overlapping axes active at this crossing
 }
 
 // TierStep is one rung of the horizontal tier ladder.
@@ -319,6 +350,7 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		KernelContainment: buildKernelContainment(events),
 		Credibility:       buildCredibility(state, events, calib),
 		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now),
+		Journey:           buildJourney(flow, events, now),
 	}
 	return ov
 }
@@ -394,6 +426,101 @@ func buildFlowView(flowID uint64, grp []intelligence.AdversaryInteractionEvent) 
 		LastSeen:      lastSeen,
 		SparkSeries:   normalizeSpark(rawScores, ordered),
 	}
+}
+
+// Disengage classification mirrors contract.DisengageReason (kept local so views
+// imports no contract package — the same discipline as the TapState mirror). The values
+// are the stable engine enum: 1 attacker, 2 generator-exhausted, 3 defender-capped.
+const (
+	disengageAttacker       = 1
+	disengageGeneratorDone  = 2
+	disengageDefenderCapped = 3
+)
+
+// buildJourney derives the current flow's legible arc from its events: a milestone at
+// each tier CROSSING (with the overlapping axes that fired, decoded from the triggering
+// event's Sting.Axes), plus a final disengage milestone if the flow gave up / was capped.
+// Pure + honest: every milestone traces to a real event. Absent if there is no flow.
+func buildJourney(flow *FlowView, events []intelligence.AdversaryInteractionEvent, now time.Time) JourneyView {
+	if flow == nil {
+		return JourneyView{Present: false}
+	}
+	grp := groupByFlow(events)[flow.FlowID]
+	ordered := append([]intelligence.AdversaryInteractionEvent(nil), grp...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Timestamp.Before(ordered[j].Timestamp) })
+
+	var ms []JourneyMilestone
+	maxTier := -1
+	disengage := 0
+	for _, e := range ordered {
+		// The TERMINAL disengage reason (the latest attrition session's outcome), not
+		// the worst across the flow: ordered is ascending, so the last non-zero
+		// assignment wins. This faithfully reports HOW THE FLOW ENDED — and keeps the
+		// D2-2 honesty (the engine only ever sets DisengageAttacker for a real
+		// attacker-initiated disengage; a cap/generator-end is its own reason).
+		if e.Sting.DisengageReason != 0 {
+			disengage = e.Sting.DisengageReason
+		}
+		if e.Tier > maxTier { // a tier crossing (the highest-tier-so-far advanced)
+			maxTier = e.Tier
+			ms = append(ms, tierMilestone(e, now))
+		}
+	}
+	if m, ok := disengageMilestone(disengage, ordered, now); ok {
+		ms = append(ms, m)
+	}
+
+	jv := JourneyView{Present: true, FlowIDHex: flow.FlowIDHex, Milestones: ms}
+	if len(ms) > 0 {
+		jv.Latest = &ms[len(ms)-1]
+	}
+	return jv
+}
+
+// tierMilestone renders one tier-crossing event into a journey beat. T2/T3 decode the
+// OVERLAPPING axes that fired from the event's Sting.Axes (cost.AxesOf).
+func tierMilestone(e intelligence.AdversaryInteractionEvent, now time.Time) JourneyMilestone {
+	m := JourneyMilestone{OffsetLabel: offsetLabel(-now.Sub(e.Timestamp).Seconds()), Tier: e.Tier}
+	switch e.Tier {
+	case 0:
+		m.Phase, m.Title = "recon", "Probing the negative space"
+	case 1:
+		m.Phase, m.Title = "recon", "Decoy touched — recon surfaced (not yet a verdict)"
+		m.Detail = e.CanaryType
+	case 2:
+		m.Phase, m.Title = "contained", "Contained — inline attrition begins"
+		m.AxesFiring = cost.AxesOf(uint32(e.Sting.Axes))
+		m.Detail = strings.Join(m.AxesFiring, " + ")
+	case 3:
+		m.Phase, m.Title = "jailed", "Jailed in-kernel — socket-cookie precise"
+		m.AxesFiring = cost.AxesOf(uint32(e.Sting.Axes))
+		m.Detail = strings.Join(m.AxesFiring, " + ")
+	default:
+		m.Phase, m.Title = "recon", "Interaction"
+	}
+	return m
+}
+
+// disengageMilestone emits the closing beat IF the flow disengaged. The reason is the
+// engine's honest classification (D2-2): only an attacker-initiated disengage is "gave
+// up"; a defender cap / generator-exhausted is labeled as such, never relabeled.
+func disengageMilestone(reason int, ordered []intelligence.AdversaryInteractionEvent, now time.Time) (JourneyMilestone, bool) {
+	if reason == 0 || len(ordered) == 0 {
+		return JourneyMilestone{}, false
+	}
+	last := ordered[len(ordered)-1]
+	m := JourneyMilestone{OffsetLabel: offsetLabel(-now.Sub(last.Timestamp).Seconds()), Phase: "disengaged", Tier: last.Tier}
+	switch reason {
+	case disengageAttacker:
+		m.Title, m.Detail = "Attacker disengaged", "gave up before any defender bound — the engagement signal"
+	case disengageGeneratorDone:
+		m.Title, m.Detail = "Session ended", "the fake-resource generator reached its bounded end"
+	case disengageDefenderCapped:
+		m.Title, m.Detail = "Defender-capped", "we stopped it (per-flow budget / host ceiling / max-hold)"
+	default:
+		return JourneyMilestone{}, false
+	}
+	return m, true
 }
 
 // normalizeSpark turns the per-event suspicion-score progression (timestamp
