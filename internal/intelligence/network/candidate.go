@@ -14,6 +14,7 @@ type referenceExport struct {
 	HeldBand        int    `egress:"safe,band=0..3,imposed-hold band 0..3 (bucketed seconds); not a raw duration"`
 	DisengagedEarly bool   `egress:"safe,attacker-disengaged-before-cap boolean (the engagement signal)"`
 	PoisonClass     string `egress:"safe,coarse poison reaction class from the closed vocab; stage taxonomy dropped"`
+	CadenceBand     int    `egress:"safe,band=0..3,coarse inter-arrival tempo band (automation vs human-paced); not raw cadence seconds"`
 }
 
 type referenceCandidate struct {
@@ -35,6 +36,7 @@ func ReferenceCandidate() Candidate {
 			HeldBand:        2,
 			DisengagedEarly: true,
 			PoisonClass:     "topology",
+			CadenceBand:     1,
 		},
 		ctx: ContributionContext{Contribute: true, SeenInScopes: aggregationK},
 	}

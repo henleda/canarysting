@@ -23,6 +23,11 @@ type ExportForm struct {
 	HeldBand        int    `egress:"safe,band=0..3,imposed-hold band 0..3 (bucketed seconds); not a raw duration"`
 	DisengagedEarly bool   `egress:"safe,attacker-disengaged-before-cap boolean (the engagement signal)"`
 	PoisonClass     string `egress:"safe,coarse poison reaction class from the closed vocab; stage taxonomy dropped"`
+	// CadenceBand (D6a-signed): the attacker's own coarse probe tempo (automation vs
+	// human-paced) as a 0..3 band, NEVER the raw cadence seconds (a float singles out +
+	// is denied by the kind allowlist). It turns the D5 Similarity kernel's cadence term
+	// from a luck-of-the-draw band-0 coincidence into earned cross-deployment evidence.
+	CadenceBand int `egress:"safe,band=0..3,coarse inter-arrival tempo band (automation vs human-paced); not raw cadence seconds"`
 }
 
 // validPoisonClasses is the closed poison-reaction vocab the egress filter's string
@@ -50,6 +55,7 @@ func (p *Profile) ToExportForm() ExportForm {
 		HeldBand:        heldBand(p.HeldSec),
 		DisengagedEarly: p.DisengagedEarly,
 		PoisonClass:     clampPoisonClass(p.PoisonClass),
+		CadenceBand:     cadenceBand(p.CadenceSec),
 	}
 }
 

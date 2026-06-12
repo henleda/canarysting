@@ -23,29 +23,41 @@ type clearMeta struct {
 	fieldCount   int
 }
 
-// Cleared is the opaque carrier: the ONLY value any future cross-boundary transport
-// (D6) may accept, and the ONLY thing Clear produces. Its fields are UNEXPORTED, so
-// no other package can construct one — the single-chokepoint invariant is enforced by
+// Cleared is the opaque carrier: the ONLY value any cross-boundary transport (D6) may
+// accept, and the ONLY thing Clear / ClearWithLedger produce. Its fields are UNEXPORTED,
+// so no other package can construct one — the single-chokepoint invariant is enforced by
 // the Go type system, not convention. payload holds only value-copied scalars / closed
 // enum strings (never a boxed pointer/slice/map/aliased reference); Marshal re-validates
 // before producing wire bytes (D3).
 type Cleared struct {
 	payload map[string]any
 	meta    clearMeta
+	// ledgerVerified is true ONLY for a carrier produced by ClearWithLedger, where the
+	// k-anonymity count was computed INSIDE the chokepoint from the cross-scope ledger
+	// (D6c/D6d). A form-only Clear() carrier leaves it false and CANNOT be Marshaled to
+	// the wire — so a producer-asserted count can never cross (the closed known-gap).
+	ledgerVerified bool
 }
 
-// Clear is the single default-deny egress chokepoint (rule 9; INTELLIGENCE.md §2/§7).
-// It returns (nil, err) — all-or-nothing (D8) — on ANY untagged, wrong-kind,
-// identity-named, blocked, denylisted-type, un-opted-in, or sub-k candidate. A non-nil
-// *Cleared is the ONLY value cross-boundary transport may accept. It does NOT coarsen
-// (that is the producer's ExportForm, upstream); it is the independent GATE.
+// Clear is the FORM-LEVEL egress validator (rule 9; INTELLIGENCE.md §2/§7) — the
+// "reference/form-only" path (D6d). It returns (nil, err) — all-or-nothing (D8) — on
+// ANY untagged, wrong-kind, identity-named, blocked, denylisted-type, un-opted-in, or
+// sub-k candidate, and is used by profile.ValidateProfileForSharing to prove an export
+// FORM is constructible. Its carrier is NOT ledger-verified and therefore CANNOT be
+// Marshaled to the wire: a REAL cross-deployment crossing MUST go through
+// ClearWithLedger, where the k-anonymity count is computed inside the chokepoint from
+// the cross-scope ledger (the producer can no longer assert the count — D6c/D6d). It
+// does NOT coarsen (that is the producer's ExportForm, upstream); it is the independent
+// GATE.
 func Clear(c Candidate) (*Cleared, error) {
 	if c == nil {
 		return nil, fmt.Errorf("egress: nil candidate")
 	}
 	export, ctx := c.EgressFields()
 
-	// Candidate-level preconditions the field walk cannot see (§1.4).
+	// Candidate-level preconditions the field walk cannot see (§1.4). Clear keeps the
+	// producer-supplied k check as a FORM-level sanity only; the authoritative,
+	// transmittable k comes from the ledger via ClearWithLedger.
 	if !ctx.Contribute {
 		return nil, fmt.Errorf("egress: scope has not opted in to contribute")
 	}
@@ -53,6 +65,55 @@ func Clear(c Candidate) (*Cleared, error) {
 		return nil, fmt.Errorf("egress: pattern seen in %d scope(s) < k=%d (singling-out risk)", ctx.SeenInScopes, aggregationK)
 	}
 
+	payload, err := clearFields(export)
+	if err != nil {
+		return nil, err
+	}
+	return &Cleared{payload: payload, meta: clearMeta{seenInScopes: ctx.SeenInScopes, fieldCount: len(payload)}}, nil
+}
+
+// ClearWithLedger is the PRODUCTION egress path for a cross-deployment crossing (D6d).
+// Unlike Clear, the k-anonymity count is COMPUTED INSIDE the chokepoint from the
+// package's own cross-scope ledger (never producer-asserted), keyed on the COARSE
+// CLEARED TUPLE that actually crosses (D6c) — so "seen in >= k scopes" refers to the
+// exact wire unit. The producer MUST NOT supply ctx.SeenInScopes (asserted-zero
+// tripwire). Only the carrier this returns is ledger-verified and therefore Marshalable.
+func ClearWithLedger(c Candidate, lc ClearContext) (*Cleared, error) {
+	if c == nil {
+		return nil, fmt.Errorf("egress: nil candidate")
+	}
+	export, ctx := c.EgressFields()
+
+	if !ctx.Contribute {
+		return nil, fmt.Errorf("egress: scope has not opted in to contribute")
+	}
+	// Tripwire: the count is the ledger's job. A producer that set it is a bug (or an
+	// attempt to invert the gate) — fail closed and say so (D6d).
+	if ctx.SeenInScopes != 0 {
+		return nil, fmt.Errorf("egress: producer supplied SeenInScopes=%d; the count is computed by the cross-scope ledger (tripwire)", ctx.SeenInScopes)
+	}
+	if lc.Ledger == nil {
+		return nil, fmt.Errorf("egress: no cross-scope ledger (cannot establish k-anonymity provenance)")
+	}
+
+	payload, err := clearFields(export)
+	if err != nil {
+		return nil, err
+	}
+	// Key the count on EXACTLY what cleared (the coarse tuple), so the counted unit ==
+	// the wire unit (D6c). The raw BehavioralHash never enters this path.
+	n := lc.Ledger.distinctScopes(coarseKeyFromPayload(payload))
+	if n < aggregationK {
+		return nil, fmt.Errorf("egress: pattern seen in %d scope(s) < k=%d (singling-out risk)", n, aggregationK)
+	}
+	return &Cleared{payload: payload, meta: clearMeta{seenInScopes: n, fieldCount: len(payload)}, ledgerVerified: true}, nil
+}
+
+// clearFields is the shared reflect field-walk: it coarse-validates an export struct
+// into a scalar payload, or errors (all-or-nothing, D8). It does NOT check the
+// candidate-level opt-in / k-anonymity (those are the callers' job). Both Clear and
+// ClearWithLedger run it, so the field-level guarantees are identical on both paths.
+func clearFields(export any) (map[string]any, error) {
 	rv := reflect.ValueOf(export)
 	for rv.Kind() == reflect.Ptr {
 		if rv.IsNil() {
@@ -63,7 +124,6 @@ func Clear(c Candidate) (*Cleared, error) {
 	if rv.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("egress: export must be a struct, got %s", rv.Kind())
 	}
-
 	payload := map[string]any{}
 	if err := clearStruct(rv, "", payload); err != nil {
 		return nil, err
@@ -71,7 +131,7 @@ func Clear(c Candidate) (*Cleared, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("egress: candidate cleared no fields (nothing to share)")
 	}
-	return &Cleared{payload: payload, meta: clearMeta{seenInScopes: ctx.SeenInScopes, fieldCount: len(payload)}}, nil
+	return payload, nil
 }
 
 // clearStruct recursively validates every exported field of a struct (D2). Any field
@@ -184,6 +244,11 @@ func (c *Cleared) Marshal() ([]byte, error) {
 		default:
 			return nil, fmt.Errorf("egress: payload field %q holds non-scalar %T (carrier breach)", k, v)
 		}
+	}
+	// Only a ledger-verified carrier may cross the wire: a form-only Clear() result has
+	// no real k-anonymity provenance, so it must not be transmittable (D6c/D6d).
+	if !c.ledgerVerified {
+		return nil, fmt.Errorf("egress: carrier is form-only (not ledger-verified); cross-deployment transport requires ClearWithLedger")
 	}
 	return json.Marshal(c.payload)
 }

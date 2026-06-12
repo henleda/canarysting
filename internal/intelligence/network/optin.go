@@ -8,11 +8,12 @@ type ContributionContext struct {
 	// Contribute is the per-deployment opt-in to CONTRIBUTE patterns. Default false:
 	// an un-opted-in scope produces nothing and is therefore unidentifiable (§5.4).
 	Contribute bool
-	// SeenInScopes is how many distinct scopes exhibited this pattern. Today it is
-	// producer-asserted; D6's cross-scope ledger will compute it. Until then the
-	// k-gate is encoded but its enforcement is only as sound as the count's
-	// provenance (D6 known-gap) — and nothing actually transmits a *Cleared yet, so
-	// no leak can occur regardless.
+	// SeenInScopes is a producer-asserted count consulted ONLY by the form-level Clear
+	// (a sanity check whose carrier cannot cross). The REAL cross-deployment path,
+	// ClearWithLedger, IGNORES this field and computes the count INSIDE the chokepoint
+	// from the cross-scope Ledger (D6c/D6d) — and treats a non-zero value here as a
+	// tripwire (a producer must not assert the count). The D6 known-gap is closed: a
+	// producer-asserted count can no longer produce a transmittable carrier.
 	SeenInScopes int
 }
 

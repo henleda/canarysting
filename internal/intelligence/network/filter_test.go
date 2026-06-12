@@ -40,16 +40,41 @@ func TestClearHappyPath(t *testing.T) {
 	if err != nil || c == nil {
 		t.Fatalf("reference candidate must clear: %v", err)
 	}
+	if len(c.Fields()) != 7 {
+		t.Fatalf("cleared %d fields, want 7: %v", len(c.Fields()), c.Fields())
+	}
+	// A form-only Clear() carrier is NOT transmittable (D6d): it has no ledger-backed
+	// k-anonymity provenance.
+	if _, err := c.Marshal(); err == nil {
+		t.Fatal("form-only Clear() carrier must not Marshal (not ledger-verified)")
+	}
+}
+
+// The real crossing path: ClearWithLedger over a ledger driven to k>=3 produces a
+// ledger-verified, Marshalable carrier that round-trips the 7 coarse fields.
+func TestClearWithLedgerHappyPath(t *testing.T) {
+	l, err := NewLedger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	export, _ := ReferenceCandidate().EgressFields()
+	for _, scope := range []string{"scope-a", "scope-b", "scope-c"} {
+		if _, err := l.RecordForm(scope, export); err != nil {
+			t.Fatalf("RecordForm(%s): %v", scope, err)
+		}
+	}
+	// The producer asserts NO count (tripwire): Contribute only, SeenInScopes 0.
+	c, err := ClearWithLedger(cand{export: export, ctx: ContributionContext{Contribute: true}}, ClearContext{Ledger: l})
+	if err != nil || c == nil {
+		t.Fatalf("k>=3 pattern must clear via the ledger: %v", err)
+	}
 	b, err := c.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if len(c.Fields()) != 6 {
-		t.Fatalf("cleared %d fields, want 6: %v", len(c.Fields()), c.Fields())
-	}
 	var round map[string]any
-	if json.Unmarshal(b, &round) != nil || len(round) != 6 {
-		t.Fatalf("marshalled payload did not round-trip: %s", b)
+	if json.Unmarshal(b, &round) != nil || len(round) != 7 {
+		t.Fatalf("marshalled payload did not round-trip 7 fields: %s", b)
 	}
 }
 
@@ -183,13 +208,15 @@ func TestOptInAndKAnonymity(t *testing.T) {
 
 func TestCarrierSerializationGated(t *testing.T) {
 	// A Cleared whose payload was somehow seeded with a non-scalar must fail Marshal —
-	// the carrier is part of the chokepoint, not a second egress surface.
-	bad := &Cleared{payload: map[string]any{"leak": []byte("raw")}}
+	// the carrier is part of the chokepoint, not a second egress surface. ledgerVerified
+	// is set so the carrier-breach (scalar) check is what rejects it, not the form-only
+	// gate.
+	bad := &Cleared{payload: map[string]any{"leak": []byte("raw")}, ledgerVerified: true}
 	if _, err := bad.Marshal(); err == nil {
 		t.Fatal("Marshal must reject a non-scalar payload entry (carrier breach)")
 	}
 	ptr := 7
-	bad2 := &Cleared{payload: map[string]any{"leak": &ptr}}
+	bad2 := &Cleared{payload: map[string]any{"leak": &ptr}, ledgerVerified: true}
 	if _, err := bad2.Marshal(); err == nil {
 		t.Fatal("Marshal must reject a pointer payload entry")
 	}
