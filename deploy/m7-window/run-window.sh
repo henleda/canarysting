@@ -25,12 +25,20 @@ sudo install -m0755 /tmp/envoy-adapter "$BIN/envoy-adapter"
 sudo install -m0644 deploy/m7-window/ground-truth-registry.json "$ETC/ground-truth-registry.json"
 
 echo "=== write /etc/canarysting/m7.env ==="
+# The dashboard tap must bind the host's PRIVATE VPC IP (not loopback) so the CLIENT box
+# + the M9 attacker (-tap-addr) and the dashboard-backend can reach it cross-host. Derive
+# it from IMDSv2 (the box is IMDSv2-only), falling back to the first hostname -I address.
+TAP_TOKEN="$(curl -s -m2 -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null)"
+PRIVATE_IP="$(curl -s -m2 -H "X-aws-ec2-metadata-token: $TAP_TOKEN" http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null)"
+[ -z "$PRIVATE_IP" ] && PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+echo "  tap will bind the private IP: ${PRIVATE_IP}:8088"
 sudo tee "$ETC/m7.env" >/dev/null <<EOF
 SCOPE=$SCOPE
 BASELINE_DB=/var/lib/canarysting/baseline.db
 GROUND_TRUTH=$ETC/ground-truth-registry.json
-DASHBOARD_TAP_ADDR=127.0.0.1:8088
+DASHBOARD_TAP_ADDR=${PRIVATE_IP}:8088
 STING_FLOOR=1
+DEMO_FLOOR_FLAG=
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="

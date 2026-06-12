@@ -26,10 +26,13 @@ MODE="${1:?usage: set-demo-posture.sh [demo|default|aggressive]}"
 ETC=/etc/canarysting
 ENVFILE="$ETC/m7.env"
 
+# Three modes set three knobs: STING_FLOOR (adapter axes), AGGRESSIVE_FLAG (engine tier
+# thresholds), DEMO_FLOOR_FLAG (relax the baseline calendar-day-span gates so M goes live
+# before the production 7-day floor — disclosed, demo only).
 case "$MODE" in
-  demo)       STING_FLOOR=2; AGG="" ;;
-  default)    STING_FLOOR=1; AGG="" ;;
-  aggressive) STING_FLOOR=2; AGG="-aggressive" ;;
+  demo)       STING_FLOOR=2; AGG="";            DFLOOR="-demo-data-floor" ;;
+  default)    STING_FLOOR=1; AGG="";            DFLOOR="" ;;
+  aggressive) STING_FLOOR=2; AGG="-aggressive"; DFLOOR="-demo-data-floor" ;;
   *) echo "unknown mode: $MODE (want: demo|default|aggressive)" >&2; exit 2 ;;
 esac
 
@@ -47,8 +50,9 @@ setenv() {
 
 setenv STING_FLOOR "$STING_FLOOR"
 setenv AGGRESSIVE_FLAG "$AGG"
+setenv DEMO_FLOOR_FLAG "$DFLOOR"
 
-echo "=== posture '$MODE': STING_FLOOR=$STING_FLOOR (1=moderate,2=aggressive/all-5-axes) AGGRESSIVE_FLAG='$AGG' ==="
+echo "=== posture '$MODE': STING_FLOOR=$STING_FLOOR (1=moderate,2=aggressive/all-5-axes) AGGRESSIVE_FLAG='$AGG' DEMO_FLOOR_FLAG='$DFLOOR' ==="
 echo "=== restarting engine + adapter (baseline DB persists; calibration evidence re-accrues) ==="
 sudo systemctl restart canarysting-staged-range.service
 sleep 2

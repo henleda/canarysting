@@ -21,6 +21,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -46,6 +47,7 @@ func main() {
 		windowBucketer = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
 		maxGap         = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot")
 		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
+		demoFloor      = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
 
 		tapAddr = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
 
@@ -66,6 +68,11 @@ func main() {
 		log.Fatalf("staged-range: %v", err)
 	}
 
+	floor := buildDataFloor(*demoFloor, *maxGap)
+	if *demoFloor {
+		log.Printf("staged-range: ⚠ DEMO DATA FLOOR ACTIVE — calendar-day-span gates relaxed (MinCalendarDays=2, MinDaysPerBucket=1, MinSufficientBuckets=1); the volume/population gates are UNCHANGED. This is NOT the production 7-calendar-day floor; demo only.")
+	}
+
 	built, err := boot.Build(boot.Options{
 		Boundary:              *boundary,
 		Window:                *window,
@@ -74,7 +81,7 @@ func main() {
 		BaselineDBPath:        *baselineDB,
 		ObserveCgroup:         *observeCgroup,
 		CoarseBucketer:        *windowBucketer,
-		Floor:                 observebaseline.DataFloor{MaxCoverageGap: *maxGap},
+		Floor:                 floor,
 		ResetOnSchemaMismatch: *resetSchema,
 	}, observe.PlatformObserver())
 	if err != nil {
@@ -158,4 +165,21 @@ func serveGRPC(addr string, eng contract.Engine, reporter contract.OutcomeReport
 	enginegrpc.Register(s, eng, reporter)
 	log.Printf("staged-range: gRPC Engine service listening on %s", addr)
 	return s.Serve(lis)
+}
+
+// buildDataFloor returns the eBPF data floor for this run. The zero fields are filled
+// with the genuine production defaults by DataFloor.Normalized() in the aggregator
+// (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50, MinCalendarDays=7).
+// When demo is true it relaxes ONLY the calendar-DAY-SPAN gates so the multiplier can go
+// live before the production 7-calendar-day floor — the VOLUME/POPULATION/statistical
+// gates are left zero (=> genuine defaults), so the baseline is still real (100+ flows,
+// 2+ callers, 50+ P² samples per bucket), just accrued over fewer days. Demo only.
+func buildDataFloor(demo bool, maxGap time.Duration) observebaseline.DataFloor {
+	f := observebaseline.DataFloor{MaxCoverageGap: maxGap}
+	if demo {
+		f.MinCalendarDays = 2
+		f.MinDaysPerBucket = 1
+		f.MinSufficientBuckets = 1
+	}
+	return f
 }
