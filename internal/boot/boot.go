@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/canarysting/canarysting/bpf/observe"
@@ -38,6 +39,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/engine/tiers"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
+	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
 )
 
 // Options configures the composition.
@@ -74,6 +76,7 @@ type Built struct {
 	Malicious       *observebaseline.MaliciousSet // nil if observe disabled
 	Events          *boltevents.Store             // nil if no DB
 	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
+	Sharpen         *sharpen.Store                // D5-Phase-2 confirmed-malicious matcher; nil if no DB
 
 	observer observe.Observer
 }
@@ -95,7 +98,16 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	if opts.CoarseBucketer {
 		bucketer = baseline.WindowBucketer
 	}
+	// D5-Phase-2: opt into detection sharpening at the composition root. The library
+	// DefaultParams stays α=0 (the safe default for callers/tests + the reconstruction
+	// paths without a matcher); here we set α so a confirmed-malicious fingerprint match
+	// can lift M. α is inert until BOTH a Matcher is wired (below, only with the DB) AND
+	// a scope has ≥MinConfirmedJails confirmed jails — match is 0 otherwise, leaving M
+	// byte-identical to the pre-D5 baseline.
+	bparams := baseline.DefaultParams()
+	bparams.SharpeningAlpha = baseline.DefaultSharpeningAlpha
 	base := baseline.New(baseline.Config{
+		Params:     bparams,
 		Bucketer:   bucketer,
 		Calibrated: func(s contract.ScopeKey) bool { return calib.State(s).Calibrated },
 	})
@@ -133,6 +145,17 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		}
 		b.Persist = store
 		b.Events = boltevents.New(store)
+		// D5-Phase-2: the confirmed-malicious profile store reads flow events from the
+		// durable EventStore and structurally satisfies baseline.Matcher. Wired only
+		// with the DB present (it needs the event source); it is fed jail outcomes from
+		// the capturingEngine (a Tier-3 verdict at Submit, recorded once the amended
+		// five-axis outcome lands at ReportOutcome). Match cold-scope-short-circuits to 0
+		// until a scope has confirmed jails, so the hot path is unaffected. NOTE: the
+		// store is currently IN-MEMORY — the confirmed-malicious set rebuilds from new
+		// jails after a restart (bbolt persistence is a documented fast-follow; the live
+		// passive window has no jails, and a demo accrues the set in-session).
+		b.Sharpen = sharpen.NewStore(b.Events)
+		base.UseMatcher(b.Sharpen)
 	}
 
 	// The OBSERVE-ONLY baseline path is wired only when a cgroup is given (i.e. on
@@ -190,7 +213,7 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator}
+		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}}
 		b.Engine = ce
 		b.OutcomeReporter = ce // the same capturing layer amends the durable store
 	} else {
@@ -239,10 +262,27 @@ func (b *Built) closePartial() {
 // EventStore, attaching the derived feature vector. It is the production D1
 // capture seam and contains no staging logic.
 type capturingEngine struct {
-	inner  contract.Engine
-	events *boltevents.Store
-	agg    *observebaseline.Aggregator
+	inner   contract.Engine
+	events  *boltevents.Store
+	agg     *observebaseline.Aggregator
+	sharpen *sharpen.Store // D5-Phase-2: fed jail outcomes; nil if no DB
+
+	// pendingJails bridges the two halves of a jail (D5-2): Submit knows the TIER
+	// (v.Tier==TierJail) but the flow's StingOutcome is still zero then (attrition
+	// runs later, adapter-side); ReportOutcome carries the AMENDED five-axis outcome
+	// but no tier. So Submit marks the jailed cookie here, and ReportOutcome — after
+	// AmendOutcome has written the real outcome — drains it into RecordJail, so the
+	// confirmed-malicious profile is derived from events that carry the full attrition
+	// signature. Bounded (maxPendingJails) so async/kernel jails that never report an
+	// outcome cannot leak it unboundedly.
+	mu           sync.Mutex
+	pendingJails map[uint64]struct{} // jailed flow cookies awaiting their outcome
 }
+
+// maxPendingJails bounds pendingJails: a Tier-3 jail enforced async/in-kernel may
+// never report an inline outcome, leaving its cookie pending. Past this cap we stop
+// marking (a missed sharpen is acceptable; an unbounded map is not).
+const maxPendingJails = 4096
 
 func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
 	v, err := e.inner.Submit(ev)
@@ -256,6 +296,20 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 		}
 	}
 	_ = e.events.CaptureVerdict(ev, v, feats)
+	// D5-Phase-2: a Tier-3 (jail) verdict is confirmed-malicious ground truth. We do
+	// NOT record the profile here — at Submit time the flow's StingOutcome is still
+	// zero (attrition runs later, adapter-side), so the derived profile would lack the
+	// five-axis engagement signature. Instead mark the cookie pending; ReportOutcome
+	// records it once the real outcome has been amended in (the D5-2 ReportOutcome path).
+	// Rule 8: this only records evidence + later moves M; it never triggers a jail —
+	// the jail was the engine's own Tier-3 decision on real canary touches.
+	if v.Tier == contract.TierJail && e.sharpen != nil {
+		e.mu.Lock()
+		if len(e.pendingJails) < maxPendingJails {
+			e.pendingJails[ev.Flow.SocketCookie] = struct{}{}
+		}
+		e.mu.Unlock()
+	}
 	return v, err
 }
 
@@ -265,5 +319,22 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 // satisfies contract.OutcomeReporter so the gRPC server can route ReportOutcome
 // here without importing intelligence.
 func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
-	return e.events.AmendOutcome(rec)
+	err := e.events.AmendOutcome(rec)
+	// D5-Phase-2: if this outcome belongs to a flow that was jailed (marked pending by
+	// Submit), the durable events now carry the amended five-axis outcome — so derive
+	// and record the confirmed-malicious profile NOW (rule 8: records evidence only).
+	// Only fires for a previously-jailed cookie, and AFTER AmendOutcome has run, so the
+	// profile reflects the full attrition signature.
+	if e.sharpen != nil {
+		e.mu.Lock()
+		_, jailed := e.pendingJails[rec.SocketCookie]
+		if jailed {
+			delete(e.pendingJails, rec.SocketCookie)
+		}
+		e.mu.Unlock()
+		if jailed {
+			e.sharpen.RecordJail(rec.Scope, contract.FlowIdentity{SocketCookie: rec.SocketCookie}, time.UnixMilli(rec.TimestampUnixMs))
+		}
+	}
+	return err
 }
