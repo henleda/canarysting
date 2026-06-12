@@ -31,6 +31,13 @@ type Ledger struct {
 	mu   sync.RWMutex
 	seen map[coarseKey]map[scopeBucket]struct{}
 	salt []byte // process-local; never crosses, never persisted as plaintext
+	// enrolled is non-nil ONLY for a central-aggregator ledger (D6-3 / D63e): the
+	// cross-scope ingest counts a remote scope's confirmation toward k ONLY if its token
+	// passes this check. nil for a normal per-deployment ledger (which records only its
+	// OWN local jails via RecordForm — no Sybil concern within one deployment). Making the
+	// allowlist a CONSTRUCTOR dependency (not a caller if-check) is what keeps a forged /
+	// un-enrolled token from inflating k.
+	enrolled func(token string) bool
 }
 
 // scopeBucket is an HMAC(salt, ScopeKey) truncation: distinct iff the scopes are
@@ -67,6 +74,45 @@ func NewLedger() (*Ledger, error) {
 		return nil, fmt.Errorf("network: ledger salt: %w", err)
 	}
 	return &Ledger{seen: map[coarseKey]map[scopeBucket]struct{}{}, salt: salt}, nil
+}
+
+// NewAggregatorLedger builds the D6-3 CENTRAL AGGREGATOR's ledger (D63a): the one ledger
+// the N contributing deployments file-spool confirmations to. It counts a remote scope's
+// confirmation toward k ONLY if its token passes `enrolled` (D63e — the allowlist is a
+// CONSTRUCTOR dependency, so a forged/un-enrolled token can NEVER fabricate distinct
+// scopes to force a sub-k pattern across). enrolled must be non-nil. The k it produces is
+// "k distinct ENROLLED tokens" = "k deployments the operator VOUCHES for" (D63f —
+// operator-trusted, NOT Sybil-resistant; untrusted-contributor auth is D7).
+func NewAggregatorLedger(enrolled func(token string) bool) (*Ledger, error) {
+	if enrolled == nil {
+		return nil, fmt.Errorf("network: aggregator ledger requires an enrollment check (D63e)")
+	}
+	l, err := NewLedger()
+	if err != nil {
+		return nil, err
+	}
+	l.enrolled = enrolled
+	return l, nil
+}
+
+// IngestConfirmation records a remote scope's confirmation of a coarse pattern into THIS
+// aggregator ledger, counting it toward k ONLY if `token` is enrolled (D63e). It is the
+// ONLY cross-scope write path; the local-jail RecordForm path is unchanged. The token is
+// bucketed under the aggregator's own salt (so distinct enrolled tokens => distinct
+// buckets => the count), and the pattern is the already-validated coarse shape. Returns
+// the new distinct-token count for the cell, or an error if this is not an aggregator
+// ledger or the token is not enrolled (the caller logs + skips — never silently counts).
+func (l *Ledger) IngestConfirmation(token string, sp SharedPattern) (int, error) {
+	if l == nil {
+		return 0, fmt.Errorf("network: nil ledger")
+	}
+	if l.enrolled == nil {
+		return 0, fmt.Errorf("network: not an aggregator ledger (use NewAggregatorLedger)")
+	}
+	if token == "" || !l.enrolled(token) {
+		return 0, fmt.Errorf("network: scope token not enrolled")
+	}
+	return l.RecordForm(token, ExportFormFromShared(sp))
 }
 
 // bucket reduces a ScopeKey to its opaque, salted bucket. Pure given the salt.

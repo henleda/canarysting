@@ -146,3 +146,36 @@ func ParseSharedPattern(b []byte) (SharedPattern, error) {
 	sp.PoisonClass = pc
 	return sp, nil
 }
+
+// referenceExportFromShared rebuilds the tagged 7-field egress export struct from a
+// validated inbound SharedPattern. It is the D6-3 RE-ENTRY shape: the aggregator uses it
+// to derive the SAME coarseKey the contributor's pattern has (coarseKeyFromExport ->
+// clearFields -> coarseKeyFromPayload — identical to ClearWithLedger's own derivation, so
+// the cross-scope count and the egress key agree) and to re-enter the UNCHANGED
+// ClearWithLedger. network owns this shape (referenceExport), so network never imports
+// profile.
+func referenceExportFromShared(sp SharedPattern) referenceExport {
+	return referenceExport{
+		ReachedContain:  sp.ReachedContain,
+		EngagedVelocity: sp.EngagedVelocity,
+		EngagedPoison:   sp.EngagedPoison,
+		HeldBand:        sp.HeldBand,
+		DisengagedEarly: sp.DisengagedEarly,
+		PoisonClass:     sp.PoisonClass,
+		CadenceBand:     sp.CadenceBand,
+	}
+}
+
+// ExportFormFromShared returns the tagged coarse export VALUE for a validated inbound
+// SharedPattern, for the ledger's coarseKey derivation (RecordForm/IngestConfirmation).
+// Returned as `any` because the concrete shape is network-internal.
+func ExportFormFromShared(sp SharedPattern) any { return referenceExportFromShared(sp) }
+
+// SharedCandidate wraps a validated inbound SharedPattern as a Candidate for the UNCHANGED
+// ClearWithLedger: opted-in, with NO producer count (SeenInScopes 0 — the count comes from
+// the aggregator's ledger, and 0 satisfies the assert-zero tripwire). It is used ONLY by
+// the aggregator to re-clear a cross-scope-confirmed pattern; it is NOT a *Cleared
+// (ClearWithLedger remains the sole constructor of a transmittable carrier).
+func SharedCandidate(sp SharedPattern) Candidate {
+	return referenceCandidate{export: referenceExportFromShared(sp), ctx: ContributionContext{Contribute: true}}
+}

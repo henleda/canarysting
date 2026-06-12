@@ -21,3 +21,8 @@ type ContributionContext struct {
 // is a package CONSTANT, never producer-supplied; k=1 would be singling-out. The
 // cross-scope count is computed by D6's ledger; this gate only checks it.
 const aggregationK = 3
+
+// AggregationThreshold is the EXPORTED value of aggregationK, so a caller (e.g. the D6-3
+// cross-scope aggregator) can name the crossing threshold for logging/config without the
+// constant becoming mutable or producer-supplied.
+const AggregationThreshold = aggregationK

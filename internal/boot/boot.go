@@ -21,6 +21,7 @@ package boot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -76,6 +77,13 @@ type Options struct {
 	// SharedSpoolPath, when Consume is set, is the NDJSON spool of cleared patterns to
 	// load at boot (D6f file transport). "" => consume nothing.
 	SharedSpoolPath string
+	// ScopeToken is this deployment's OPAQUE, random, aggregator-issued cross-scope token
+	// (D63b) — NEVER the raw ScopeKey. When Contribute is set + ConfirmSpoolPath is given,
+	// each local Tier-3 jail emits a confirmation under this token to the D6-3 aggregator.
+	ScopeToken string
+	// ConfirmSpoolPath, when Contribute is set + ScopeToken is given, is the NDJSON
+	// confirmation spool (this deployment -> the central aggregator, D6-3). "" => emit none.
+	ConfirmSpoolPath string
 }
 
 // Built holds the composed engine and the handles a binary wires further or
@@ -260,6 +268,12 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
 		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
+		// D6-3: emit cross-scope confirmations to the central aggregator on each local
+		// jail, only when contributing + a token + a spool path are all configured.
+		if opts.Contribute && opts.ConfirmSpoolPath != "" && opts.ScopeToken != "" {
+			ce.confirmSpool = transport.NewConfirmSpool(opts.ConfirmSpoolPath)
+			ce.scopeToken = opts.ScopeToken
+		}
 		b.Engine = ce
 		b.OutcomeReporter = ce // the same capturing layer amends the durable store
 	} else {
@@ -329,6 +343,11 @@ type capturingEngine struct {
 	// Nothing crosses until that pattern reaches k>=3 distinct scopes (the egress gate).
 	ledger     *network.Ledger // nil if no DB or the CSPRNG was unavailable (fail-closed)
 	contribute bool
+
+	// D6-3 cross-scope emit: on a local jail, also confirm the coarse pattern to the
+	// central aggregator under this deployment's opaque token. nil/empty => no emit.
+	confirmSpool *transport.ConfirmSpool
+	scopeToken   string
 }
 
 // maxPendingJails bounds pendingJails: a Tier-3 jail enforced async/in-kernel may
@@ -417,6 +436,15 @@ func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
 			// (no second query). Recording is NOT an export — nothing crosses here.
 			if p != nil && e.contribute && e.ledger != nil {
 				_, _ = e.ledger.RecordForm(string(rec.Scope), p.ToExportForm())
+			}
+			// D6-3 (cross-scope ingest): ALSO emit a confirmation to the central
+			// aggregator under this deployment's OPAQUE token — never the raw ScopeKey
+			// (D63b). The confirmation carries the same coarse cleared pattern; the
+			// aggregator re-validates it + counts distinct enrolled tokens toward k.
+			if p != nil && e.confirmSpool != nil && e.scopeToken != "" {
+				if b, mErr := json.Marshal(p.ToExportForm()); mErr == nil {
+					_ = e.confirmSpool.SendConfirmation(e.scopeToken, b)
+				}
 			}
 		}
 	}
