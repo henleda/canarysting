@@ -42,6 +42,7 @@ func main() {
 		grpcAddr       = flag.String("grpc-addr", ":50052", "serve the Engine over gRPC at this address")
 		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (cold-start escalation)")
 		containInline  = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
+		jailInline     = flag.Bool("jail-inline", false, "make Tier 3 (Jail) INLINE so the jailed flow's attrition outcome is reported back — which drains the pending jail into RecordJail and emits the D6-3 cross-scope confirmation. Default off (async kernel jail). For STAGED CONTRIBUTOR scopes that must emit confirmations (an async kernel jail drops the socket before any outcome is reported).")
 		baselineDB     = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store")
 		observeCgroup  = flag.String("observe-cgroup", "", "cgroup v2 path to attach the OBSERVE-ONLY baseline path")
 		windowBucketer = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
@@ -98,6 +99,7 @@ func main() {
 		Window:                *window,
 		Aggressive:            *aggressive,
 		ContainInline:         *containInline,
+		JailInline:            *jailInline,
 		BaselineDBPath:        *baselineDB,
 		ObserveCgroup:         *observeCgroup,
 		CoarseBucketer:        *windowBucketer,

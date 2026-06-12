@@ -56,7 +56,16 @@ type Options struct {
 	// outcome reported back) instead of the default async kernel-enforced path.
 	// Tier 3 (Jail) stays async (kernel-enforced). Mode is operator-choosable only
 	// for the action tiers (tiers.Config.Validate), so this is a legal config.
-	ContainInline  bool
+	ContainInline bool
+	// JailInline makes Tier 3 (Jail) verdicts INLINE (instead of the default async
+	// kernel-jail) so the adapter runs the attrition pump for the jailed flow and
+	// REPORTS its outcome — which is what drains the pending jail into RecordJail
+	// (D5-2) and emits the cross-scope confirmation (D6-3). Without it an async
+	// kernel jail drops the socket before any outcome is reported, so a contributing
+	// scope never emits a confirmation. For STAGED CONTRIBUTOR scopes; the
+	// production/server kernel-jail-precision path leaves this off. Validate()
+	// permits Mode on the action tiers.
+	JailInline     bool
 	BaselineDBPath string // bbolt path; "" => no durability (in-memory baseline)
 	ObserveCgroup  string // cgroup v2 path; "" => observe disabled (touch-only, M=1)
 	CoarseBucketer bool   // true => WindowBucketer (M7 window); false => DefaultBucketer (production)
@@ -249,6 +258,12 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		// Tier 2 inline => the adapter runs the attrition pump (M6). Tier 3 stays
 		// async (kernel jail). Validate() permits Mode on the action tiers.
 		tierCfg.Mode[contract.TierContain] = contract.ModeInline
+	}
+	if opts.JailInline {
+		// Tier 3 inline => the jailed flow's attrition outcome is reported back, which
+		// drains the pending jail into RecordJail (D5-2) and emits the D6-3 confirmation.
+		// Without this an async kernel jail swallows the outcome and nothing crosses.
+		tierCfg.Mode[contract.TierJail] = contract.ModeInline
 	}
 
 	eng, err := engine.New(engine.Config{
