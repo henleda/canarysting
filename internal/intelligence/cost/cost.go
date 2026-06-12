@@ -22,6 +22,21 @@ var axisBits = [NumAxes]contract.AttritionAxis{
 	contract.AxisExploitBurn, contract.AxisOpExposure,
 }
 
+// AxesOf decodes a StingOutcome.Axes bitset into the ordered axis NAMES it fired
+// (OVERLAPPING — an interaction lands on every axis its mechanism imposed). It lets a
+// read-view (e.g. the dashboard's attacker-journey ribbon) label "which axes fired at
+// this event" without importing contract, reusing the same bit order as the rollup.
+func AxesOf(axes uint32) []string {
+	a := contract.AttritionAxis(axes)
+	var out []string
+	for i := 0; i < NumAxes; i++ {
+		if a&axisBits[i] != 0 {
+			out = append(out, AxisNames[i])
+		}
+	}
+	return out
+}
+
 // Summary is the board-level attacker-cost rollup (docs/INTELLIGENCE.md §5.3)
 // plus the response-tier distribution, computed over ONE scope's interaction
 // events. The framing is OPPORTUNITY COST on a velocity-dependent adversary, not a

@@ -200,6 +200,17 @@ export const fixtureOverview: Overview = {
     hard_cap_usd: 5.0,
     cap_fraction: 0.462,
   },
+  journey: {
+    present: true,
+    flow_id_hex: '0x5713c0ffee',
+    milestones: [
+      { offset_label: '−2:40', phase: 'recon', tier: 1, title: 'Decoy touched — recon surfaced (not yet a verdict)', detail: '.env' },
+      { offset_label: '−2:05', phase: 'contained', tier: 2, title: 'Contained — inline attrition begins', detail: 'velocity + poison', axes_firing: ['velocity', 'poison'] },
+      { offset_label: '−1:12', phase: 'jailed', tier: 3, title: 'Jailed in-kernel — socket-cookie precise', detail: 'velocity + poison + opportunity + exploit + exposure', axes_firing: ['velocity', 'poison', 'opportunity', 'exploit', 'exposure'] },
+      { offset_label: '−0:48', phase: 'disengaged', tier: 3, title: 'Attacker disengaged', detail: 'gave up before any defender bound — the engagement signal' },
+    ],
+    latest: { offset_label: '−0:48', phase: 'disengaged', tier: 3, title: 'Attacker disengaged', detail: 'gave up before any defender bound — the engagement signal' },
+  },
 };
 
 // ---- Interactive console drill-down fixtures (NEXT_PUBLIC_FIXTURE=1) ----

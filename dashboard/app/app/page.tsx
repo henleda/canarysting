@@ -9,6 +9,7 @@ import AttackerCost from '@/components/AttackerCost';
 import KernelContainment from '@/components/KernelContainment';
 import Credibility from '@/components/Credibility';
 import AdversaryIntelligence from '@/components/AdversaryIntelligence';
+import Journey from '@/components/Journey';
 
 export default function OperationsPage() {
   // PRODUCTION render path: live snapshot + status from the dashboard-backend.
@@ -32,6 +33,9 @@ export default function OperationsPage() {
         <Link href="/cost?since=1h" style={{ display: 'contents', color: 'inherit', textDecoration: 'none' }}>
           <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
         </Link>
+      </div>
+      <div className="journey-row">
+        <Journey journey={snapshot?.journey} />
       </div>
       <div className="band">
         {/* KernelContainment links to /precision from its bystander note (it has

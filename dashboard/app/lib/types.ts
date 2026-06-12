@@ -216,6 +216,28 @@ export interface Overview {
 
   // M9 live cost meter (the attacker's real, ground-truth Anthropic burn).
   real_attack_cost: RealAttackCostView;
+
+  // The current attacker flow's legible arc (recon → escalation → disengage).
+  journey: JourneyView;
+}
+
+// JourneyMilestone is one beat in the attacker's arc. axes_firing lists the OVERLAPPING
+// attrition axes active at a containment/jail crossing (never a partition).
+export interface JourneyMilestone {
+  offset_label: string; // "−m:ss"
+  phase: string; // "recon" | "contained" | "jailed" | "disengaged"
+  tier: number;
+  title: string;
+  detail?: string;
+  axes_firing?: string[];
+}
+
+// JourneyView is the current flow's ordered arc; present=false when there is no flow.
+export interface JourneyView {
+  present: boolean;
+  flow_id_hex: string;
+  milestones: JourneyMilestone[];
+  latest?: JourneyMilestone;
 }
 
 // ============================================================================
