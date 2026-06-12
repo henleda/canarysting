@@ -53,6 +53,18 @@ func main() {
 
 		registryPath = flag.String("ground-truth-registry", "", "REQUIRED: JSON file declaring legit vs attacker source IPs per scope")
 		iAmStaged    = flag.Bool("i-am-running-a-staged-range", false, "REQUIRED acknowledgement: this binary auto-labels from declared ground truth and must NEVER run in production")
+
+		// D6 cross-customer network (independent opt-in toggles; default off). Producer half:
+		// -contribute records each local Tier-3 jail's coarse pattern into the cross-scope
+		// ledger and, with -scope-token + -confirm-spool, emits a confirmation to the central
+		// D6-3 aggregator under the OPAQUE token (never the raw scope key). Consumer half:
+		// -consume loads cleared cross-customer patterns from -shared-spool to sharpen M for
+		// matching local flows (detection context only, rule 8 — never a trigger on its own).
+		contribute   = flag.Bool("contribute", false, "D6: record each local Tier-3 jail's coarse pattern into the cross-scope ledger AND (with -scope-token + -confirm-spool) emit a confirmation to the central aggregator. Default off.")
+		scopeToken   = flag.String("scope-token", "", "D6-3: this deployment's OPAQUE aggregator-issued cross-scope token (NEVER the scope key). Required with -contribute.")
+		confirmSpool = flag.String("confirm-spool", "", "D6-3: NDJSON confirmation spool written on each local jail (this deployment -> central aggregator). Required with -contribute.")
+		consume      = flag.Bool("consume", false, "D6: load cleared cross-customer patterns from -shared-spool to sharpen M for matching local flows (detection context only, rule 8). Default off.")
+		sharedSpool  = flag.String("shared-spool", "", "D6: NDJSON spool of cleared cross-customer patterns to load at boot. Required with -consume.")
 	)
 	flag.Parse()
 
@@ -61,6 +73,14 @@ func main() {
 	}
 	if *registryPath == "" {
 		log.Fatal("staged-range: refusing to start — -ground-truth-registry is required (no registry => nothing to label, and a fail-safe against silent production labeling)")
+	}
+	// D6-3 fail-closed: mirror boot.go's three-condition emit gate so a misconfig can't
+	// silently jail-locally-but-emit-nothing (the boot gate fails open by not wiring the spool).
+	if *contribute && (*scopeToken == "" || *confirmSpool == "") {
+		log.Fatal("staged-range: refusing to start — -contribute requires BOTH -scope-token and -confirm-spool (else local jails record but emit no confirmation to the aggregator)")
+	}
+	if *consume && *sharedSpool == "" {
+		log.Fatal("staged-range: refusing to start — -consume requires -shared-spool (else there is nothing to consume; refuse rather than silently no-op)")
 	}
 
 	reg, err := stagedlabel.LoadRegistryFile(*registryPath)
@@ -83,6 +103,11 @@ func main() {
 		CoarseBucketer:        *windowBucketer,
 		Floor:                 floor,
 		ResetOnSchemaMismatch: *resetSchema,
+		Contribute:            *contribute,
+		ScopeToken:            *scopeToken,
+		ConfirmSpoolPath:      *confirmSpool,
+		Consume:               *consume,
+		SharedSpoolPath:       *sharedSpool,
 	}, observe.PlatformObserver())
 	if err != nil {
 		log.Fatalf("staged-range: refusing to start: %v", err)
