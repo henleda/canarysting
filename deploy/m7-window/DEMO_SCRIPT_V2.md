@@ -24,9 +24,9 @@ only fully lands on dumb scanners; the durable value is the trustworthy auto-blo
 1. **TopBar** — scope, env, `CALIBRATED` + `BASELINE LIVE` pills (observe ON, M live).
 2. **LiveEscalation | AttackerCost** — the acquired flow + the cost meter.
 3. **KernelContainment | BystanderHealth** *(side by side — the WOW)* — the jailed socket next to same-host workloads still serving 200.
-4. **Journey** — the attacker's arc (recon → contain → jail → ended).
-5. **ReconLive** — "Recon — watching, not acting": anomalous-from-baseline flows that touched no decoy (we see them, we don't act).
-6. **Credibility | AdversaryIntelligence** — M/baseline novelty + the cross-customer network (simulated peers, disclosed).
+4. **ReconLive | Credibility | AdversaryIntelligence** *(the context band)* — recon ("Watching, not acting": anomalous-from-baseline flows, surfaced not actioned) + M/baseline novelty + the cross-customer network (simulated peers, disclosed).
+
+(The attacker-arc Journey ribbon is intentionally NOT on the one screen — it didn't fit a fixed-height layout, and the arc is already legible from the tier-ladder climb in LiveEscalation + the jail. The `/flow/<cookie>` drill-down still has the full journey.)
 
 The traffic simulator (T2) keeps this **alive on its own** — benign east-west fills
 the observed funnel, a recon scanner populates ReconLive, and a malicious flow drives
