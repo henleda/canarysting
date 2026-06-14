@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/canarysting/canarysting/deploy/m7-window/internal/loadprofile"
 )
 
 func main() {
@@ -71,7 +73,7 @@ func runIdentity(idx int, srcIP, target string, paths []string, baseRPM float64)
 	rng := rand.New(rand.NewSource(int64(idx*7919 + 1)))
 
 	for {
-		rpm := requestsPerMinute(time.Now().UTC(), baseRPM)
+		rpm := loadprofile.RequestsPerMinute(time.Now().UTC(), baseRPM)
 		if rpm <= 0 {
 			time.Sleep(time.Second)
 			continue
