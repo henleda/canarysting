@@ -184,12 +184,25 @@ export interface AxisReactionView {
   poison_class: string; // AX2: class of that deepest stage ("" if none)
 }
 
+// CrossCustomerView is the D6 consumer-side signal: network-confirmed patterns this
+// deployment has loaded into detection, the k distinct-enrolled-scopes provenance, and
+// whether the current adversary flow matches one (the engine's real matcher).
+export interface CrossCustomerView {
+  consuming: number; // # network-confirmed patterns loaded into detection
+  threshold: number; // k distinct ENROLLED scopes a pattern needed to cross
+  flow_id: number; // current adversary flow evaluated (0 = none)
+  flow_id_hex: string;
+  similarity: number; // best similarity of that flow to a consumed pattern [0,1]
+  matched: boolean; // similarity >= threshold
+}
+
 // AdversaryIntelView is the secondary-band right panel (three facets).
 export interface AdversaryIntelView {
   kpi: IntelKPIView;
   recon_feed: ReconEvent[] | null; // T1, newest first, max 10
   fingerprint?: FlowFingerprint | null; // nil if no current flow (json: omitempty)
   reactions: AxisReactionView; // AX2/AX4/AX5 deception-reaction signals
+  cross_customer: CrossCustomerView; // D6: network-confirmed patterns consumed + current-flow match
 }
 
 // Overview is the complete JSON payload served by GET /api/overview and pushed

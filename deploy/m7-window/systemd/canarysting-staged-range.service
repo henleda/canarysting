@@ -28,6 +28,8 @@ ExecStart=/opt/canarysting/bin/staged-range \
   -dashboard-tap-addr ${DASHBOARD_TAP_ADDR} \
   $AGGRESSIVE_FLAG \
   $DEMO_FLOOR_FLAG \
+  $CONSUME_FLAG \
+  $SHARED_SPOOL_FLAG \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3
