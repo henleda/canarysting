@@ -19,7 +19,15 @@ export const fixtureOverview: Overview = {
   at: '2026-06-09T00:00:00Z',
   tap_reachable: true,
   baseline_live: true,
+  // simulated:true keeps the ⚠ sim-badge always visible on the fixture — the whole
+  // demo is simdriver traffic, never a live customer fleet (data-gated disclosure).
+  simulated: true,
   calibration: { calibrated: true, evidence_seen: 50, evidence_floor: 50 },
+
+  // Fleet band: distinct armed flows this window (snapshot, not cumulative).
+  // Internally consistent with the backend invariants: decoy_touched == distinct_count
+  // == fixtureFlowsList.total_count (3); distinct_active == decoy_touched.
+  armed_flows: { distinct_count: 3 },
 
   escalation: {
     flow: {
@@ -38,6 +46,14 @@ export const fixtureOverview: Overview = {
     ladder_denominator: 381,
     ladder_caption:
       'Two windows, not one denominator: T0 = cumulative observed-normal traffic (eBPF folds since start, pinned to the full bar); T1-3 fractions are of the attacker subtotal within the events window only. The two are intentionally not mixed.',
+    // The DISTINCT-flow funnel: each flow counted once at its highest tier, within
+    // this window (sessions, not events). decoy_touched == distinct_count ==
+    // fixtureFlowsList.total_count (3); distinct_active == decoy_touched. contained ==
+    // count of rows at exact peak T2 (1); jailed == count at exact peak T3 (1) ==
+    // kernel_containment.jailed_flows length.
+    flow_funnel: { decoy_touched: 3, contained: 1, jailed: 1, distinct_active: 3 },
+    funnel_caption:
+      'Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows within this window, each flow once at its highest tier — not per event.',
     tier_ladder: [
       {
         tier: 0,

@@ -1,14 +1,13 @@
 'use client';
 
-import Link from 'next/link';
 import { useOverview } from '@/lib/useOverview';
 import { fixtureOverview } from '@/lib/fixture';
 import TopBar from '@/components/TopBar';
-import LiveEscalation from '@/components/LiveEscalation';
-import AttackerCost from '@/components/AttackerCost';
+import FleetSafety from '@/components/FleetSafety';
 import KernelContainment from '@/components/KernelContainment';
-import Credibility from '@/components/Credibility';
 import BystanderHealth from '@/components/BystanderHealth';
+import LiveSpotlight from '@/components/LiveSpotlight';
+import Credibility from '@/components/Credibility';
 
 export default function OperationsPage() {
   // PRODUCTION render path: live snapshot + status from the dashboard-backend.
@@ -21,31 +20,27 @@ export default function OperationsPage() {
   const useFixture = process.env.NEXT_PUBLIC_FIXTURE === '1';
   const snapshot = useFixture ? fixtureOverview : liveSnapshot;
   const effectiveStatus = useFixture ? 'live' : status;
+  const armedCount = snapshot?.armed_flows?.distinct_count ?? 0;
 
   return (
     <div className="app">
       <TopBar snapshot={snapshot} status={effectiveStatus} />
-      <div className="hero">
-        <LiveEscalation escalation={snapshot?.escalation} />
-        {/* The whole attacker-cost panel deep-links to the /cost breakdown.
-            display:contents keeps the grid layout identical (the <a> box vanishes). */}
-        <Link href="/cost?since=1h" style={{ display: 'contents', color: 'inherit', textDecoration: 'none' }}>
-          <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
-        </Link>
-      </div>
-      {/* THE WOW — flow-precise containment in ONE eye-span: the attacker socket
-          jailed in-kernel (left) right next to legitimate same-host workloads
-          still serving 200 (right). This is the dashboard-native bystander proof
-          that replaces the old terminal-curl. KernelContainment links to
-          /precision from its note (inner cookie links, so not one anchor). */}
+      {/* Row 2 — THE FLEET WALL: "is the fleet safe?" answered full-width. The
+          structural-zero claim + the three-rail fleet band (observed / armed /
+          jailed, each on its own basis) + the distinct-flow funnel. */}
+      <FleetSafety snapshot={snapshot} />
+      {/* Row 3 — THE WOW: flow-precise containment in ONE eye-span: the attacker
+          socket jailed in-kernel (left) right next to non-actioned same-host
+          workloads still serving 200 (right). The dashboard-native bystander
+          proof. KernelContainment links to /precision from its note. */}
       <div className="hero">
         <KernelContainment containment={snapshot?.kernel_containment} />
         <BystanderHealth bystanders={snapshot?.bystanders} />
       </div>
-      {/* Credibility — the "this is real, not a mock" proof (live M / baseline
-          novelty / calibration) stays on the wall, full-width. Recon and Adversary
-          Intelligence moved to their own pages (left rail) to declutter the screen. */}
-      <div className="band" style={{ gridTemplateColumns: '1fr' }}>
+      {/* Row 4 — the demoted single-flow spotlight (1 of N active) beside the
+          credibility proof (live M / baseline novelty / calibration). */}
+      <div className="hero">
+        <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} />
         <Credibility credibility={snapshot?.credibility} />
       </div>
     </div>

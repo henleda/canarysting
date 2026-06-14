@@ -122,6 +122,70 @@ type FlowsList struct {
 	Filtered   int       `json:"filtered"`    // == len(Flows)
 }
 
+// FlowFunnelView is the FleetWall windowed funnel: DISTINCT flows (sessions),
+// each counted ONCE at its HIGHEST tier, within this events window. It is the
+// two-rail companion to the cumulative T0 observed rail (CompletedFolds) — the
+// two are NEVER summed into one denominator (see Derive's EscalationView caption).
+//
+// HONESTY (distinct-jailed discipline): Jailed here is the count of DISTINCT
+// flows whose peak tier == 3 — the ONLY honest headline "jailed" number. It is
+// NOT attacker_cost.jailed (= cost.Summary.TierCounts[3], a per-EVENT count),
+// which is FORBIDDEN as a headline because one flow can emit many T3 events.
+//
+// DecoyTouched is every session (peak >= 1) — a "decoy-armed flow" is a DISTINCT
+// session, NOT a unique attacker (cookies recycle; sessions split at the 10-min
+// idle gap). DistinctActive == len(sessions) == DecoyTouched by construction
+// (boltevents stores only Tier>=1, so every stored session has peak >= 1).
+type FlowFunnelView struct {
+	// DecoyTouched = sessions with peak tier >= 1. Equals DeriveFlowsList(events,-1).TotalCount and equals DistinctActive (every stored session is tier >= 1).
+	DecoyTouched int `json:"decoy_touched"`
+	// Contained = sessions with EXACT peak tier == 2 (matches DeriveFlowsList(events,2).Filtered).
+	Contained int `json:"contained"`
+	// Jailed = sessions with EXACT peak tier == 3 (matches DeriveFlowsList(events,3).Filtered).
+	// The ONLY honest headline jailed number; never attacker_cost.jailed (per-event).
+	Jailed int `json:"jailed"`
+	// DistinctActive = total distinct sessions in the window (== DecoyTouched).
+	DistinctActive int `json:"distinct_active"`
+}
+
+// DeriveFlowFunnel builds the windowed DISTINCT-flow funnel. It reuses the SAME
+// session grouping + per-session peak-tier semantics as DeriveFlowsList (the
+// forward pass in buildFlowRow uses Tier >= maxTier), so the equalities below
+// hold by construction and the funnel can never disagree with the flows table:
+//
+//	DecoyTouched   == DeriveFlowsList(events,-1).TotalCount   (all sessions, peak>=1)
+//	Contained      == DeriveFlowsList(events, 2).Filtered     (exact peak==2)
+//	Jailed         == DeriveFlowsList(events, 3).Filtered     (exact peak==3)
+//	DistinctActive == len(sessions)
+//
+// Each flow is counted ONCE, at its highest tier — this is a per-FLOW funnel, not
+// a per-event tier histogram (the per-event TierCounts live in cost.Summary).
+func DeriveFlowFunnel(events []intelligence.AdversaryInteractionEvent) FlowFunnelView {
+	sessions := groupByFlowSessions(events)
+	var fv FlowFunnelView
+	fv.DistinctActive = len(sessions)
+	for _, s := range sessions {
+		// Per-session peak tier: identical forward pass to buildFlowRow (Tier >= maxTier),
+		// so this matches DeriveFlowsList's PeakTier exactly.
+		peak := 0
+		for _, e := range s.Events {
+			if e.Tier >= peak {
+				peak = e.Tier
+			}
+		}
+		if peak >= 1 {
+			fv.DecoyTouched++ // distinct flows that armed (every stored session, by construction)
+		}
+		if peak == 2 {
+			fv.Contained++ // EXACT peak T2
+		}
+		if peak == 3 {
+			fv.Jailed++ // EXACT peak T3 — distinct sockets dropped in-kernel
+		}
+	}
+	return fv
+}
+
 // MechanismCost is one row of the by-mechanism cost rollup.
 type MechanismCost struct {
 	Mechanism   string  `json:"mechanism"`

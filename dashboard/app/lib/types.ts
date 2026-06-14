@@ -40,12 +40,24 @@ export interface TierStep {
   is_active: boolean; // highest occupied tier
 }
 
+// FlowFunnelView is the DISTINCT-flow funnel (each flow counted once at its
+// highest tier, within this window). Distinct from the per-event tier ladder:
+// these are sessions, not events. observed › decoy-touched › contained › jailed.
+export interface FlowFunnelView {
+  decoy_touched: number; // distinct flows that touched a decoy this window (== FlowsList.total_count)
+  contained: number; // distinct flows whose peak tier is T2
+  jailed: number; // distinct flows whose peak tier is T3
+  distinct_active: number; // distinct flows currently active this window
+}
+
 // EscalationView is the hero-left panel: the current attacker flow + tier ladder.
 export interface EscalationView {
   flow?: FlowView | null; // nil if none (json: omitempty)
   tier_ladder: [TierStep, TierStep, TierStep, TierStep]; // always length 4 (T0..T3)
   ladder_denominator: number;
   ladder_caption: string;
+  flow_funnel: FlowFunnelView; // the distinct-flow funnel (sessions, not events)
+  funnel_caption: string; // the verbatim two-rails caption
 }
 
 // AxisCostView is one OVERLAPPING per-axis subtotal: a flow lands on EVERY axis its
@@ -182,7 +194,7 @@ export interface ReconLiveView {
   note: string;
 }
 
-// BystanderFlow is one live LEGITIMATE workload still serving (coarse traffic
+// BystanderFlow is one live non-actioned workload still serving (coarse traffic
 // only) — shown to prove flow-precise containment: same host, untouched, while an
 // attacker socket is kernel-jailed.
 export interface BystanderFlow {
@@ -246,6 +258,14 @@ export interface AdversaryIntelView {
   cross_customer: CrossCustomerView; // D6: network-confirmed patterns consumed + current-flow match
 }
 
+// ArmedFlowsView is the fleet-band "distinct armed flows" snapshot: distinct
+// sessions THIS window that crossed the response threshold (a decoy touch armed a
+// response). A snapshot count, not cumulative — cookies recycle, so these are
+// sessions, not unique attackers.
+export interface ArmedFlowsView {
+  distinct_count: number; // distinct armed sessions this window
+}
+
 // Overview is the complete JSON payload served by GET /api/overview and pushed
 // over GET /api/stream.
 export interface Overview {
@@ -256,6 +276,13 @@ export interface Overview {
   tap_reachable: boolean;
   calibration: CalibView;
   baseline_live: boolean;
+
+  // Data-gated simulated disclosure: the whole demo is simdriver traffic, not a
+  // live customer fleet. Gates the ⚠ sim-badge on the wall.
+  simulated: boolean;
+
+  // Fleet band: distinct armed flows this window (snapshot, not cumulative).
+  armed_flows: ArmedFlowsView;
 
   // Hero left: live escalation + tier ladder.
   escalation: EscalationView;
@@ -278,7 +305,7 @@ export interface Overview {
   // The "we see it and choose not to act" surface (Rule 8 made visible).
   recon_live: ReconLiveView;
 
-  // Legitimate workloads still serving on the same host while an attacker is
+  // Workloads still serving (not actioned) on the same host while an attacker is
   // kernel-jailed — the dashboard-native flow-precision proof.
   bystanders: BystanderView;
 }

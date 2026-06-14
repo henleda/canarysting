@@ -2,67 +2,71 @@
 
 import Link from 'next/link';
 import { fmtInt } from '@/lib/format';
-import type { Overview } from '@/lib/types';
+import type { FlowFunnelView, Overview } from '@/lib/types';
 
 // PrecisionView is the BYSTANDER / FALSE-POSITIVE PROOF — the answer to the #1
-// CISO objection ("will it false-positive my legitimate traffic?").
+// CISO objection ("will it false-positive my traffic?").
 //
 // The claim is STRUCTURAL, not statistical: a flow is only ever actioned when it
 // touches a planted decoy (CLAUDE.md rule 8 — deviation from baseline NEVER
-// triggers a response). So legitimate traffic cannot be false-positived by
-// construction. The live numbers are illustration, not the guarantee:
+// triggers a response). So traffic cannot be false-positived by construction. The
+// live numbers are illustration, not the guarantee:
 //   - observed  = baseline observe-folds (every completed east-west flow the eBPF
-//                 baseline saw — overwhelmingly legitimate traffic)
-//   - flagged   = T1 (tagged, watched; no punitive effect)
-//   - actioned  = T2 contain + T3 jail (the only punitive tiers)
+//                 baseline saw — non-armed, observed-normal traffic)
+//   - decoy-touched / contained / jailed = the DISTINCT-flow funnel (sessions, not
+//                 events; each flow once at its highest tier)
 // Every actioned flow is in the funnel BECAUSE it touched a decoy. There is no
 // per-flow benign list by design (we never persist benign identities — rules 8/9);
 // the contrast (huge observed vs tiny actioned, all decoy-touchers) IS the proof.
+
+// PrecisionFunnel is the SHARED structural-zero block: the giant 0 + the
+// by-construction caption + the Rule-7 placement caveat. It is the single source
+// of truth for the zero claim — BOTH /precision (via PrecisionView) and the home
+// wall (via FleetSafety) render it, so the copy can never drift between them.
+export function PrecisionFunnel() {
+  return (
+    <div className="precision-zero">
+      <div className="pz-num">0</div>
+      <div className="pz-cap">
+        <div className="pz-k">actioned by anything other than a decoy touch</div>
+        <div className="pz-sub">
+          false positives are <b>structurally impossible</b>: only a planted-decoy touch can
+          arm a response — never deviation from the learned baseline.{' '}
+          <span className="pz-caveat">
+            (Placement is careful, not infallible: a benign service that brushes a decoy can
+            still be surfaced — see <Link href="/precision">/precision</Link>.)
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PrecisionView({ snapshot, loading }: { snapshot: Overview | null; loading: boolean }) {
   if (!snapshot) {
     return <div className="faint mono">{loading ? 'WARMING UP…' : 'no data'}</div>;
   }
   const ladder = snapshot.escalation?.tier_ladder;
   const observed = ladder?.[0]?.count ?? 0;
-  const flagged = ladder?.[1]?.count ?? 0;
-  const contained = ladder?.[2]?.count ?? 0;
-  const jailed = ladder?.[3]?.count ?? 0;
-  const actioned = contained + jailed;
+  const funnel = snapshot.escalation?.flow_funnel;
   const jailedFlows = snapshot.kernel_containment?.jailed_flows ?? [];
 
   return (
     <>
       <section className="detail-section precision-hero">
-        <div className="precision-zero">
-          <div className="pz-num">0</div>
-          <div className="pz-cap">
-            <div className="pz-k">legitimate flows actioned</div>
-            <div className="pz-sub">
-              false positives are <b>structurally impossible</b>: only a planted-decoy touch
-              can trigger a response — never deviation from the learned baseline.
-            </div>
-          </div>
-        </div>
+        <PrecisionFunnel />
       </section>
 
       <section className="detail-section">
-        <h3>observed → actioned</h3>
-        <div className="funnel">
-          <FunnelStep cls="t0" n={observed} label="observed" note="cumulative · since start" />
-          <span className="funnel-arrow">›</span>
-          <FunnelStep cls="t1" n={flagged} label="flagged" note="T1 · window · tagged" />
-          <span className="funnel-arrow">›</span>
-          <FunnelStep cls="t2" n={contained} label="contained" note="T2 · window · rate-limit/tarpit" />
-          <span className="funnel-arrow">›</span>
-          <FunnelStep cls="t3" n={jailed} label="jailed" note="T3 · window · kernel drop" />
-        </div>
+        <h3>observed → actioned · distinct flows</h3>
+        <DistinctFunnel observed={observed} funnel={funnel} />
         <div className="flow-sub" style={{ marginTop: 12 }}>
-          {fmtInt(observed)} flows observed (cumulative, since engine start) · {fmtInt(actioned)}{' '}
-          actioned in this window (contain + jail) — and every actioned flow reached the response
-          pipeline by touching a decoy. Observation alone never acts.
+          {fmtInt(observed)} flows observed (cumulative, since engine start) · {fmtInt(funnel?.jailed ?? 0)}{' '}
+          jailed and {fmtInt(funnel?.contained ?? 0)} contained in this window — and every actioned flow
+          reached the response pipeline by touching a decoy. Observation alone never acts.
         </div>
-        {snapshot.escalation?.ladder_caption && (
-          <div className="fs-note" style={{ marginTop: 6 }}>{snapshot.escalation.ladder_caption}</div>
+        {snapshot.escalation?.funnel_caption && (
+          <div className="fs-note" style={{ marginTop: 6 }}>{snapshot.escalation.funnel_caption}</div>
         )}
       </section>
 
@@ -94,12 +98,32 @@ export default function PrecisionView({ snapshot, loading }: { snapshot: Overvie
   );
 }
 
-function FunnelStep({ cls, n, label, note }: { cls: string; n: number; label: string; note: string }) {
+// DistinctFunnel renders the four DISTINCT-flow stages: observed (cumulative, its
+// own rail) › decoy-touched › contained › jailed (windowed, each flow once at its
+// highest tier — never per-event). Each step deep-links to the matching /flows view.
+export function DistinctFunnel({ observed, funnel }: { observed: number; funnel: FlowFunnelView | undefined }) {
+  const decoyTouched = funnel?.decoy_touched ?? 0;
+  const contained = funnel?.contained ?? 0;
+  const jailed = funnel?.jailed ?? 0;
   return (
-    <div className={`funnel-step ${cls}`}>
+    <div className="funnel">
+      <FunnelStep cls="t0" n={observed} label="observed" note="cumulative · since start" href="/flows?tier=0&since=1h" />
+      <span className="funnel-arrow">›</span>
+      <FunnelStep cls="t1" n={decoyTouched} label="decoy-touched" note="distinct · this window" href="/flows?since=1h" />
+      <span className="funnel-arrow">›</span>
+      <FunnelStep cls="t2" n={contained} label="contained" note="distinct · peak T2" href="/flows?tier=2&since=1h" />
+      <span className="funnel-arrow">›</span>
+      <FunnelStep cls="t3" n={jailed} label="jailed" note="distinct · peak T3" href="/flows?tier=3&since=1h" />
+    </div>
+  );
+}
+
+function FunnelStep({ cls, n, label, note, href }: { cls: string; n: number; label: string; note: string; href: string }) {
+  return (
+    <Link className={`funnel-step ${cls}`} href={href} style={{ color: 'inherit', textDecoration: 'none' }}>
       <div className="fs-num">{fmtInt(n)}</div>
       <div className="fs-label">{label}</div>
       <div className="fs-note">{note}</div>
-    </div>
+    </Link>
   );
 }

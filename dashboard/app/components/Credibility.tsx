@@ -1,4 +1,6 @@
+import Link from 'next/link';
 import PanelHead from './PanelHead';
+import { WALL_LINK } from './LiveEscalation';
 import { fmtInt } from '@/lib/format';
 import type { CredibilityView } from '@/lib/types';
 
@@ -28,8 +30,8 @@ export default function Credibility({ credibility }: { credibility: CredibilityV
     <section className="cell">
       <PanelHead title="Credibility — real learned state" />
 
-      {/* 1. Guardrail */}
-      <div className="cred-item">
+      {/* 1. Guardrail — deep-links to /precision (the structural-zero proof). */}
+      <Link href="/precision" className="cred-item" style={{ ...WALL_LINK, display: 'block' }}>
         <div className="cred-h">
           <span className="ic" style={{ background: 'var(--safe)', boxShadow: '0 0 8px var(--safe)' }} />
           <span className="t">Guardrail</span>
@@ -39,7 +41,7 @@ export default function Credibility({ credibility }: { credibility: CredibilityV
           a flow wildly off-baseline that <span className="em">never touches a canary</span> → nothing happens.
           deviation is weight context, never a trigger.
         </div>
-      </div>
+      </Link>
 
       {/* 2. Baseline multiplier */}
       <div className="cred-item">
