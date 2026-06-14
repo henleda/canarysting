@@ -110,6 +110,16 @@ func main() {
 	}
 	start(func() { runRatio(ctx, malP, cfg.maliciousPct, benignTotalRPM, cfg.recompute, &gate) })
 
+	// MALICIOUS (sustained) — one persistent attacker flow that touches canaries on a
+	// SINGLE cookie so it climbs Tag->Contain->Jail (the escalation panel + kernel jail),
+	// reconnecting after each jail. This is the self-running escalation->jail "wow" that
+	// the LLM cassette would otherwise drive; 0 disables it.
+	if cfg.maliciousKeepaliveInterval > 0 {
+		start(func() {
+			runKeepaliveMalicious(ctx, cfg.attackerIP, cfg.target, cfg.canaryPaths, 7777, cfg.maliciousKeepaliveInterval)
+		})
+	}
+
 	// LLM dispatch — Tier-B cassette ($0) + opt-in Tier-C live ($, ledger-gated).
 	start(func() { runLLMDispatch(ctx, cfg, ledger, &gate) })
 
@@ -288,11 +298,17 @@ func runRatio(ctx context.Context, p *prober, pct float64, benignRPM func() floa
 	}
 }
 
-// reconHoldMaxSec bounds a held-recon flow's lifetime BELOW the dashboard's
-// bystander threshold (a flow open >= ~8s reads as an established serving workload,
-// not a scanner). Keep held sessions comfortably under it so a scanner flow always
-// classifies as recon (transient + anomalous), never as a bystander.
-const reconHoldMaxSec = 7.0
+// A held-recon flow's worst-case lifetime is holdSec + reconProbeTimeout: the last
+// probe can start an instant before the deadline and run to its timeout, after
+// which we break WITHOUT a trailing sleep and FIN. reconHoldMaxSec bounds holdSec
+// so that worst case stays under the dashboard's 8s bystander threshold (a flow
+// open >= ~8s reads as an established serving workload, not a scanner). At the
+// cap 5.0 + 2.0 = 7.0s, a full 1s under the threshold.
+const (
+	reconHoldMaxSec   = 5.0
+	reconProbeTimeout = 2 * time.Second
+	reconProbeGap     = 1 * time.Second
+)
 
 // runReconHold keeps ONE recon scanner flow open at a time: it opens a fresh
 // connection from the recon IP (a new socket cookie the observe path sees as a
@@ -338,7 +354,9 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 		IdleConnTimeout:     time.Duration((holdSec + 2) * float64(time.Second)),
 	}
 	defer tr.CloseIdleConnections() // FIN the flow when the session ends
-	client := &http.Client{Timeout: 4 * time.Second, Transport: tr}
+	// Short per-probe timeout so a hung request cannot stretch the flow past the
+	// bystander threshold: worst-case lifetime = holdSec + reconProbeTimeout.
+	client := &http.Client{Timeout: reconProbeTimeout, Transport: tr}
 	deadline := time.Now().Add(time.Duration(holdSec * float64(time.Second)))
 	for time.Now().Before(deadline) {
 		path := paths[rng.Intn(len(paths))]
@@ -348,7 +366,72 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 				_ = resp.Body.Close()
 			}
 		}
-		if sleepCtx(ctx, time.Duration(1.4*float64(time.Second))) {
+		// Break BEFORE sleeping once the deadline has passed, so the trailing gap
+		// never inflates the flow's lifetime past holdSec + one probe timeout.
+		if !time.Now().Before(deadline) {
+			break
+		}
+		if sleepCtx(ctx, reconProbeGap) {
+			return
+		}
+	}
+}
+
+// runKeepaliveMalicious drives ONE sustained attacker flow at a time: a persistent
+// connection from the declared-attacker IP that touches canary paths every interval,
+// so a SINGLE socket cookie climbs the tiers (Tag -> Contain -> Jail) — the escalation
+// panel's clean single-cookie climb and the kernel jail, generated continuously with
+// no LLM run or cassette. When the flow is jailed (the kernel drops its socket and
+// requests start failing), it closes and reconnects (a fresh cookie) and climbs again,
+// so the demo always has a live escalation and accumulating jailed cookies beside the
+// surviving bystanders. The attacker IP is the only class allowed to touch canaries
+// (Rule 8 — validate() guarantees recon/benign paths are disjoint from canaries).
+func runKeepaliveMalicious(ctx context.Context, srcIP, target string, canaryPaths []string, seed int64, interval time.Duration) {
+	rng := rand.New(rand.NewSource(seed))
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		maliciousSession(ctx, srcIP, target, canaryPaths, rng, interval)
+		// brief pause, then reconnect with a fresh cookie and climb again.
+		if sleepCtx(ctx, 3*time.Second) {
+			return
+		}
+	}
+}
+
+// maliciousSession holds one keepalive connection from srcIP and touches canary paths
+// every interval until the flow is jailed (consecutive request failures = the kernel
+// dropped the socket) or ctx ends, then returns so the caller reconnects fresh.
+func maliciousSession(ctx context.Context, srcIP, target string, paths []string, rng *rand.Rand, interval time.Duration) {
+	local, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srcIP, "0"))
+	if err != nil {
+		return
+	}
+	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
+	tr := &http.Transport{DialContext: dialer.DialContext, MaxConnsPerHost: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 90 * time.Second}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Timeout: 2 * time.Second, Transport: tr}
+	fails := 0
+	for {
+		path := paths[rng.Intn(len(paths))]
+		ok := false
+		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, target+path, nil); err == nil {
+			if resp, err := client.Do(req); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				ok = true
+			}
+		}
+		if ok {
+			fails = 0
+		} else {
+			fails++
+			if fails >= 3 {
+				return // jailed (socket dropped) — reconnect with a fresh cookie
+			}
+		}
+		if sleepCtx(ctx, interval) {
 			return
 		}
 	}
@@ -429,30 +512,31 @@ func runAttacker(ctx context.Context, cfg config, gate *sync.RWMutex, label stri
 // ---- config -----------------------------------------------------------------
 
 type config struct {
-	target            string
-	tapAddr           string
-	benignIPs         []string
-	normalPaths       []string
-	attackerIP        string
-	canaryPaths       []string
-	reconIP           string
-	whitespacePaths   []string
-	baseRPM           float64
-	maliciousPct      float64
-	reconPct          float64
-	reconLive         int
-	reconHoldSec      float64
-	recompute         time.Duration
-	keepaliveInterval time.Duration
-	dailyCapUSD       float64
-	budgetFile        string
-	cassette          string
-	cassetteInterval  time.Duration
-	liveInterval      time.Duration
-	liveBudgetUSD     float64
-	attackerBin       string
-	keyFile           string
-	costOut           string
+	target                     string
+	tapAddr                    string
+	benignIPs                  []string
+	normalPaths                []string
+	attackerIP                 string
+	canaryPaths                []string
+	reconIP                    string
+	whitespacePaths            []string
+	baseRPM                    float64
+	maliciousPct               float64
+	reconPct                   float64
+	reconLive                  int
+	reconHoldSec               float64
+	maliciousKeepaliveInterval time.Duration
+	recompute                  time.Duration
+	keepaliveInterval          time.Duration
+	dailyCapUSD                float64
+	budgetFile                 string
+	cassette                   string
+	cassetteInterval           time.Duration
+	liveInterval               time.Duration
+	liveBudgetUSD              float64
+	attackerBin                string
+	keyFile                    string
+	costOut                    string
 }
 
 func (c config) validate() error {
@@ -500,7 +584,8 @@ func parseFlags() config {
 		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
 		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
 		reconLive    = flag.Int("recon-live", 3, "concurrent HELD recon scanner flows (kept open ~recon-hold-sec so the dashboard recon surface stays populated; 0 disables)")
-		reconHoldSec = flag.Float64("recon-hold-sec", 5.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
+		reconHoldSec = flag.Float64("recon-hold-sec", 4.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
+		malKeepalive = flag.Duration("malicious-keepalive-interval", 3*time.Second, "canary-touch cadence on ONE sustained attacker flow that climbs Tag->Contain->Jail and reconnects (the self-running escalation->jail beat; 0 disables)")
 		recompute    = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
 		keepalive    = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
 		dailyCap     = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
@@ -519,7 +604,8 @@ func parseFlags() config {
 		benignIPs: splitCSV(*benignIPs), normalPaths: splitCSV(*normalPaths),
 		attackerIP: *attackerIP, canaryPaths: splitCSV(*canaryPaths),
 		reconIP: *reconIP, whitespacePaths: splitCSV(*wsPaths),
-		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, reconLive: *reconLive, reconHoldSec: *reconHoldSec, recompute: *recompute, keepaliveInterval: *keepalive,
+		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, reconLive: *reconLive, reconHoldSec: *reconHoldSec,
+		maliciousKeepaliveInterval: *malKeepalive, recompute: *recompute, keepaliveInterval: *keepalive,
 		dailyCapUSD: *dailyCap, budgetFile: *budgetFile,
 		cassette: *cassette, cassetteInterval: *cassEvery,
 		liveInterval: *liveEvery, liveBudgetUSD: *liveBudget,
