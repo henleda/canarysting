@@ -412,9 +412,20 @@ func runKeepaliveMalicious(ctx context.Context, srcIP, target string, canaryPath
 	}
 }
 
-// maliciousSession holds one keepalive connection from srcIP and touches canary paths
-// every interval until the flow is jailed (consecutive request failures = the kernel
-// dropped the socket) or ctx ends, then returns so the caller reconnects fresh.
+// maliciousReqTimeout MUST outlast the adapter's Contain attrition hold
+// (-attrition-max-hold, default 8s). Otherwise a contained flow's request times out at
+// the tarpit and the worker reconnects (fresh cookie) BEFORE it can climb the extra
+// distinct touches to the kernel jail — so flows cap at Contain and nothing ever jails
+// (the demo's "T3 = 0" symptom). With this longer timeout the flow WAITS through the
+// tarpit (gets the deception body), keeps climbing, and reaches Jail; a truly jailed
+// (kernel-dropped) socket still trips this timeout, so the jail is detected.
+const maliciousReqTimeout = 12 * time.Second
+
+// maliciousSession holds one keepalive connection from srcIP and walks the DISTINCT
+// canary paths IN ORDER (from a random start) so the flow's distinct-touch base B
+// climbs reliably to the jail depth — random selection rarely collects all distinct
+// canary types before the flow resets. It returns (so the caller reconnects fresh) once
+// the flow is jailed: a kernel-dropped socket makes requests time out repeatedly.
 func maliciousSession(ctx context.Context, srcIP, target string, paths []string, rng *rand.Rand, interval time.Duration) {
 	local, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srcIP, "0"))
 	if err != nil {
@@ -423,10 +434,12 @@ func maliciousSession(ctx context.Context, srcIP, target string, paths []string,
 	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
 	tr := &http.Transport{DialContext: dialer.DialContext, MaxConnsPerHost: 1, MaxIdleConnsPerHost: 1, IdleConnTimeout: 90 * time.Second}
 	defer tr.CloseIdleConnections()
-	client := &http.Client{Timeout: 2 * time.Second, Transport: tr}
+	client := &http.Client{Timeout: maliciousReqTimeout, Transport: tr}
+	idx := rng.Intn(len(paths)) // random start, then walk distinct paths in order
 	fails := 0
 	for {
-		path := paths[rng.Intn(len(paths))]
+		path := paths[idx%len(paths)]
+		idx++
 		ok := false
 		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, target+path, nil); err == nil {
 			if resp, err := client.Do(req); err == nil {
@@ -439,8 +452,8 @@ func maliciousSession(ctx context.Context, srcIP, target string, paths []string,
 			fails = 0
 		} else {
 			fails++
-			if fails >= 3 {
-				return // jailed (socket dropped) — reconnect with a fresh cookie
+			if fails >= 2 {
+				return // jailed (socket dropped, requests time out) — reconnect fresh
 			}
 		}
 		if sleepCtx(ctx, interval) {
