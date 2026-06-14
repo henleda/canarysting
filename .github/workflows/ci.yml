@@ -74,3 +74,55 @@ jobs:
       # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
       # is implemented (see docs/STING.md, docs/TECHNICAL_ARCHITECTURE.md).
       - run: make bpf
+
+  # B4: privileged job that actually RUNS the kernel datapath. The ebpf job above
+  # only COMPILES the C; this job loads the committed *_bpfel.o objects into the
+  # kernel, attaches them to a cgroup-v2 hierarchy, and exercises the jail-precision
+  # / fail-open / rate-limit-math / close-delete behavioral proofs that t.Skip()
+  # off-root. These are the single most catastrophic-if-wrong code path, so a green
+  # merge must mean they EXECUTED — not that they skipped.
+  #
+  # Config-complete on GitHub-hosted runners: ubuntu-latest is a real VM (not a
+  # container), so its kernel exposes cgroup-v2 unified at /sys/fs/cgroup and BPF
+  # syscalls. We run the test step inside a `privileged` container so the test
+  # process holds CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON and can attach to that cgroup.
+  # No clang or vmlinux.h is needed at runtime: the BPF objects are committed and
+  # embedded via //go:embed, so this job only needs a BPF-capable kernel + caps.
+  ebpf-run:
+    name: ebpf (privileged kernel datapath tests)
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.24-bookworm
+      # --privileged grants the caps + cgroup access the loaders need. The host
+      # bind-mounts the cgroup-v2 hierarchy so the container's test sockets live
+      # in the same cgroup the eBPF programs attach to.
+      options: --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+    steps:
+      - uses: actions/checkout@v5
+      - name: Environment sanity (kernel, caps, cgroup-v2)
+        run: |
+          uname -a
+          id
+          echo "BPF syscall present:"; grep -q bpf /proc/kallsyms && echo yes || echo "(kallsyms restricted; continuing)"
+          echo "cgroup-v2 controllers:"; cat /sys/fs/cgroup/cgroup.controllers || { echo "NO cgroup-v2 unified hierarchy at /sys/fs/cgroup"; exit 1; }
+      # Run the root-gated behavioral tests. -count=1 disables the test cache so the
+      # kernel assertions truly re-execute; -v + tee lets the next step verify they
+      # did not silently SKIP. We run as root inside the privileged container.
+      - name: Run kernel datapath tests
+        run: |
+          set -o pipefail
+          go test -v -count=1 ./bpf/enforce/... ./bpf/observe/... ./bpf/sockops/... 2>&1 | tee /tmp/ebpf-test.log
+      # The whole point of B4: a PASS that actually SKIPPED is a false green. If any
+      # of the root-gated loaders skipped (euid!=0 / no cgroup / no caps), fail loud.
+      - name: Assert the behavioral tests actually ran (no silent skip)
+        run: |
+          if grep -E 'requires root|CAP_BPF|cgroup-v2 attach' /tmp/ebpf-test.log; then
+            echo "::error::root-gated eBPF tests SKIPPED — the privileged datapath did not execute (false green)."
+            exit 1
+          fi
+          # Sanity floor: at least the named jail-precision proof must have PASS-ed.
+          grep -Eq 'PASS:?\s*TestEnforceJailIsPrecise|--- PASS: TestEnforceJailIsPrecise' /tmp/ebpf-test.log || {
+            echo "::error::TestEnforceJailIsPrecise did not report PASS — datapath coverage missing."
+            exit 1
+          }
+          echo "kernel datapath behavioral tests executed and passed."
