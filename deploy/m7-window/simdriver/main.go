@@ -114,13 +114,14 @@ func main() {
 	}
 	start(func() { runRatio(ctx, malP, cfg.maliciousPct, benignTotalRPM, cfg.recompute, &gate) })
 
-	// MALICIOUS (sustained) — one persistent attacker flow that touches canaries on a
-	// SINGLE cookie so it climbs Tag->Contain->Jail (the escalation panel + kernel jail),
-	// reconnecting after each jail. This is the self-running escalation->jail "wow" that
-	// the LLM cassette would otherwise drive; 0 disables it.
+	// MALICIOUS (sustained) — a fleet of attacker flows from the declared-attacker IP at
+	// a MIX of depths (scanners->Tag, probers->Contain-then-give-up, persistent->Jail) so
+	// the wall funnel narrows believably (decoy-touched > contained > jailed) and the
+	// counts move, while persistent flows keep the kernel jail + a live climbing flow for
+	// the spotlight. The self-running escalation->jail "wow" without an LLM run; 0 disables.
 	if cfg.maliciousKeepaliveInterval > 0 {
 		start(func() {
-			runKeepaliveMalicious(ctx, cfg.attackerIP, cfg.target, cfg.canaryPaths, 7777, cfg.maliciousKeepaliveInterval)
+			runMaliciousFleet(ctx, cfg.attackerIP, cfg.target, cfg.canaryPaths, cfg.maliciousKeepaliveInterval)
 		})
 	}
 
@@ -389,24 +390,61 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 	}
 }
 
-// runKeepaliveMalicious drives ONE sustained attacker flow at a time: a persistent
-// connection from the declared-attacker IP that touches canary paths every interval,
-// so a SINGLE socket cookie climbs the tiers (Tag -> Contain -> Jail) — the escalation
-// panel's clean single-cookie climb and the kernel jail, generated continuously with
-// no LLM run or cassette. When the flow is jailed (the kernel drops its socket and
-// requests start failing), it closes and reconnects (a fresh cookie) and climbs again,
-// so the demo always has a live escalation and accumulating jailed cookies beside the
-// surviving bystanders. The attacker IP is the only class allowed to touch canaries
-// (Rule 8 — validate() guarantees recon/benign paths are disjoint from canaries).
-func runKeepaliveMalicious(ctx context.Context, srcIP, target string, canaryPaths []string, seed int64, interval time.Duration) {
+// maliciousArchetype is one attacker "depth": a pool of n concurrent flows that each
+// touch up to maxDistinct distinct decoys before disengaging (maxDistinct<=0 = persist
+// to the kernel jail). The mix makes the wall funnel NARROW believably.
+type maliciousArchetype struct {
+	n           int
+	maxDistinct int // distinct decoys touched before disengaging; <=0 = climb to Jail
+	label       string
+}
+
+// maliciousFleet is the demo's attacker population. Tuned so the funnel narrows
+// (decoy-touched > contained > jailed): most flows are shallow scanners, fewer probe
+// into containment and give up (the attrition working — "not worth my time"), fewest
+// persist all the way to the kernel jail. Touch-count→tier is approximate (weighted,
+// M divided out for the demo band): ~1 distinct→Tag, ~2→Contain, ~3+→Jail.
+var maliciousFleet = []maliciousArchetype{
+	{n: 3, maxDistinct: 1, label: "scanner"},    // brush one decoy -> Tag
+	{n: 2, maxDistinct: 2, label: "prober"},     // reach Contain, feel the tarpit, leave
+	{n: 2, maxDistinct: 0, label: "persistent"}, // climb to the kernel Jail
+}
+
+// runMaliciousFleet spawns the attacker population from the declared-attacker IP so the
+// wall shows a BELIEVABLE, MOVING distribution of depths — not every flow jailing. Each
+// flow reconnects with a fresh socket cookie after every session, so over the window the
+// counts accumulate as distinct sessions: many Tag, fewer Contain, fewest Jail. The
+// persistent flows keep the kernel jail + a live climbing flow for the spotlight. The
+// attacker IP is the only class allowed to touch canaries (Rule 8 — validate()
+// guarantees recon/benign paths are disjoint from canaries).
+func runMaliciousFleet(ctx context.Context, srcIP, target string, canaryPaths []string, interval time.Duration) {
+	var seed int64 = 7700
+	for _, a := range maliciousFleet {
+		for i := 0; i < a.n; i++ {
+			seed++
+			s, md := seed, a.maxDistinct
+			go runMaliciousFlow(ctx, srcIP, target, canaryPaths, s, interval, md)
+		}
+	}
+	<-ctx.Done()
+}
+
+// runMaliciousFlow runs ONE attacker flow of a given depth: a jittered stagger so the
+// pool isn't in lockstep, then repeated sessions (each a fresh cookie) with a jittered
+// gap between them so the distinct-session counts stay lively rather than pinned.
+func runMaliciousFlow(ctx context.Context, srcIP, target string, paths []string, seed int64, interval time.Duration, maxDistinct int) {
 	rng := rand.New(rand.NewSource(seed))
+	if sleepCtx(ctx, time.Duration(rng.Int63n(int64(4*time.Second)))) {
+		return
+	}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		maliciousSession(ctx, srcIP, target, canaryPaths, rng, interval)
-		// brief pause, then reconnect with a fresh cookie and climb again.
-		if sleepCtx(ctx, 3*time.Second) {
+		maliciousSession(ctx, srcIP, target, paths, rng, interval, maxDistinct)
+		// jittered pause, then reconnect with a fresh cookie and climb again.
+		gap := 2*time.Second + time.Duration(rng.Int63n(int64(6*time.Second)))
+		if sleepCtx(ctx, gap) {
 			return
 		}
 	}
@@ -421,12 +459,15 @@ func runKeepaliveMalicious(ctx context.Context, srcIP, target string, canaryPath
 // (kernel-dropped) socket still trips this timeout, so the jail is detected.
 const maliciousReqTimeout = 12 * time.Second
 
-// maliciousSession holds one keepalive connection from srcIP and walks the DISTINCT
+// maliciousSession opens one keepalive connection from srcIP and walks the DISTINCT
 // canary paths IN ORDER (from a random start) so the flow's distinct-touch base B
-// climbs reliably to the jail depth — random selection rarely collects all distinct
-// canary types before the flow resets. It returns (so the caller reconnects fresh) once
-// the flow is jailed: a kernel-dropped socket makes requests time out repeatedly.
-func maliciousSession(ctx context.Context, srcIP, target string, paths []string, rng *rand.Rand, interval time.Duration) {
+// climbs predictably. With maxDistinct > 0 it DISENGAGES after touching that many
+// distinct decoys (the attacker giving up at Tag/Contain — the attrition working).
+// With maxDistinct <= 0 it PERSISTS, climbing until the kernel jails the socket
+// (requests start failing), then returns so the caller reconnects fresh. The request
+// timeout outlasts the Contain tarpit, so a contained flow waits through the hold (a
+// prober actually experiences the attrition) instead of timing out prematurely.
+func maliciousSession(ctx context.Context, srcIP, target string, paths []string, rng *rand.Rand, interval time.Duration, maxDistinct int) {
 	local, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srcIP, "0"))
 	if err != nil {
 		return
@@ -436,7 +477,7 @@ func maliciousSession(ctx context.Context, srcIP, target string, paths []string,
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Timeout: maliciousReqTimeout, Transport: tr}
 	idx := rng.Intn(len(paths)) // random start, then walk distinct paths in order
-	fails := 0
+	touched, fails := 0, 0
 	for {
 		path := paths[idx%len(paths)]
 		idx++
@@ -450,6 +491,10 @@ func maliciousSession(ctx context.Context, srcIP, target string, paths []string,
 		}
 		if ok {
 			fails = 0
+			touched++
+			if maxDistinct > 0 && touched >= maxDistinct {
+				return // disengage at the target depth (attrition: not worth continuing)
+			}
 		} else {
 			fails++
 			if fails >= 2 {
