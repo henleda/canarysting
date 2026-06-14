@@ -3,16 +3,17 @@ import { fmtBytes, fmtTimeLong } from '@/lib/format';
 import type { BystanderView, BystanderFlow } from '@/lib/types';
 
 // BystanderHealth is the dashboard-native "contain the flow, not the host" proof:
-// legitimate workloads on the SAME host still serving traffic uninterrupted while
+// flows on the SAME host still serving traffic, untouched by the response, while
 // an attacker socket is kernel-jailed. It replaces the old terminal-curl proof
-// with first-party eBPF live-flow data. Observe-only — it takes no action; it
-// just shows that flow-precise containment left the neighbors untouched.
+// with first-party eBPF live-flow data. Observe-only — it takes no action; it just
+// shows that flow-precise containment dropped only the attacker's socket. (The
+// claim is "not actioned / still serving", not a categorical "legitimate".)
 export default function BystanderHealth({ bystanders }: { bystanders: BystanderView | undefined }) {
   const flows = bystanders?.flows ?? [];
   const active = bystanders?.active ?? false;
   const note =
     bystanders?.note ||
-    'Same host, still serving — these legitimate workloads keep returning traffic uninterrupted while an attacker socket is kernel-jailed. We contain the flow, not the host.';
+    "Same host, still serving — the kernel jail dropped only the attacker's socket; every other flow here is untouched by the response and keeps returning traffic. We contain the flow, not the host.";
 
   return (
     <section className="cell">
@@ -25,7 +26,7 @@ export default function BystanderHealth({ bystanders }: { bystanders: BystanderV
         </div>
       ) : (
         <span className="faint" style={{ fontSize: 10 }}>
-          no live legitimate workloads in view
+          no other live flows serving in view
         </span>
       )}
       <div

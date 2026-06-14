@@ -238,7 +238,7 @@ export const fixtureOverview: Overview = {
       { flow_id: 0x102, flow_id_hex: '0x102', bytes: 88400, duration_sec: 268 },
       { flow_id: 0x103, flow_id_hex: '0x103', bytes: 156200, duration_sec: 401 },
     ],
-    note: 'Same host, still serving — these legitimate workloads keep returning traffic uninterrupted while an attacker socket is kernel-jailed. We contain the flow, not the host.',
+    note: "Same host, still serving — the kernel jail dropped only the attacker's socket; every other flow here is untouched by the response and keeps returning traffic. We contain the flow, not the host.",
   },
 };
 

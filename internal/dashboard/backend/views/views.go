@@ -438,7 +438,7 @@ func buildBystanders(flows []BystanderFlowView) BystanderView {
 		Active: len(flows) > 0,
 		Count:  len(flows),
 		Flows:  flows,
-		Note:   "Same host, still serving — these legitimate workloads keep returning traffic uninterrupted while an attacker socket is kernel-jailed. We contain the flow, not the host.",
+		Note:   "Same host, still serving — the kernel jail dropped only the attacker's socket; every other flow here is untouched by the response and keeps returning traffic. We contain the flow, not the host.",
 	}
 }
 

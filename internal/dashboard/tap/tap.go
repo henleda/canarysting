@@ -109,11 +109,15 @@ type ReconLiveFlow struct {
 	Severity    string  `json:"severity"`     // "recon" (quiet) | "surfaced" (loud) — presentation tier only
 }
 
-// BystanderFlow is one currently-live LEGITIMATE workload: a low-novelty,
-// actively-serving flow that has touched NO canary and was never actioned. It is
-// the dashboard-native proof of flow-precise containment — a real workload on the
-// same host keeps serving WHILE an attacker socket is kernel-jailed elsewhere
-// ("contain the flow, not the host"). Coarse traffic only (rule 9); observe-only.
+// BystanderFlow is one currently-live, low-novelty, NON-ARMED flow still serving
+// traffic — a flow the response did NOT action (not jailed, not contained). It is
+// the dashboard-native proof of flow-precise containment: the kernel jail drops
+// only the attacker's socket, so every other flow on the same host keeps serving.
+// HONESTY: the claim is "not actioned / still serving", NOT "provably legitimate".
+// A canary touch that scored below the Tag threshold (Tier 0) is non-armed and so
+// could appear here (boltevents stores only Tier>=1, so armedCookies can't exclude
+// it) — which is why the surface asserts non-containment, never innocence. Coarse
+// traffic only (rule 9); observe-only (cannot arm a response — rule 8).
 type BystanderFlow struct {
 	FlowID      uint64  `json:"flow_id"`
 	FlowIDHex   string  `json:"flow_id_hex"`
