@@ -58,6 +58,7 @@ setenv DEMO_ESCALATION_FLAG "$ESCAL"
 setenv DEMO_FLOOR_FLAG "$DFLOOR"
 
 echo "=== posture '$MODE': STING_FLOOR=$STING_FLOOR (1=moderate,2=aggressive/all-5-axes) AGGRESSIVE_FLAG='$AGG' DEMO_FLOOR_FLAG='$DFLOOR' ==="
+sudo systemctl daemon-reload
 echo "=== restarting engine + adapter (baseline DB persists; calibration evidence re-accrues) ==="
 sudo systemctl restart canarysting-staged-range.service
 sleep 2
