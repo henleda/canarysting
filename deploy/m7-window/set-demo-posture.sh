@@ -26,13 +26,17 @@ MODE="${1:?usage: set-demo-posture.sh [demo|default|aggressive]}"
 ETC=/etc/canarysting
 ENVFILE="$ETC/m7.env"
 
-# Three modes set three knobs: STING_FLOOR (adapter axes), AGGRESSIVE_FLAG (engine tier
-# thresholds), DEMO_FLOOR_FLAG (relax the baseline calendar-day-span gates so M goes live
-# before the production 7-day floor — disclosed, demo only).
+# Knobs: STING_FLOOR (adapter axes), AGGRESSIVE_FLAG (single-touch tiers),
+# DEMO_ESCALATION_FLAG (the 3-5-touch dwell band so the attacker is bled by the inline
+# attrition before the jail), DEMO_FLOOR_FLAG (relax the baseline day-span gates so M
+# goes live). The `demo` posture runs the DWELL band at M=1 (DEMO_FLOOR_FLAG OFF): the
+# band needs touch-count scoring (M=1) so the flow Tags@1/Contains@~3/Jails@~5; a live
+# (high) M would jail on touch 1 and skip the attrition bleed. M-live is therefore NOT
+# part of the `demo` posture (the cross-customer consume signal does not need it).
 case "$MODE" in
-  demo)       STING_FLOOR=2; AGG="";            DFLOOR="-demo-data-floor" ;;
-  default)    STING_FLOOR=1; AGG="";            DFLOOR="" ;;
-  aggressive) STING_FLOOR=2; AGG="-aggressive"; DFLOOR="-demo-data-floor" ;;
+  demo)       STING_FLOOR=2; AGG="";            DFLOOR=""; ESCAL="-demo-escalation" ;;
+  default)    STING_FLOOR=1; AGG="";            DFLOOR=""; ESCAL="" ;;
+  aggressive) STING_FLOOR=2; AGG="-aggressive"; DFLOOR=""; ESCAL="" ;;
   *) echo "unknown mode: $MODE (want: demo|default|aggressive)" >&2; exit 2 ;;
 esac
 
@@ -50,6 +54,7 @@ setenv() {
 
 setenv STING_FLOOR "$STING_FLOOR"
 setenv AGGRESSIVE_FLAG "$AGG"
+setenv DEMO_ESCALATION_FLAG "$ESCAL"
 setenv DEMO_FLOOR_FLAG "$DFLOOR"
 
 echo "=== posture '$MODE': STING_FLOOR=$STING_FLOOR (1=moderate,2=aggressive/all-5-axes) AGGRESSIVE_FLAG='$AGG' DEMO_FLOOR_FLAG='$DFLOOR' ==="

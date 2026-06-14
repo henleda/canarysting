@@ -30,7 +30,13 @@ import (
 // stingMarker is a non-secret correlation marker embedded in attrition output. It
 // is DISTINCT from the canary marker so an adapter never mistakes a maze page for
 // a placed canary. It is a label, not the harmlessness guarantee.
-const stingMarker = "CSTING-STING-"
+//
+// REALISM: this is a NEUTRAL, product-agnostic correlation prefix embedded as
+// plausible build/trace metadata — NOT the literal product name. A recorded LLM
+// attacker grep'd the old "CSTING-STING-" and instantly named the deception range;
+// "x-trace-" reads as an ordinary internal trace id. It stays a fixed, recognizable
+// substring so the framework self-test + tests still verify content by carriesMarker.
+const stingMarker = "x-trace-"
 
 // Per-chunk and per-structure bounds. maxChunkBytes is the universal per-chunk
 // hard cap (a defensive backstop the construction self-test enforces); each
@@ -403,24 +409,37 @@ func poisonClassForStage(reached int) string {
 // proven at construction) yet internally consistent across stages. Bounded at
 // mazePageCap.
 func poisonPage(seed uint64, stage int) []byte {
-	h0 := decoy.ReservedHost(mix(seed, 0))
-	h1 := decoy.ReservedHost(mix(seed, 1))
-	h2 := decoy.ReservedHost(mix(seed, 2))
 	mk := stingMarkerToken(mix(seed, uint64(100+stage)))
+	// REALISM (recorded-attacker tells): a seed-driven role pool + a VARIABLE host count
+	// so two flows (or two probed paths) never render the byte-identical templated triangle
+	// the attacker flagged; the credential is a plausible random token, not the literal
+	// "decoy"; the marker is plausible build/trace metadata, not a product comment. All
+	// hosts are still decoy.ReservedHost (reserved TLDs) and keys ExampleAWS* — harmless by
+	// construction (genSelfTest -> harmless.CrossScan at startup).
+	roles := [...]string{"primary", "replica", "cache", "gateway", "queue", "search", "worker", "ledger"}
+	role := func(i uint64) string { return roles[mix(seed, i)%uint64(len(roles))] }
+	nHosts := 2 + int(mix(seed, uint64(stage+40))%4) // 2..5, varies by stage+seed
+	hosts := make([]string, nHosts)
+	for i := range hosts {
+		hosts[i] = decoy.ReservedHost(mix(seed, uint64(10+i)))
+	}
+	pw := randToken(mix(seed, 5), 18, base32Alpha) // plausible, NOT a real credential
 	var b strings.Builder
 	switch stage {
-	case 0: // credential set referencing the same hosts
-		fmt.Fprintf(&b, "# %s service credentials\n[default]\n", mk)
+	case 0: // credential set
+		fmt.Fprintf(&b, "# config-service build %s\n[default]\n", mk)
 		fmt.Fprintf(&b, "aws_access_key_id = %s\naws_secret_access_key = %s\n", decoy.ExampleAWSKeyID(mix(seed, 3)), decoy.ExampleAWSSecret(mix(seed, 4)))
-		fmt.Fprintf(&b, "db_primary = postgres://svc:decoy@%s:5432/payments\n", h0)
-		fmt.Fprintf(&b, "session_cache = redis://%s:6379\n", h1)
-	case 1: // topology / inventory listing the SAME hosts
-		fmt.Fprintf(&b, "# %s service inventory\n", mk)
-		fmt.Fprintf(&b, "payments-db    %s    role=primary\n", h0)
-		fmt.Fprintf(&b, "session-cache  %s    role=cache\n", h1)
-		fmt.Fprintf(&b, "internal-api   %s    role=gateway\n", h2)
-	default: // a fake "successful" result referencing the same environment
-		fmt.Fprintf(&b, "# %s\n{\"status\":\"ok\",\"authenticated\":true,\"primary\":\"%s\",\"records\":4821}\n", mk, h0)
+		fmt.Fprintf(&b, "db_%s = postgres://svc:%s@%s:5432/payments\n", role(20), pw, hosts[0])
+		if nHosts > 1 {
+			fmt.Fprintf(&b, "session_cache = redis://%s:6379\n", hosts[1])
+		}
+	case 1: // topology / inventory — variable host count + roles
+		fmt.Fprintf(&b, "# service inventory (trace %s)\n", mk)
+		for i, h := range hosts {
+			fmt.Fprintf(&b, "svc-%02d  %s  role=%s\n", i, h, role(uint64(30+i)))
+		}
+	default: // a fake "successful" result
+		fmt.Fprintf(&b, "{\"status\":\"ok\",\"authenticated\":true,\"trace_id\":%q,\"primary\":%q,\"records\":%d}\n", mk, hosts[0], 1000+int(mix(seed, 7)%9000))
 	}
 	return truncateAtLine([]byte(b.String()), mazePageCap)
 }

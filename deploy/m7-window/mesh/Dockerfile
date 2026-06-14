@@ -1,6 +1,6 @@
 # Builds the tiny M7 mesh service (deploy/m7-window/mesh). Context is the repo
 # root so the module (go.mod) is available. Static, distroless — host-networked.
-FROM golang:1.22-alpine AS build
+FROM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

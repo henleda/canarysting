@@ -129,7 +129,12 @@ func (c Config) Normalized() Config {
 		c.Mapper = StripQueryPathMapper{}
 	}
 	if c.InlineTimeout <= 0 {
-		c.InlineTimeout = 50 * time.Millisecond
+		// MUST be >= the caller's engine-call timeout: the inline hold waits this long
+		// for the verdict, so if it is shorter than the engine call it fires first and
+		// the adapter falls closed (403) on a canary touch the engine would have decided
+		// — before the attrition pump ever runs. 250ms comfortably exceeds the 200ms
+		// engine call timeout the composition root uses.
+		c.InlineTimeout = 250 * time.Millisecond
 	}
 	if c.ResolveRetry <= 0 {
 		c.ResolveRetry = 5 * time.Millisecond
@@ -266,6 +271,10 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 	if serr != nil {
 		// Engine unavailable for an inline decision; the tier is unknown, so use the
 		// most-conservative inline posture (fail-closed by default for a canary touch).
+		// Surface WHY — a silent fall-closed on a canary touch hides a timeout/engine
+		// fault that would otherwise look like a working deny (it is what made every
+		// inline canary touch a flat 403 with no log).
+		log.Printf("envoy: inline submit FAILED for canary touch cookie=%#x (fall-closed): %v", ev.Flow.SocketCookie, serr)
 		if a.cfg.Fail.Allow(contract.TierJail) {
 			return continueResp(nil)
 		}

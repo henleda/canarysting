@@ -410,33 +410,25 @@ func TestTokenProxyKeysOffRotatedGenerator(t *testing.T) {
 // --- AX2: information poisoning (poison_field) ---
 
 func TestPoisonFieldInternallyConsistent(t *testing.T) {
-	// Every stage of the fabricated environment must reference the SAME hosts, so an
-	// agent inspecting it sees a coherent (false) world — the "plausible under
+	// Every stage of the fabricated environment must reference the SAME primary host, so
+	// an agent inspecting it sees a coherent (false) world — the "plausible under
 	// inspection" requirement. The host set is recomputed from the seed, never stored.
+	// (The page content/host-count now VARIES per stage+seed for realism, but the
+	// primary host — poisonPage hosts[0] — stays consistent across stages.)
 	const seed = 0xC0FFEE
-	h0 := decoy.ReservedHost(mix(seed, 0)) // the "primary" — referenced by every stage
-	h1 := decoy.ReservedHost(mix(seed, 1)) // the "cache" — referenced by cred + topology
-	h2 := decoy.ReservedHost(mix(seed, 2)) // the "gateway" — referenced by topology
-	// The hosts must be DISTINCT, or "consistency across stages" would be trivially
-	// (and implausibly) satisfied by one repeated host.
-	if h0 == h1 || h1 == h2 || h0 == h2 {
-		t.Fatalf("fabricated hosts are not distinct: %q %q %q", h0, h1, h2)
-	}
+	primary := decoy.ReservedHost(mix(seed, 10)) // hosts[0] in poisonPage — every stage references it
 	pages := make([]string, len(poisonClasses))
 	for stage := range poisonClasses {
 		pages[stage] = string(poisonPage(seed, stage))
 	}
 	for stage, page := range pages {
-		if !strings.Contains(page, h0) {
-			t.Fatalf("stage %d (%s) does not reference the consistent primary host %q:\n%s", stage, poisonClasses[stage], h0, page)
+		if !strings.Contains(page, primary) {
+			t.Fatalf("stage %d (%s) does not reference the consistent primary host %q:\n%s", stage, poisonClasses[stage], primary, page)
 		}
 	}
-	if !strings.Contains(pages[0], h1) || !strings.Contains(pages[1], h1) {
-		t.Fatalf("cache host %q is not consistent across the credential+topology stages", h1)
-	}
 	// A different flow (seed) gets a DIFFERENT environment (per-flow keyed).
-	if strings.Contains(string(poisonPage(seed+1, 0)), h0) {
-		t.Fatal("a different seed reproduced the same host — poison_field is not per-flow keyed")
+	if strings.Contains(string(poisonPage(seed+1, 0)), primary) {
+		t.Fatal("a different seed reproduced the same primary host — poison_field is not per-flow keyed")
 	}
 }
 

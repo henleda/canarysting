@@ -27,6 +27,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   -ground-truth-registry ${GROUND_TRUTH} \
   -dashboard-tap-addr ${DASHBOARD_TAP_ADDR} \
   $AGGRESSIVE_FLAG \
+  $DEMO_ESCALATION_FLAG \
   $DEMO_FLOOR_FLAG \
   $CONSUME_FLAG \
   $SHARED_SPOOL_FLAG \
