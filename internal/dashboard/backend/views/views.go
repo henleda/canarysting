@@ -461,7 +461,7 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 			LadderCaption:     "Two windows, not one denominator: T0 = cumulative observed-normal traffic (eBPF folds since start, pinned to the full bar); T1-3 fractions are of the attacker subtotal within the events window only. The two are intentionally not mixed.",
 			FlowFunnel:        funnel,
 			// Two-rail funnel caption — deliberately NOT the per-event LadderCaption.
-			FunnelCaption: "Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows within this window, each flow once at its highest tier — not per event.",
+			FunnelCaption: "Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows that reached at least that tier within this window — a flow is counted in each stage it reached, not per event.",
 		},
 		AttackerCost:      buildAttackerCost(summary),
 		KernelContainment: buildKernelContainment(events),

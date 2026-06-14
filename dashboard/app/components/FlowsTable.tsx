@@ -14,6 +14,12 @@ const TIERS = [
   { v: 3, l: 'T3' },
 ];
 
+// tierName maps a tier index to its short verdict label (used in the reached-cohort
+// header, e.g. min_tier=2 → "reached ≥ Contain").
+function tierName(t: number): string {
+  return t === 1 ? 'Tag' : t === 2 ? 'Contain' : t === 3 ? 'Jail' : `T${t}`;
+}
+
 function localTime(ts: string): string {
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? ts : d.toISOString().slice(11, 19);
@@ -21,7 +27,21 @@ function localTime(ts: string): string {
 
 // FlowsTable lists SESSIONS (decision E): each row is a cookie-session. The
 // cookie cell deep-links to that exact session via ?session=<start unix>.
-export default function FlowsTable({ data, tierFilter, loading }: { data: FlowsList | null; tierFilter: number; loading: boolean }) {
+//
+// Two filter modes: `tierFilter` (exact peak, driven by the pill row) and
+// `minTier` (cumulative reach, reached >= minTier — the funnel's "reached at
+// least" drill-down). When minTier is set it takes precedence over tierFilter.
+export default function FlowsTable({
+  data,
+  tierFilter,
+  minTier = 0,
+  loading,
+}: {
+  data: FlowsList | null;
+  tierFilter: number;
+  minTier?: number;
+  loading: boolean;
+}) {
   const router = useRouter();
   const { since } = useSince();
 
@@ -33,13 +53,17 @@ export default function FlowsTable({ data, tierFilter, loading }: { data: FlowsL
 
   return (
     <>
-      <div className="trange" style={{ marginBottom: 16 }}>
-        {TIERS.map((t) => (
-          <button key={t.v} className={`pill-btn${t.v === tierFilter ? ' active' : ''}`} onClick={() => setTier(t.v)}>
-            {t.l}
-          </button>
-        ))}
-      </div>
+      {minTier > 0 ? (
+        <h3 style={{ marginBottom: 16 }}>flows that reached ≥ {tierName(minTier)}</h3>
+      ) : (
+        <div className="trange" style={{ marginBottom: 16 }}>
+          {TIERS.map((t) => (
+            <button key={t.v} className={`pill-btn${t.v === tierFilter ? ' active' : ''}`} onClick={() => setTier(t.v)}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+      )}
       {!data ? (
         <div className="faint mono">{loading ? 'WARMING UP…' : 'no flows'}</div>
       ) : data.flows.length === 0 && tierFilter === 0 ? (
@@ -65,7 +89,7 @@ export default function FlowsTable({ data, tierFilter, loading }: { data: FlowsL
           </p>
         </div>
       ) : data.flows.length === 0 ? (
-        <div className="faint mono">no sessions in window{tierFilter >= 0 ? ` at tier ${tierFilter}` : ''}</div>
+        <div className="faint mono">no sessions in window{minTier > 0 ? ` that reached ≥ ${tierName(minTier)}` : tierFilter >= 0 ? ` at tier ${tierFilter}` : ''}</div>
       ) : (
         <table className="flows-table">
           <thead>

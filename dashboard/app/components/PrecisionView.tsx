@@ -98,29 +98,32 @@ export default function PrecisionView({ snapshot, loading }: { snapshot: Overvie
   );
 }
 
-// DistinctFunnel renders the four DISTINCT-flow stages: observed (cumulative, its
-// own rail) › decoy-touched › contained › jailed (windowed, each flow once at its
-// highest tier — never per-event). Each step deep-links to the matching /flows view.
+// DistinctFunnel renders the four DISTINCT-flow stages by CUMULATIVE REACH:
+// observed (cumulative, its own rail) › decoy-touched › contained › jailed
+// (windowed, each flow counted in EVERY stage it reached — never per-event). The
+// › arrows mean "reached at least", so flows that escalate through containment to
+// the jail are counted in BOTH contained and jailed. Each step deep-links to the
+// matching /flows view (contained uses the cumulative min_tier=2 cohort).
 export function DistinctFunnel({ observed, funnel }: { observed: number; funnel: FlowFunnelView | undefined }) {
   const decoyTouched = funnel?.decoy_touched ?? 0;
   const contained = funnel?.contained ?? 0;
   const jailed = funnel?.jailed ?? 0;
   return (
     <div className="funnel">
-      <FunnelStep cls="t0" n={observed} label="observed" note="cumulative · since start" href="/flows?tier=0&since=1h" />
+      <FunnelStep cls="t0" n={observed} label="observed" note="cumulative · since start" href="/flows?tier=0&since=1h" title="cumulative observed-normal traffic since engine start (its own rail, never summed)" />
       <span className="funnel-arrow">›</span>
-      <FunnelStep cls="t1" n={decoyTouched} label="decoy-touched" note="distinct · this window" href="/flows?since=1h" />
+      <FunnelStep cls="t1" n={decoyTouched} label="decoy-touched" note="distinct · this window" href="/flows?since=1h" title="reached at least a decoy touch (Tier 1) this window" />
       <span className="funnel-arrow">›</span>
-      <FunnelStep cls="t2" n={contained} label="contained" note="distinct · peak T2" href="/flows?tier=2&since=1h" />
+      <FunnelStep cls="t2" n={contained} label="contained" note="distinct · reached T2+" href="/flows?min_tier=2&since=1h" title="reached at least containment (Tier 2) this window" />
       <span className="funnel-arrow">›</span>
-      <FunnelStep cls="t3" n={jailed} label="jailed" note="distinct · peak T3" href="/flows?tier=3&since=1h" />
+      <FunnelStep cls="t3" n={jailed} label="jailed" note="distinct · reached T3" href="/flows?tier=3&since=1h" title="reached the kernel jail (Tier 3) this window" />
     </div>
   );
 }
 
-function FunnelStep({ cls, n, label, note, href }: { cls: string; n: number; label: string; note: string; href: string }) {
+function FunnelStep({ cls, n, label, note, href, title }: { cls: string; n: number; label: string; note: string; href: string; title?: string }) {
   return (
-    <Link className={`funnel-step ${cls}`} href={href} style={{ color: 'inherit', textDecoration: 'none' }}>
+    <Link className={`funnel-step ${cls}`} href={href} title={title} style={{ color: 'inherit', textDecoration: 'none' }}>
       <div className="fs-num">{fmtInt(n)}</div>
       <div className="fs-label">{label}</div>
       <div className="fs-note">{note}</div>

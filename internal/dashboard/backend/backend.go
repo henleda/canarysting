@@ -420,11 +420,24 @@ func (b *Backend) serveFlowDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, d)
 }
 
+// serveFlowsList serves the flows table. Two mutually-exclusive tier filters:
+//   - ?tier=N    EXACT peak tier (DeriveFlowsList): rows whose peak == N. -1/absent = all.
+//   - ?min_tier=N CUMULATIVE reach (FlowsReached): rows that reached >= N (a flow is
+//     kept in every stage it reached). Valid N is 1..3. This backs the funnel's
+//     "reached at least" stages (e.g. the contained drill-down min_tier=2).
+//
+// min_tier takes precedence when present and valid; otherwise the exact tier path runs.
 func (b *Backend) serveFlowsList(w http.ResponseWriter, r *http.Request) {
 	tier := -1
 	if t := r.URL.Query().Get("tier"); t != "" {
 		if n, err := strconv.Atoi(t); err == nil {
 			tier = n
+		}
+	}
+	minTier := 0
+	if mt := r.URL.Query().Get("min_tier"); mt != "" {
+		if n, err := strconv.Atoi(mt); err == nil && n >= 1 && n <= 3 {
+			minTier = n
 		}
 	}
 	sinceSec := parseSince(r, b.cfg.EventsWindow)
@@ -434,6 +447,10 @@ func (b *Backend) serveFlowsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setWindowHeader(w, sinceSec, effSec)
+	if minTier > 0 {
+		writeJSON(w, views.FlowsReached(events, minTier))
+		return
+	}
 	writeJSON(w, views.DeriveFlowsList(events, tier))
 }
 
