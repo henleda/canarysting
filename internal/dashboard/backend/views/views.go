@@ -66,7 +66,32 @@ type TapState struct {
 	Baseline      baseline.GateState       `json:"baseline"`
 	Observe       observebaseline.AggStats `json:"observe"`
 	CrossCustomer CrossCustomerView        `json:"cross_customer"`
+	ReconLive     []ReconLiveFlowView      `json:"recon_live"`
 	At            time.Time                `json:"at"`
+}
+
+// ReconLiveFlowView mirrors the tap's recon_live entries: a currently-live flow
+// that looks anomalous from the learned baseline but touched NO canary. Surfaced
+// as observe-only early-warning (derived novelty + coarse traffic; rule 9).
+type ReconLiveFlowView struct {
+	FlowID      uint64  `json:"flow_id"`
+	FlowIDHex   string  `json:"flow_id_hex"`
+	Novelty     float64 `json:"novelty"`
+	TopSignal   string  `json:"top_signal"`
+	Bytes       uint64  `json:"bytes"`
+	DurationSec float64 `json:"duration_sec"`
+	Severity    string  `json:"severity"`
+}
+
+// ReconLiveView is the OBSERVE-ONLY recon early-warning surface: live flows that
+// look anomalous from baseline but touched no canary. Its whole purpose is to make
+// RESTRAINT visible — "we see this and take no action" — so it carries a fixed
+// honesty note + a count alongside the flows. Active when at least one is watched.
+type ReconLiveView struct {
+	Active bool                `json:"active"`
+	Count  int                 `json:"count"`
+	Flows  []ReconLiveFlowView `json:"flows"`
+	Note   string              `json:"note"`
 }
 
 // CrossCustomerView mirrors the tap's cross_customer block: the D6 consumer-side
@@ -118,6 +143,10 @@ type Overview struct {
 	// timeline, so the CISO sees the cascade as a story, not just a tier-count
 	// snapshot. Pure derivation over the current flow's events; absent if no flow.
 	Journey JourneyView `json:"journey"`
+
+	// ReconLive is the observe-only early-warning surface: anomalous-from-baseline
+	// flows that touched no canary, shown to prove restraint (we see, we don't act).
+	ReconLive ReconLiveView `json:"recon_live"`
 }
 
 // RealAttackCostView is the M9 real-cost meter. It mirrors the tap's
@@ -367,8 +396,25 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		Credibility:       buildCredibility(state, events, calib),
 		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now, state.CrossCustomer),
 		Journey:           buildJourney(flow, events, now),
+		ReconLive:         buildReconLive(state.ReconLive),
 	}
 	return ov
+}
+
+// buildReconLive wraps the tap's observe-only recon flows with a count and a fixed
+// honesty note. It is pure passthrough + framing — the tap already classified
+// these as anomalous-from-baseline non-canary-touchers; the backend never adds an
+// action (rule 8: this surface can only ever observe).
+func buildReconLive(flows []ReconLiveFlowView) ReconLiveView {
+	if flows == nil {
+		flows = []ReconLiveFlowView{}
+	}
+	return ReconLiveView{
+		Active: len(flows) > 0,
+		Count:  len(flows),
+		Flows:  flows,
+		Note:   "Surfaced, not actioned — these flows look anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).",
+	}
 }
 
 // selectCurrentFlow picks the "current attacker": the flow with the highest max

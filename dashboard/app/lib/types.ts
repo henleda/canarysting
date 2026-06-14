@@ -160,6 +160,28 @@ export interface ReconEvent {
   severity: 'recon' | 'surfaced' | string;
 }
 
+// ReconLiveFlow is one currently-live flow that looks anomalous from the learned
+// baseline but touched NO canary — surfaced as observe-only early-warning.
+export interface ReconLiveFlow {
+  flow_id: number;
+  flow_id_hex: string;
+  novelty: number; // strongest baseline-deviation dim [0,1]
+  top_signal: string; // which dim drove it ("new identity" / "new adjacency" / …)
+  bytes: number; // coarse traffic (ingress+egress)
+  duration_sec: number; // observed lifetime (coarse)
+  severity: 'recon' | 'surfaced' | string;
+}
+
+// ReconLiveView is the OBSERVE-ONLY recon surface: flows anomalous-from-baseline
+// that touched no canary. Its purpose is to make RESTRAINT visible — we see it,
+// we don't act (Rule 8: only a canary touch arms a response).
+export interface ReconLiveView {
+  active: boolean;
+  count: number;
+  flows: ReconLiveFlow[] | null;
+  note: string;
+}
+
 // FlowFingerprint is the adversary behavioral fingerprint for one flow.
 export interface FlowFingerprint {
   flow_id: number;
@@ -232,6 +254,10 @@ export interface Overview {
 
   // The current attacker flow's legible arc (recon → escalation → disengage).
   journey: JourneyView;
+
+  // Observe-only recon: anomalous-from-baseline flows that touched no canary.
+  // The "we see it and choose not to act" surface (Rule 8 made visible).
+  recon_live: ReconLiveView;
 }
 
 // JourneyMilestone is one beat in the attacker's arc. axes_firing lists the OVERLAPPING

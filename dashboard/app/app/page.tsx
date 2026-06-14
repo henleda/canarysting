@@ -10,6 +10,7 @@ import KernelContainment from '@/components/KernelContainment';
 import Credibility from '@/components/Credibility';
 import AdversaryIntelligence from '@/components/AdversaryIntelligence';
 import Journey from '@/components/Journey';
+import ReconLive from '@/components/ReconLive';
 
 export default function OperationsPage() {
   // PRODUCTION render path: live snapshot + status from the dashboard-backend.
@@ -36,6 +37,9 @@ export default function OperationsPage() {
       </div>
       <div className="journey-row">
         <Journey journey={snapshot?.journey} />
+      </div>
+      <div className="journey-row">
+        <ReconLive recon={snapshot?.recon_live} />
       </div>
       <div className="band">
         {/* KernelContainment links to /precision from its bystander note (it has

@@ -221,6 +221,15 @@ export const fixtureOverview: Overview = {
     ],
     latest: { offset_label: '−0:48', phase: 'disengaged', tier: 3, title: 'Attacker disengaged', detail: 'gave up before any defender bound — the engagement signal' },
   },
+  recon_live: {
+    active: true,
+    count: 2,
+    flows: [
+      { flow_id: 0x4a2c, flow_id_hex: '0x4a2c', novelty: 0.92, top_signal: 'new identity', bytes: 1840, duration_sec: 14, severity: 'surfaced' },
+      { flow_id: 0x51d0, flow_id_hex: '0x51d0', novelty: 0.61, top_signal: 'new adjacency', bytes: 640, duration_sec: 6, severity: 'recon' },
+    ],
+    note: 'Surfaced, not actioned — these flows look anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).',
+  },
 };
 
 // ---- Interactive console drill-down fixtures (NEXT_PUBLIC_FIXTURE=1) ----

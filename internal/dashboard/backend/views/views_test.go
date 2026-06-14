@@ -70,6 +70,35 @@ func evScore(flowID uint64, tier int, verdict, canary string, offsetSec int, sco
 	return e
 }
 
+// The observe-only recon surface: empty -> inactive but with the restraint note
+// and an empty (non-nil) slice; populated -> passthrough with a count + active.
+func TestDeriveReconLive(t *testing.T) {
+	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+
+	ov := Derive(TapState{Scope: "s"}, nil, base)
+	if ov.ReconLive.Active || ov.ReconLive.Count != 0 {
+		t.Fatalf("empty recon-live should be inactive/0: %+v", ov.ReconLive)
+	}
+	if ov.ReconLive.Flows == nil {
+		t.Fatal("Flows must be an empty slice, not nil, for clean JSON")
+	}
+	if ov.ReconLive.Note == "" {
+		t.Fatal("the restraint note (we see it, we don't act) must always be present")
+	}
+
+	state := TapState{Scope: "s", ReconLive: []ReconLiveFlowView{
+		{FlowID: 0x2f1a, FlowIDHex: "0x2f1a", Novelty: 1.0, TopSignal: "new identity", Bytes: 4096, Severity: "surfaced"},
+		{FlowID: 0x3b00, FlowIDHex: "0x3b00", Novelty: 0.6, TopSignal: "new adjacency", Bytes: 800, Severity: "recon"},
+	}}
+	ov = Derive(state, nil, base)
+	if !ov.ReconLive.Active || ov.ReconLive.Count != 2 {
+		t.Fatalf("populated recon-live should be active/2: %+v", ov.ReconLive)
+	}
+	if ov.ReconLive.Flows[0].TopSignal != "new identity" || ov.ReconLive.Flows[1].Severity != "recon" {
+		t.Fatalf("recon-live passthrough wrong: %+v", ov.ReconLive.Flows)
+	}
+}
+
 func TestDeriveEmpty(t *testing.T) {
 	now := base.Add(time.Minute)
 	ov := Derive(TapState{Scope: "m7-window", At: base}, nil, now)
