@@ -67,6 +67,7 @@ type TapState struct {
 	Observe       observebaseline.AggStats `json:"observe"`
 	CrossCustomer CrossCustomerView        `json:"cross_customer"`
 	ReconLive     []ReconLiveFlowView      `json:"recon_live"`
+	Bystanders    []BystanderFlowView      `json:"bystanders"`
 	At            time.Time                `json:"at"`
 }
 
@@ -91,6 +92,26 @@ type ReconLiveView struct {
 	Active bool                `json:"active"`
 	Count  int                 `json:"count"`
 	Flows  []ReconLiveFlowView `json:"flows"`
+	Note   string              `json:"note"`
+}
+
+// BystanderFlowView mirrors the tap's bystander entries: a live LEGITIMATE
+// workload still serving (coarse traffic only; rule 9), shown to prove flow-
+// precise containment — same host, untouched, while an attacker is kernel-jailed.
+type BystanderFlowView struct {
+	FlowID      uint64  `json:"flow_id"`
+	FlowIDHex   string  `json:"flow_id_hex"`
+	Bytes       uint64  `json:"bytes"`
+	DurationSec float64 `json:"duration_sec"`
+}
+
+// BystanderView is the dashboard-native "contain the flow, not the host" proof:
+// legitimate workloads still serving on the same host while an attacker socket is
+// kernel-jailed. Carries a count + a fixed note. Active when at least one serves.
+type BystanderView struct {
+	Active bool                `json:"active"`
+	Count  int                 `json:"count"`
+	Flows  []BystanderFlowView `json:"flows"`
 	Note   string              `json:"note"`
 }
 
@@ -147,6 +168,10 @@ type Overview struct {
 	// ReconLive is the observe-only early-warning surface: anomalous-from-baseline
 	// flows that touched no canary, shown to prove restraint (we see, we don't act).
 	ReconLive ReconLiveView `json:"recon_live"`
+
+	// Bystanders: legitimate workloads still serving on the same host while an
+	// attacker is kernel-jailed — the dashboard-native flow-precision proof.
+	Bystanders BystanderView `json:"bystanders"`
 }
 
 // RealAttackCostView is the M9 real-cost meter. It mirrors the tap's
@@ -397,8 +422,24 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now, state.CrossCustomer),
 		Journey:           buildJourney(flow, events, now),
 		ReconLive:         buildReconLive(state.ReconLive),
+		Bystanders:        buildBystanders(state.Bystanders),
 	}
 	return ov
+}
+
+// buildBystanders wraps the tap's live serving-workload list with a count and a
+// fixed framing note. Pure passthrough — the tap already classified these as
+// low-novelty, non-armed, actively-serving flows; the backend never acts on them.
+func buildBystanders(flows []BystanderFlowView) BystanderView {
+	if flows == nil {
+		flows = []BystanderFlowView{}
+	}
+	return BystanderView{
+		Active: len(flows) > 0,
+		Count:  len(flows),
+		Flows:  flows,
+		Note:   "Same host, still serving — the kernel jail dropped only the attacker's socket; every other flow here is untouched by the response and keeps returning traffic. We contain the flow, not the host.",
+	}
 }
 
 // buildReconLive wraps the tap's observe-only recon flows with a count and a fixed

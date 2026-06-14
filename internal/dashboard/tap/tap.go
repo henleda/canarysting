@@ -52,6 +52,9 @@ const (
 	reconLiveSurfacedFloor = 0.85
 	// maxReconLiveFlows caps the surface so a broad scan can't flood the panel.
 	maxReconLiveFlows = 8
+	// maxBystanderFlows caps the serving-workload list (the "still 200 on the same
+	// host" proof) so a busy benign population doesn't flood the panel.
+	maxBystanderFlows = 8
 )
 
 // Source holds the read-only handles the tap surfaces. Any may be nil (the tap
@@ -86,6 +89,7 @@ type State struct {
 	Observe       observebaseline.AggStats `json:"observe"`
 	CrossCustomer CrossCustomerState       `json:"cross_customer"`
 	ReconLive     []ReconLiveFlow          `json:"recon_live"`
+	Bystanders    []BystanderFlow          `json:"bystanders"`
 	At            time.Time                `json:"at"`
 }
 
@@ -103,6 +107,22 @@ type ReconLiveFlow struct {
 	Bytes       uint64  `json:"bytes"`        // coarse traffic (ingress+egress)
 	DurationSec float64 `json:"duration_sec"` // observed lifetime (coarse)
 	Severity    string  `json:"severity"`     // "recon" (quiet) | "surfaced" (loud) — presentation tier only
+}
+
+// BystanderFlow is one currently-live, low-novelty, NON-ARMED flow still serving
+// traffic — a flow the response did NOT action (not jailed, not contained). It is
+// the dashboard-native proof of flow-precise containment: the kernel jail drops
+// only the attacker's socket, so every other flow on the same host keeps serving.
+// HONESTY: the claim is "not actioned / still serving", NOT "provably legitimate".
+// A canary touch that scored below the Tag threshold (Tier 0) is non-armed and so
+// could appear here (boltevents stores only Tier>=1, so armedCookies can't exclude
+// it) — which is why the surface asserts non-containment, never innocence. Coarse
+// traffic only (rule 9); observe-only (cannot arm a response — rule 8).
+type BystanderFlow struct {
+	FlowID      uint64  `json:"flow_id"`
+	FlowIDHex   string  `json:"flow_id_hex"`
+	Bytes       uint64  `json:"bytes"`        // coarse traffic served (ingress+egress)
+	DurationSec float64 `json:"duration_sec"` // observed lifetime (coarse)
 }
 
 // CrossCustomerState surfaces the D6 cross-customer network from the CONSUMER side:
@@ -151,7 +171,7 @@ func (s *Source) handleState(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.Aggregator != nil {
 		st.Observe = s.Aggregator.Stats()
-		st.ReconLive = s.buildReconLive(now)
+		st.ReconLive, st.Bystanders = s.buildLiveSurfaces(now)
 	}
 	if s.SharedSet != nil {
 		cc := CrossCustomerState{Consuming: s.SharedSet.Len(), Threshold: network.AggregationThreshold}
@@ -198,48 +218,62 @@ func (s *Source) currentAdversaryFlow(now time.Time) (uint64, bool) {
 	return bestCookie, found
 }
 
-// buildReconLive surfaces NON-canary-touching live flows that look anomalous from
-// the learned baseline as OBSERVE-ONLY recon early-warning — the visible proof of
-// restraint: we see novel identities / negative-space scanning and take NO action
-// (Rule 8: only a canary touch can arm a response; baseline deviation is context,
-// never a trigger). Flows that touched a canary (escalation pipeline) are excluded
-// here — they appear on the escalation/containment surfaces, not "we didn't act".
-func (s *Source) buildReconLive(now time.Time) []ReconLiveFlow {
+// buildLiveSurfaces classifies the engine's currently-live flows into the two
+// OBSERVE-ONLY dashboard surfaces in ONE pass (one LiveFlows read + one events
+// query). NEITHER can arm a response — both are read-side views (rule 8: observe
+// data is context, never a trigger). Canary-touchers (armedCookies, Tier>=1) are
+// excluded from both — they belong to the escalation/containment surfaces. Of the
+// remaining NON-armed live flows:
+//   - RECON: peak baseline-novelty >= reconLiveNoticeFloor — anomalous; "we see it,
+//     we don't act" (the restraint proof).
+//   - BYSTANDER: low novelty AND actively serving (bytes>0) — a real workload still
+//     serving on the same host while an attacker is kernel-jailed elsewhere
+//     (the dashboard-native "contain the flow, not the host" proof).
+func (s *Source) buildLiveSurfaces(now time.Time) ([]ReconLiveFlow, []BystanderFlow) {
 	flows := s.Aggregator.LiveFlows(now)
 	if len(flows) == 0 {
-		return nil
+		return nil, nil
 	}
 	armed := s.armedCookies(now)
-	out := make([]ReconLiveFlow, 0, len(flows))
+	recon := []ReconLiveFlow{}
+	byst := []BystanderFlow{}
 	for _, f := range flows {
 		if armed[f.Cookie] {
-			continue // a canary-toucher belongs to escalation, not the recon surface
+			continue // a canary-toucher belongs to escalation/containment, not here
 		}
 		nov, top := peakNovelty(f)
-		if nov < reconLiveNoticeFloor {
-			continue // a normal-looking serving flow (bystander), not recon
+		if nov >= reconLiveNoticeFloor {
+			if len(recon) >= maxReconLiveFlows {
+				continue
+			}
+			sev := "recon"
+			if nov >= reconLiveSurfacedFloor {
+				sev = "surfaced"
+			}
+			recon = append(recon, ReconLiveFlow{
+				FlowID:      f.Cookie,
+				FlowIDHex:   "0x" + strconv.FormatUint(f.Cookie, 16),
+				Novelty:     nov,
+				TopSignal:   top,
+				Bytes:       f.IngressBytes + f.EgressBytes,
+				DurationSec: f.DurationSec,
+				Severity:    sev,
+			})
+			continue
 		}
-		sev := "recon"
-		if nov >= reconLiveSurfacedFloor {
-			sev = "surfaced"
+		// Low-novelty, non-armed, ACTIVELY-SERVING -> a legitimate bystander workload
+		// (the "still 200 on the same host while the attacker is jailed" proof).
+		if f.IngressBytes+f.EgressBytes == 0 || len(byst) >= maxBystanderFlows {
+			continue
 		}
-		out = append(out, ReconLiveFlow{
+		byst = append(byst, BystanderFlow{
 			FlowID:      f.Cookie,
 			FlowIDHex:   "0x" + strconv.FormatUint(f.Cookie, 16),
-			Novelty:     nov,
-			TopSignal:   top,
 			Bytes:       f.IngressBytes + f.EgressBytes,
 			DurationSec: f.DurationSec,
-			Severity:    sev,
 		})
-		if len(out) >= maxReconLiveFlows {
-			break
-		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return recon, byst
 }
 
 // armedCookies is the set of socket cookies that touched a canary recently (Tier>=1

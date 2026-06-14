@@ -11,6 +11,7 @@ import Credibility from '@/components/Credibility';
 import AdversaryIntelligence from '@/components/AdversaryIntelligence';
 import Journey from '@/components/Journey';
 import ReconLive from '@/components/ReconLive';
+import BystanderHealth from '@/components/BystanderHealth';
 
 export default function OperationsPage() {
   // PRODUCTION render path: live snapshot + status from the dashboard-backend.
@@ -35,6 +36,15 @@ export default function OperationsPage() {
           <AttackerCost cost={snapshot?.attacker_cost} real={snapshot?.real_attack_cost} />
         </Link>
       </div>
+      {/* THE WOW — flow-precise containment in ONE eye-span: the attacker socket
+          jailed in-kernel (left) right next to legitimate same-host workloads
+          still serving 200 (right). This is the dashboard-native bystander proof
+          that replaces the old terminal-curl. KernelContainment links to
+          /precision from its note (inner cookie links, so not one anchor). */}
+      <div className="hero">
+        <KernelContainment containment={snapshot?.kernel_containment} />
+        <BystanderHealth bystanders={snapshot?.bystanders} />
+      </div>
       <div className="journey-row">
         <Journey journey={snapshot?.journey} />
       </div>
@@ -42,9 +52,6 @@ export default function OperationsPage() {
         <ReconLive recon={snapshot?.recon_live} />
       </div>
       <div className="band">
-        {/* KernelContainment links to /precision from its bystander note (it has
-            inner cookie links, so the whole panel can't be one anchor). */}
-        <KernelContainment containment={snapshot?.kernel_containment} />
         <Credibility credibility={snapshot?.credibility} />
         <AdversaryIntelligence intel={snapshot?.adversary_intel} />
       </div>

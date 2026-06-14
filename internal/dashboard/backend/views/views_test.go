@@ -99,6 +99,35 @@ func TestDeriveReconLive(t *testing.T) {
 	}
 }
 
+// The dashboard-native bystander proof: empty -> inactive but with the framing
+// note + an empty (non-nil) slice; populated -> passthrough with a count + active.
+func TestDeriveBystanders(t *testing.T) {
+	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+
+	ov := Derive(TapState{Scope: "s"}, nil, base)
+	if ov.Bystanders.Active || ov.Bystanders.Count != 0 {
+		t.Fatalf("empty bystanders should be inactive/0: %+v", ov.Bystanders)
+	}
+	if ov.Bystanders.Flows == nil {
+		t.Fatal("Flows must be an empty slice, not nil, for clean JSON")
+	}
+	if ov.Bystanders.Note == "" {
+		t.Fatal("the contain-the-flow-not-the-host note must always be present")
+	}
+
+	state := TapState{Scope: "s", Bystanders: []BystanderFlowView{
+		{FlowID: 0x101, FlowIDHex: "0x101", Bytes: 12400, DurationSec: 41},
+		{FlowID: 0x102, FlowIDHex: "0x102", Bytes: 8800, DurationSec: 33},
+	}}
+	ov = Derive(state, nil, base)
+	if !ov.Bystanders.Active || ov.Bystanders.Count != 2 {
+		t.Fatalf("populated bystanders should be active/2: %+v", ov.Bystanders)
+	}
+	if ov.Bystanders.Flows[0].FlowIDHex != "0x101" {
+		t.Fatalf("bystander passthrough wrong: %+v", ov.Bystanders.Flows)
+	}
+}
+
 func TestDeriveEmpty(t *testing.T) {
 	now := base.Add(time.Minute)
 	ov := Derive(TapState{Scope: "m7-window", At: base}, nil, now)
