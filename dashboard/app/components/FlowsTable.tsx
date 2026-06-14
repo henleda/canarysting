@@ -42,6 +42,28 @@ export default function FlowsTable({ data, tierFilter, loading }: { data: FlowsL
       </div>
       {!data ? (
         <div className="faint mono">{loading ? 'WARMING UP…' : 'no flows'}</div>
+      ) : data.flows.length === 0 && tierFilter === 0 ? (
+        // Tier 0 (Observe) has NO per-flow records BY DESIGN. Benign east-west is
+        // folded into the eBPF baseline as an aggregate count, but never persisted
+        // as an interaction event (the engine drops everything below Tier 1 —
+        // boltevents CaptureVerdict returns nil for v.Tier < TierTag). The Tier-0
+        // tile is therefore a counter, not a queryable list. Explain that posture
+        // instead of rendering a misleading empty table.
+        <div className="t0-empty">
+          <div className="t0-empty-h">No per-flow records at Tier&nbsp;0 — by&nbsp;design</div>
+          <p>
+            CanarySting keeps <b>no per-flow log of benign east-west traffic.</b> The Tier-0
+            count is an aggregate the eBPF baseline folds into “normal” — not a record of
+            who-talked-to-whom. Per-flow detail begins at <b>Tier&nbsp;1: the first decoy touch.</b>
+          </p>
+          <p className="t0-empty-sub">
+            This is the zero-surveillance posture — we don’t retain traffic until it interacts
+            with a decoy. To see the observed-normal volume in aggregate, open{' '}
+            <Link href="/precision?since=1h">Bystanders / the observed funnel →</Link>. To see
+            anomalous-but-untouched flows we surface without acting, open{' '}
+            <Link href="/recon?since=1h">Recon →</Link>.
+          </p>
+        </div>
       ) : data.flows.length === 0 ? (
         <div className="faint mono">no sessions in window{tierFilter >= 0 ? ` at tier ${tierFilter}` : ''}</div>
       ) : (
