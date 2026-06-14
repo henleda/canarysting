@@ -288,11 +288,17 @@ func runRatio(ctx context.Context, p *prober, pct float64, benignRPM func() floa
 	}
 }
 
-// reconHoldMaxSec bounds a held-recon flow's lifetime BELOW the dashboard's
-// bystander threshold (a flow open >= ~8s reads as an established serving workload,
-// not a scanner). Keep held sessions comfortably under it so a scanner flow always
-// classifies as recon (transient + anomalous), never as a bystander.
-const reconHoldMaxSec = 7.0
+// A held-recon flow's worst-case lifetime is holdSec + reconProbeTimeout: the last
+// probe can start an instant before the deadline and run to its timeout, after
+// which we break WITHOUT a trailing sleep and FIN. reconHoldMaxSec bounds holdSec
+// so that worst case stays under the dashboard's 8s bystander threshold (a flow
+// open >= ~8s reads as an established serving workload, not a scanner). At the
+// cap 5.0 + 2.0 = 7.0s, a full 1s under the threshold.
+const (
+	reconHoldMaxSec   = 5.0
+	reconProbeTimeout = 2 * time.Second
+	reconProbeGap     = 1 * time.Second
+)
 
 // runReconHold keeps ONE recon scanner flow open at a time: it opens a fresh
 // connection from the recon IP (a new socket cookie the observe path sees as a
@@ -338,7 +344,9 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 		IdleConnTimeout:     time.Duration((holdSec + 2) * float64(time.Second)),
 	}
 	defer tr.CloseIdleConnections() // FIN the flow when the session ends
-	client := &http.Client{Timeout: 4 * time.Second, Transport: tr}
+	// Short per-probe timeout so a hung request cannot stretch the flow past the
+	// bystander threshold: worst-case lifetime = holdSec + reconProbeTimeout.
+	client := &http.Client{Timeout: reconProbeTimeout, Transport: tr}
 	deadline := time.Now().Add(time.Duration(holdSec * float64(time.Second)))
 	for time.Now().Before(deadline) {
 		path := paths[rng.Intn(len(paths))]
@@ -348,7 +356,12 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 				_ = resp.Body.Close()
 			}
 		}
-		if sleepCtx(ctx, time.Duration(1.4*float64(time.Second))) {
+		// Break BEFORE sleeping once the deadline has passed, so the trailing gap
+		// never inflates the flow's lifetime past holdSec + one probe timeout.
+		if !time.Now().Before(deadline) {
+			break
+		}
+		if sleepCtx(ctx, reconProbeGap) {
 			return
 		}
 	}
@@ -500,7 +513,7 @@ func parseFlags() config {
 		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
 		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
 		reconLive    = flag.Int("recon-live", 3, "concurrent HELD recon scanner flows (kept open ~recon-hold-sec so the dashboard recon surface stays populated; 0 disables)")
-		reconHoldSec = flag.Float64("recon-hold-sec", 5.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
+		reconHoldSec = flag.Float64("recon-hold-sec", 4.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
 		recompute    = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
 		keepalive    = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
 		dailyCap     = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
