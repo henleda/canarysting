@@ -6,6 +6,7 @@ package scoring
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,6 +17,18 @@ import (
 // docs/ENGINE.md: repeated touches inside it count more than the same touches
 // spread over hours.
 const DefaultWindow = 5 * time.Minute
+
+// DefaultMaxCookiesPerScope bounds the number of distinct per-flow (socket
+// cookie) scoring entries kept alive for a single scope. Per-flow scoring state
+// is otherwise never reclaimed, so over a multi-week pilot of real east-west
+// traffic the per-cookie map would grow without bound and eventually OOM the
+// engine. This is a memory-safety ceiling, NOT a learned parameter: it changes
+// no flow's score (an evicted idle flow had already aged out of its correlation
+// window, so it scores from scratch on its next touch exactly as a new flow
+// would). The cap is generous enough to hold every flow plausibly active inside
+// one window in a busy environment; once exceeded, the least-recently-touched
+// flows are reaped first. See docs/ENGINE.md.
+const DefaultMaxCookiesPerScope = 100_000
 
 // Window is the correlation window; repeated touches inside it count more than
 // the same touches spread over hours. Default to a few minutes via config.
@@ -86,8 +99,26 @@ type WindowedScorer struct {
 	weights    Weights
 	excluder   BenignExcluder
 	multiplier MultiplierSource
-	// state[scope][socketCookie][canaryType] = last touch time.
-	state map[contract.ScopeKey]map[uint64]map[contract.CanaryType]time.Time
+	// maxPerScope caps the live per-flow entries kept for one scope. Once a
+	// scope exceeds it, the least-recently-touched flows are reaped. A flow is
+	// only ever a candidate for the cap once it is idle (its newest touch has
+	// aged out of the correlation window), so the cap never changes an active
+	// flow's score. See DefaultMaxCookiesPerScope.
+	maxPerScope int
+	// state[scope][socketCookie] holds one flow's windowed scoring state.
+	state map[contract.ScopeKey]map[uint64]*flowState
+}
+
+// flowState is one flow's (one socket cookie's) windowed scoring state within a
+// scope: the last touch time of each distinct canary type, plus the flow's
+// most-recent touch time. lastTouch is the reaper's recency key — it lets the
+// reaper evict idle flows (newest touch older than the window) and, on a size
+// overflow, the least-recently-touched flows first, without scanning the inner
+// per-type map. lastTouch always equals the max of the per-type times, so it is
+// exactly "is this flow still inside its correlation window".
+type flowState struct {
+	touches   map[contract.CanaryType]time.Time
+	lastTouch time.Time
 }
 
 // New returns a WindowedScorer. A zero window falls back to DefaultWindow; a nil
@@ -102,12 +133,26 @@ func New(window time.Duration, weights Weights, excluder BenignExcluder) *Window
 		excluder = NoExclusions{}
 	}
 	return &WindowedScorer{
-		window:     window,
-		weights:    weights,
-		excluder:   excluder,
-		multiplier: NeutralMultiplier{},
-		state:      map[contract.ScopeKey]map[uint64]map[contract.CanaryType]time.Time{},
+		window:      window,
+		weights:     weights,
+		excluder:    excluder,
+		multiplier:  NeutralMultiplier{},
+		maxPerScope: DefaultMaxCookiesPerScope,
+		state:       map[contract.ScopeKey]map[uint64]*flowState{},
 	}
+}
+
+// WithMaxCookiesPerScope overrides the per-scope live-flow cap (default
+// DefaultMaxCookiesPerScope). A non-positive value is ignored (the cap stays at
+// its current value); the cap is a memory-safety ceiling, never disabled.
+// Returns the scorer for chaining.
+func (s *WindowedScorer) WithMaxCookiesPerScope(n int) *WindowedScorer {
+	if n > 0 {
+		s.mu.Lock()
+		s.maxPerScope = n
+		s.mu.Unlock()
+	}
+	return s
 }
 
 // UseMultiplier wires the baseline multiplier source. A nil source is ignored
@@ -144,21 +189,32 @@ func (s *WindowedScorer) Score(scope contract.ScopeKey, ev contract.SignalEvent)
 
 	byFlow := s.state[scope]
 	if byFlow == nil {
-		byFlow = map[uint64]map[contract.CanaryType]time.Time{}
+		byFlow = map[uint64]*flowState{}
 		s.state[scope] = byFlow
 	}
-	touches := byFlow[key]
-	if touches == nil {
-		touches = map[contract.CanaryType]time.Time{}
-		byFlow[key] = touches
+	fs := byFlow[key]
+	if fs == nil {
+		fs = &flowState{touches: map[contract.CanaryType]time.Time{}}
+		byFlow[key] = fs
 	}
-	touches[ev.Canary] = ev.Timestamp
+	fs.touches[ev.Canary] = ev.Timestamp
+	if ev.Timestamp.After(fs.lastTouch) {
+		fs.lastTouch = ev.Timestamp
+	}
+
+	// Reap idle/expired per-flow state before computing the score, so a long-
+	// lived stream of distinct flows can never grow the map without bound. This
+	// is driven by the event timestamp (not wall-clock), so it is deterministic
+	// and race-clean under the held lock. It never touches the flow being scored
+	// (key) — that flow is recomputed below from its own live touches — so an
+	// active flow's score is unaffected by a reap. See docs/ENGINE.md.
+	s.reap(byFlow, key, cutoff)
 
 	// B: the windowed weighted base over distinct touches in the window.
 	var base float64
-	for ct, last := range touches {
+	for ct, last := range fs.touches {
 		if last.Before(cutoff) {
-			delete(touches, ct) // expired out of the window; drop it
+			delete(fs.touches, ct) // expired out of the window; drop it
 			continue
 		}
 		base += s.weights.Weight(scope, ct)
@@ -173,4 +229,60 @@ func (s *WindowedScorer) Score(scope contract.ScopeKey, ev contract.SignalEvent)
 		m = 1
 	}
 	return base * m, nil
+}
+
+// reap bounds the per-flow scoring map for one scope. It runs under s.mu, driven
+// by the current event's window cutoff (logical time, not wall-clock). It must
+// never drop the flow currently being scored (keep) and must never change an
+// active (in-window) flow's score.
+//
+// Two passes:
+//  1. TTL eviction. Any flow whose newest touch (lastTouch) is at or before the
+//     window cutoff is idle: every one of its touches has aged out of the
+//     correlation window, so it would contribute a zero base on its next score
+//     regardless. Dropping it is equivalent to letting it score from scratch as
+//     a new flow — no active flow loses score. This also reclaims flows whose
+//     last touch self-expired (the empty-state case).
+//  2. Size cap. If the scope still exceeds maxPerScope after TTL eviction, evict
+//     the least-recently-touched flows (smallest lastTouch first) until back at
+//     the cap. Only flows that survived pass 1 are still in-window, so the cap
+//     is a hard ceiling that bites only under a genuine flood of concurrently
+//     active flows; under that load the oldest in-window flows are sacrificed
+//     first to keep memory bounded — the documented memory-safety tradeoff.
+//
+// keep (the flow just touched) is exempt from both passes.
+func (s *WindowedScorer) reap(byFlow map[uint64]*flowState, keep uint64, cutoff time.Time) {
+	for cookie, fs := range byFlow {
+		if cookie == keep {
+			continue
+		}
+		// At-or-before cutoff means no touch survives the window: idle.
+		if !fs.lastTouch.After(cutoff) {
+			delete(byFlow, cookie)
+		}
+	}
+
+	if s.maxPerScope <= 0 || len(byFlow) <= s.maxPerScope {
+		return
+	}
+
+	// Over the cap with everything in-window: evict least-recently-touched
+	// flows (never keep) until at the cap.
+	type entry struct {
+		cookie uint64
+		last   time.Time
+	}
+	candidates := make([]entry, 0, len(byFlow))
+	for cookie, fs := range byFlow {
+		if cookie == keep {
+			continue
+		}
+		candidates = append(candidates, entry{cookie: cookie, last: fs.lastTouch})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].last.Before(candidates[j].last)
+	})
+	for i := 0; i < len(candidates) && len(byFlow) > s.maxPerScope; i++ {
+		delete(byFlow, candidates[i].cookie)
+	}
 }
