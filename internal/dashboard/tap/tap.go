@@ -41,6 +41,19 @@ import (
 // confidence per-flow identity (that would fight the privacy guarantee).
 const crossMatchThreshold = 0.3
 
+const (
+	// reconLiveNoticeFloor is the baseline-novelty above which a NON-canary-touching
+	// live flow is surfaced as recon early-warning (observed, NOT actioned — Rule 8:
+	// only a canary touch can arm a response; this is context, never a trigger).
+	// Below it a flow is a normal-looking bystander, not recon.
+	reconLiveNoticeFloor = 0.5
+	// reconLiveSurfacedFloor escalates the label "recon" (quiet) -> "surfaced"
+	// (loud). Presentation tier only; no behavioral difference (neither acts).
+	reconLiveSurfacedFloor = 0.85
+	// maxReconLiveFlows caps the surface so a broad scan can't flood the panel.
+	maxReconLiveFlows = 8
+)
+
 // Source holds the read-only handles the tap surfaces. Any may be nil (the tap
 // degrades gracefully — a nil store just yields empty/zero sections).
 type Source struct {
@@ -72,7 +85,24 @@ type State struct {
 	Baseline      baseline.GateState       `json:"baseline"`
 	Observe       observebaseline.AggStats `json:"observe"`
 	CrossCustomer CrossCustomerState       `json:"cross_customer"`
+	ReconLive     []ReconLiveFlow          `json:"recon_live"`
 	At            time.Time                `json:"at"`
+}
+
+// ReconLiveFlow is one currently-live flow that looks anomalous from the learned
+// baseline but has touched NO canary — surfaced as OBSERVE-ONLY recon
+// early-warning. It is the visible proof of restraint: CanarySting sees novel
+// identities / negative-space scanning and takes NO action, because Rule 8 means
+// only a canary touch can arm a response. These carry derived novelty + coarse
+// traffic only (rule 9), never a raw address.
+type ReconLiveFlow struct {
+	FlowID      uint64  `json:"flow_id"`
+	FlowIDHex   string  `json:"flow_id_hex"`
+	Novelty     float64 `json:"novelty"`      // strongest baseline-deviation dim [0,1]
+	TopSignal   string  `json:"top_signal"`   // which dim drove it (new identity / new adjacency / …)
+	Bytes       uint64  `json:"bytes"`        // coarse traffic (ingress+egress)
+	DurationSec float64 `json:"duration_sec"` // observed lifetime (coarse)
+	Severity    string  `json:"severity"`     // "recon" (quiet) | "surfaced" (loud) — presentation tier only
 }
 
 // CrossCustomerState surfaces the D6 cross-customer network from the CONSUMER side:
@@ -121,6 +151,7 @@ func (s *Source) handleState(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.Aggregator != nil {
 		st.Observe = s.Aggregator.Stats()
+		st.ReconLive = s.buildReconLive(now)
 	}
 	if s.SharedSet != nil {
 		cc := CrossCustomerState{Consuming: s.SharedSet.Len(), Threshold: network.AggregationThreshold}
@@ -165,6 +196,87 @@ func (s *Source) currentAdversaryFlow(now time.Time) (uint64, bool) {
 		}
 	}
 	return bestCookie, found
+}
+
+// buildReconLive surfaces NON-canary-touching live flows that look anomalous from
+// the learned baseline as OBSERVE-ONLY recon early-warning — the visible proof of
+// restraint: we see novel identities / negative-space scanning and take NO action
+// (Rule 8: only a canary touch can arm a response; baseline deviation is context,
+// never a trigger). Flows that touched a canary (escalation pipeline) are excluded
+// here — they appear on the escalation/containment surfaces, not "we didn't act".
+func (s *Source) buildReconLive(now time.Time) []ReconLiveFlow {
+	flows := s.Aggregator.LiveFlows(now)
+	if len(flows) == 0 {
+		return nil
+	}
+	armed := s.armedCookies(now)
+	out := make([]ReconLiveFlow, 0, len(flows))
+	for _, f := range flows {
+		if armed[f.Cookie] {
+			continue // a canary-toucher belongs to escalation, not the recon surface
+		}
+		nov, top := peakNovelty(f)
+		if nov < reconLiveNoticeFloor {
+			continue // a normal-looking serving flow (bystander), not recon
+		}
+		sev := "recon"
+		if nov >= reconLiveSurfacedFloor {
+			sev = "surfaced"
+		}
+		out = append(out, ReconLiveFlow{
+			FlowID:      f.Cookie,
+			FlowIDHex:   "0x" + strconv.FormatUint(f.Cookie, 16),
+			Novelty:     nov,
+			TopSignal:   top,
+			Bytes:       f.IngressBytes + f.EgressBytes,
+			DurationSec: f.DurationSec,
+			Severity:    sev,
+		})
+		if len(out) >= maxReconLiveFlows {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// armedCookies is the set of socket cookies that touched a canary recently (Tier>=1
+// = entered the response pipeline). Used ONLY to EXCLUDE them from the recon-live
+// surface; it never arms anything.
+func (s *Source) armedCookies(now time.Time) map[uint64]bool {
+	out := map[uint64]bool{}
+	if s.Events == nil {
+		return out
+	}
+	evs, err := s.Events.Query(string(s.Scope), now.Add(-30*time.Minute), now)
+	if err != nil {
+		return out
+	}
+	for _, e := range evs {
+		if e.Tier >= 1 {
+			out[e.FlowID] = true
+		}
+	}
+	return out
+}
+
+// peakNovelty returns the strongest baseline-deviation dimension of a live flow
+// and a human label for it. The four dims are the observe baseline's novelty
+// signals; the strongest is what makes the flow "look suspicious from baseline".
+func peakNovelty(f observebaseline.LiveFlow) (float64, string) {
+	best, label := f.IdentityNovelty, "new identity"
+	if f.AdjacencyNovelty > best {
+		best, label = f.AdjacencyNovelty, "new adjacency"
+	}
+	if f.VolumeDeviation > best {
+		best, label = f.VolumeDeviation, "volume deviation"
+	}
+	if f.CadenceDeviation > best {
+		best, label = f.CadenceDeviation, "cadence deviation"
+	}
+	return best, label
 }
 
 func (s *Source) handleEvents(w http.ResponseWriter, r *http.Request) {
