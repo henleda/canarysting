@@ -12,7 +12,7 @@ export default function ReconLive({ recon }: { recon: ReconLiveView | undefined 
   const active = recon?.active ?? false;
   const note =
     recon?.note ||
-    'Surfaced, not actioned — anomalous from the learned baseline, but touched no decoy, so nothing arms a response (Rule 8).';
+    'Surfaced, not actioned — anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).';
 
   return (
     <section className="cell">

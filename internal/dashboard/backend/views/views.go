@@ -413,7 +413,7 @@ func buildReconLive(flows []ReconLiveFlowView) ReconLiveView {
 		Active: len(flows) > 0,
 		Count:  len(flows),
 		Flows:  flows,
-		Note:   "Surfaced, not actioned — these flows look anomalous from the learned baseline but touched no decoy, so nothing arms a response (Rule 8).",
+		Note:   "Surfaced, not actioned — these flows look anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).",
 	}
 }
 

@@ -228,7 +228,7 @@ export const fixtureOverview: Overview = {
       { flow_id: 0x4a2c, flow_id_hex: '0x4a2c', novelty: 0.92, top_signal: 'new identity', bytes: 1840, duration_sec: 14, severity: 'surfaced' },
       { flow_id: 0x51d0, flow_id_hex: '0x51d0', novelty: 0.61, top_signal: 'new adjacency', bytes: 640, duration_sec: 6, severity: 'recon' },
     ],
-    note: 'Surfaced, not actioned — these flows look anomalous from the learned baseline but touched no decoy, so nothing arms a response (Rule 8).',
+    note: 'Surfaced, not actioned — these flows look anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).',
   },
 };
 

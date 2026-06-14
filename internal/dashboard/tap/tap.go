@@ -244,7 +244,10 @@ func (s *Source) buildReconLive(now time.Time) []ReconLiveFlow {
 
 // armedCookies is the set of socket cookies that touched a canary recently (Tier>=1
 // = entered the response pipeline). Used ONLY to EXCLUDE them from the recon-live
-// surface; it never arms anything.
+// surface; it never arms anything. NOTE: boltevents stores only Tier>=1, so a
+// canary touch that scored Tier 0 (below the Tag threshold) is NOT excluded here —
+// which is why the recon surface's claim is "none has ARMED a response" (always
+// true: a non-armed flow is exactly Tier 0 or no-touch), not "touched no decoy".
 func (s *Source) armedCookies(now time.Time) map[uint64]bool {
 	out := map[uint64]bool{}
 	if s.Events == nil {
