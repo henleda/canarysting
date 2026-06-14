@@ -8,8 +8,6 @@ import LiveEscalation from '@/components/LiveEscalation';
 import AttackerCost from '@/components/AttackerCost';
 import KernelContainment from '@/components/KernelContainment';
 import Credibility from '@/components/Credibility';
-import AdversaryIntelligence from '@/components/AdversaryIntelligence';
-import ReconLive from '@/components/ReconLive';
 import BystanderHealth from '@/components/BystanderHealth';
 
 export default function OperationsPage() {
@@ -44,13 +42,11 @@ export default function OperationsPage() {
         <KernelContainment containment={snapshot?.kernel_containment} />
         <BystanderHealth bystanders={snapshot?.bystanders} />
       </div>
-      {/* Context band — 3 cells fill the 3-column grid: recon (we see it, we don't
-          act) + credibility (live M / baseline novelty) + adversary intelligence
-          (the cross-customer network). */}
-      <div className="band">
-        <ReconLive recon={snapshot?.recon_live} />
+      {/* Credibility — the "this is real, not a mock" proof (live M / baseline
+          novelty / calibration) stays on the wall, full-width. Recon and Adversary
+          Intelligence moved to their own pages (left rail) to declutter the screen. */}
+      <div className="band" style={{ gridTemplateColumns: '1fr' }}>
         <Credibility credibility={snapshot?.credibility} />
-        <AdversaryIntelligence intel={snapshot?.adversary_intel} />
       </div>
     </div>
   );
