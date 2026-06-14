@@ -96,6 +96,11 @@ function CrossCustomerSignal({ cc }: { cc: CrossCustomerView | undefined }) {
       <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-dim)', marginBottom: 4 }}>
         cross-customer network
       </div>
+      {cc.simulated && (
+        <div style={{ fontSize: 9, color: 'var(--canary)', marginBottom: 4, fontStyle: 'italic' }}>
+          ⚠ simulated peer data — synthetic deployments we operate (demo: art of the possible), not real customers
+        </div>
+      )}
       {cc.matched ? (
         <div style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--sting)' }}>
           ✓ recognized — confirmed by ≥{cc.threshold} deployments

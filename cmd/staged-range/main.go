@@ -51,7 +51,8 @@ func main() {
 		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
 		demoFloor      = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
 
-		tapAddr = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
+		tapAddr      = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
+		simPeersDemo = flag.Bool("sim-peers-demo", false, "DEMO ONLY: mark the consumed cross-customer patterns as SIMULATED (cmd/sim-peers) so the dashboard discloses they came from synthetic peers we operate, not real customers")
 
 		registryPath = flag.String("ground-truth-registry", "", "REQUIRED: JSON file declaring legit vs attacker source IPs per scope")
 		iAmStaged    = flag.Bool("i-am-running-a-staged-range", false, "REQUIRED acknowledgement: this binary auto-labels from declared ground truth and must NEVER run in production")
@@ -154,7 +155,7 @@ func main() {
 		src := &tap.Source{
 			Scope: contract.ScopeKey(*boundary), Calib: built.Calib,
 			Baseline: built.Baseline, Events: built.Events, Aggregator: built.Aggregator,
-			SharedSet: built.SharedSet,
+			SharedSet: built.SharedSet, SimulatedPeers: *simPeersDemo,
 		}
 		go func() {
 			log.Printf("staged-range: dashboard tap on %s", *tapAddr)

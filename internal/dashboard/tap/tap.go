@@ -66,7 +66,12 @@ type Source struct {
 	Events     *boltevents.Store
 	Aggregator *observebaseline.Aggregator
 	SharedSet  *sharedset.Store // D6 cross-customer consumer (nil if not consuming)
-	Now        func() time.Time // injectable clock (nil => time.Now)
+	// SimulatedPeers, when true, marks the consumed cross-customer patterns as
+	// SIMULATED (demo "art of the possible" via cmd/sim-peers), so the dashboard
+	// discloses they came from synthetic peers we operate — not real customers. It
+	// is a PRESENTATION flag only; it never touches the cleared payload (rule 9).
+	SimulatedPeers bool
+	Now            func() time.Time // injectable clock (nil => time.Now)
 
 	// ledger holds the M9 attacker's live real-cost meter — the one (small,
 	// in-memory) write surface on the tap (D5). Lazily initialized in Handler.
@@ -137,6 +142,7 @@ type CrossCustomerState struct {
 	FlowIDHex  string  `json:"flow_id_hex"` // hex form for the dashboard
 	Similarity float64 `json:"similarity"`  // best similarity of that flow to a consumed pattern [0,1]
 	Matched    bool    `json:"matched"`     // similarity >= crossMatchThreshold
+	Simulated  bool    `json:"simulated"`   // the consumed patterns are SIMULATED peers (demo); disclosed on-screen
 }
 
 // Handler returns the tap's HTTP mux. Endpoints:
@@ -175,6 +181,7 @@ func (s *Source) handleState(w http.ResponseWriter, _ *http.Request) {
 	}
 	if s.SharedSet != nil {
 		cc := CrossCustomerState{Consuming: s.SharedSet.Len(), Threshold: network.AggregationThreshold}
+		cc.Simulated = s.SimulatedPeers && cc.Consuming > 0
 		// Evaluate the CURRENT adversary flow against the consumed patterns with the
 		// engine's real matcher (same similarity that feeds M). Only when consuming.
 		if cc.Consuming > 0 && s.Events != nil {

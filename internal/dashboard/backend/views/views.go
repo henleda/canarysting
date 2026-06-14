@@ -127,6 +127,7 @@ type CrossCustomerView struct {
 	FlowIDHex  string  `json:"flow_id_hex"`
 	Similarity float64 `json:"similarity"`
 	Matched    bool    `json:"matched"`
+	Simulated  bool    `json:"simulated"` // consumed patterns are SIMULATED peers (demo); disclosed on-screen
 }
 
 // Overview is the complete JSON payload served by GET /api/overview and pushed
