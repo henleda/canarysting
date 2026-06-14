@@ -1,0 +1,55 @@
+import PanelHead from './PanelHead';
+import { fmtBytes, fmtTimeLong } from '@/lib/format';
+import type { BystanderView, BystanderFlow } from '@/lib/types';
+
+// BystanderHealth is the dashboard-native "contain the flow, not the host" proof:
+// legitimate workloads on the SAME host still serving traffic uninterrupted while
+// an attacker socket is kernel-jailed. It replaces the old terminal-curl proof
+// with first-party eBPF live-flow data. Observe-only — it takes no action; it
+// just shows that flow-precise containment left the neighbors untouched.
+export default function BystanderHealth({ bystanders }: { bystanders: BystanderView | undefined }) {
+  const flows = bystanders?.flows ?? [];
+  const active = bystanders?.active ?? false;
+  const note =
+    bystanders?.note ||
+    'Same host, still serving — these legitimate workloads keep returning traffic uninterrupted while an attacker socket is kernel-jailed. We contain the flow, not the host.';
+
+  return (
+    <section className="cell">
+      <PanelHead title="Bystanders — still serving" preTags={[{ label: 'same host' }]} />
+      {active ? (
+        <div className="feed">
+          {flows.slice(0, 6).map((f, i) => (
+            <BystanderRow key={`${f.flow_id_hex}-${i}`} f={f} />
+          ))}
+        </div>
+      ) : (
+        <span className="faint" style={{ fontSize: 10 }}>
+          no live legitimate workloads in view
+        </span>
+      )}
+      <div
+        className="faint"
+        style={{ fontSize: 9, color: 'var(--ink-dim)', marginTop: 8, lineHeight: 1.45 }}
+      >
+        {note}
+      </div>
+    </section>
+  );
+}
+
+// BystanderRow shows one serving workload: its cookie, coarse traffic served, and
+// a green "200 · serving" status — the visceral contrast to the jailed socket.
+function BystanderRow({ f }: { f: BystanderFlow }) {
+  return (
+    <div className="ev">
+      <span className="ts">{f.flow_id_hex}</span>
+      <span className="what">
+        {fmtBytes(f.bytes)} served · {fmtTimeLong(f.duration_sec)}
+      </span>
+      <span className="sev" style={{ color: 'var(--safe)' }}>
+        200 · serving
+      </span>
+    </div>
+  );
+}

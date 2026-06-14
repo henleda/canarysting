@@ -182,6 +182,24 @@ export interface ReconLiveView {
   note: string;
 }
 
+// BystanderFlow is one live LEGITIMATE workload still serving (coarse traffic
+// only) — shown to prove flow-precise containment: same host, untouched, while an
+// attacker socket is kernel-jailed.
+export interface BystanderFlow {
+  flow_id: number;
+  flow_id_hex: string;
+  bytes: number;
+  duration_sec: number;
+}
+
+// BystanderView is the dashboard-native "contain the flow, not the host" proof.
+export interface BystanderView {
+  active: boolean;
+  count: number;
+  flows: BystanderFlow[] | null;
+  note: string;
+}
+
 // FlowFingerprint is the adversary behavioral fingerprint for one flow.
 export interface FlowFingerprint {
   flow_id: number;
@@ -258,6 +276,10 @@ export interface Overview {
   // Observe-only recon: anomalous-from-baseline flows that touched no canary.
   // The "we see it and choose not to act" surface (Rule 8 made visible).
   recon_live: ReconLiveView;
+
+  // Legitimate workloads still serving on the same host while an attacker is
+  // kernel-jailed — the dashboard-native flow-precision proof.
+  bystanders: BystanderView;
 }
 
 // JourneyMilestone is one beat in the attacker's arc. axes_firing lists the OVERLAPPING

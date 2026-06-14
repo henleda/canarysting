@@ -230,6 +230,16 @@ export const fixtureOverview: Overview = {
     ],
     note: 'Surfaced, not actioned — these flows look anomalous from the learned baseline; none has armed a response (only a decoy touch that crosses the threshold can — Rule 8).',
   },
+  bystanders: {
+    active: true,
+    count: 3,
+    flows: [
+      { flow_id: 0x101, flow_id_hex: '0x101', bytes: 124000, duration_sec: 312 },
+      { flow_id: 0x102, flow_id_hex: '0x102', bytes: 88400, duration_sec: 268 },
+      { flow_id: 0x103, flow_id_hex: '0x103', bytes: 156200, duration_sec: 401 },
+    ],
+    note: 'Same host, still serving — these legitimate workloads keep returning traffic uninterrupted while an attacker socket is kernel-jailed. We contain the flow, not the host.',
+  },
 };
 
 // ---- Interactive console drill-down fixtures (NEXT_PUBLIC_FIXTURE=1) ----
