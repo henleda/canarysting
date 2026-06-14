@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,13 @@ const (
 	defaultEventsWindow = time.Hour
 	httpClientTimeout   = 4 * time.Second // < poll interval so a slow tap can't stall the loop
 	sseHeartbeat        = 15 * time.Second
+	// reconRetainWindow smooths the recon surface: a per-poll snapshot of currently-
+	// open anomalous flows is inherently jittery (short scanner flows blink in and out
+	// between the tap's polls), so the backend unions the recon flows SEEN over this
+	// trailing window (deduped by cookie). The surface reads as "recent recon activity"
+	// — steady, never strobing — while staying observe-only (it never arms anything).
+	reconRetainWindow = 30 * time.Second
+	maxReconRetain    = 8 // matches the tap's maxReconLiveFlows cap
 )
 
 // Config configures a Backend.
@@ -54,6 +62,18 @@ type Backend struct {
 
 	subsMu sync.Mutex
 	subs   map[chan struct{}]struct{} // SSE subscriber notification channels
+
+	// reconRetain smooths the recon surface across polls (see reconRetainWindow):
+	// flow_id_hex -> the flow view + when it was last seen. Guarded by its own lock
+	// since it's touched only in poll() (single writer) but kept independent of mu.
+	reconMu     sync.Mutex
+	reconRetain map[string]retainReconEntry
+}
+
+// retainReconEntry is one recon flow held in the trailing-window buffer.
+type retainReconEntry struct {
+	flow views.ReconLiveFlowView
+	seen time.Time
 }
 
 // New constructs a Backend from cfg, applying defaults. It does not start polling.
@@ -117,6 +137,9 @@ func (b *Backend) poll(now time.Time) error {
 	// so it's merged in after Derive. Best-effort: a missing/failed ledger just
 	// leaves Present=false (honest "attack not running").
 	ov.RealAttackCost = b.fetchLedger()
+	// Smooth the recon surface over a trailing window so the count holds steady
+	// instead of strobing with each poll's open-flow snapshot.
+	b.retainRecon(&ov, now)
 
 	b.mu.Lock()
 	b.last = &ov
@@ -131,6 +154,46 @@ func (b *Backend) poll(now time.Time) error {
 		return fmt.Errorf("fetch events: %w", errEvents)
 	}
 	return nil
+}
+
+// retainRecon unions the recon flows seen over the trailing reconRetainWindow
+// (deduped by flow_id_hex, freshest fields win) and replaces ov.ReconLive.Flows
+// with that smoothed set (sorted by novelty, capped). This turns the jittery
+// per-poll snapshot of currently-open anomalous flows into a steady "recent recon
+// activity" surface. It is presentation-only — the flows are still observe-only and
+// nothing here arms a response (Rule 8 holds upstream in the engine).
+func (b *Backend) retainRecon(ov *views.Overview, now time.Time) {
+	b.reconMu.Lock()
+	defer b.reconMu.Unlock()
+	if b.reconRetain == nil {
+		b.reconRetain = make(map[string]retainReconEntry)
+	}
+	// Refresh/insert the flows from this poll.
+	for _, f := range ov.ReconLive.Flows {
+		b.reconRetain[f.FlowIDHex] = retainReconEntry{flow: f, seen: now}
+	}
+	// Expire stale entries and collect the survivors.
+	out := make([]views.ReconLiveFlowView, 0, len(b.reconRetain))
+	for k, e := range b.reconRetain {
+		if now.Sub(e.seen) > reconRetainWindow {
+			delete(b.reconRetain, k)
+			continue
+		}
+		out = append(out, e.flow)
+	}
+	// Highest novelty first (stable on hex for determinism), capped.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Novelty != out[j].Novelty {
+			return out[i].Novelty > out[j].Novelty
+		}
+		return out[i].FlowIDHex < out[j].FlowIDHex
+	})
+	if len(out) > maxReconRetain {
+		out = out[:maxReconRetain]
+	}
+	ov.ReconLive.Flows = out
+	ov.ReconLive.Count = len(out)
+	ov.ReconLive.Active = len(out) > 0
 }
 
 func (b *Backend) markTapDown() {

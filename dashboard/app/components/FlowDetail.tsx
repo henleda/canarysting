@@ -58,21 +58,30 @@ export default function FlowDetail({ detail, loading, cookie }: { detail: FlowDe
         <EventTimeline events={detail.timeline} />
       </section>
 
-      {detail.m_breakdown && (
-        <section className="detail-section">
-          <h3>baseline multiplier · M = {detail.m_breakdown.m.toFixed(2)} (peak event)</h3>
-          <div className="mbars">
-            {detail.m_breakdown.contributions.map((c) => (
-              <div className="mbar" key={c.feature}>
-                <span>{c.label}</span>
-                <span className="track"><span className="fill" style={{ width: `${Math.round(c.capped * 100)}%` }} /></span>
-                <span className="val">{c.raw_value.toFixed(2)}</span>
-              </div>
-            ))}
+      <section className="detail-section">
+        <h3>baseline multiplier{detail.m_breakdown ? ` · M = ${detail.m_breakdown.m.toFixed(2)} (peak event)` : ''}</h3>
+        {detail.m_breakdown ? (
+          <>
+            <div className="mbars">
+              {detail.m_breakdown.contributions.map((c) => (
+                <div className="mbar" key={c.feature}>
+                  <span>{c.label}</span>
+                  <span className="track"><span className="fill" style={{ width: `${Math.round(c.capped * 100)}%` }} /></span>
+                  <span className="val">{c.raw_value.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flow-sub" style={{ marginTop: 10 }}>{detail.m_breakdown.gate_note}</div>
+          </>
+        ) : (
+          // Never silently hide the section: a flow whose events carry no baseline
+          // features (e.g. recorded before observe re-tracked it) gets M=1.0 neutral.
+          <div className="flow-sub">
+            No per-touch baseline features recorded for this flow in the window — M defaults to 1.0 (neutral).
+            The wall’s baseline multiplier reflects the current live calibrated state.
           </div>
-          <div className="flow-sub" style={{ marginTop: 10 }}>{detail.m_breakdown.gate_note}</div>
-        </section>
-      )}
+        )}
+      </section>
 
       <section className="detail-section">
         <h3>imposed cost (this session)</h3>
