@@ -31,9 +31,15 @@ import (
 )
 
 // crossMatchThreshold is the similarity at/above which the current adversary flow is
-// called a cross-customer "match" for the dashboard (the matcher feeds M continuously
-// below this too; this is only the legible on-screen yes/no). Demo-tuned.
-const crossMatchThreshold = 0.5
+// flagged "recognized" from the cross-customer network on the dashboard (the matcher
+// feeds M continuously below this too; this is only the legible on-screen yes/no).
+// Tuned to the RULE-9 inbound ceiling: a cross-customer pattern is COARSE by design —
+// the discriminating decoy-touch sequence never crosses the boundary, so the inbound
+// similarity caps around ~0.6 (sequence component always absent). A genuine coarse
+// axis-match (reached-contain + velocity + poison engaged) lands well above this; a
+// sparse fast-jailed flow falls below it. It is a "recognized" signal, not a high-
+// confidence per-flow identity (that would fight the privacy guarantee).
+const crossMatchThreshold = 0.3
 
 // Source holds the read-only handles the tap surfaces. Any may be nil (the tap
 // degrades gracefully — a nil store just yields empty/zero sections).
