@@ -70,24 +70,32 @@ func main() {
 	var wg sync.WaitGroup
 	start := func(fn func()) { wg.Add(1); go func() { defer wg.Done(); fn() }() }
 
-	// BENIGN — one diurnal-paced worker per legit identity.
+	// BENIGN — one diurnal-paced worker per legit identity (short flows -> fold the
+	// baseline) PLUS one KEEPALIVE worker per identity (a persistent serving flow the
+	// bystander panel shows surviving a jail).
 	for i, ip := range cfg.benignIPs {
-		p, err := newProber(ip, cfg.target, cfg.normalPaths, int64(i*7919+1))
+		p, err := newProber(ip, cfg.target, cfg.normalPaths, int64(i*7919+1), false)
 		if err != nil {
 			log.Fatalf("simdriver: benign identity %q: %v", ip, err)
 		}
 		start(func() { runBenign(ctx, p, cfg.baseRPM) })
+
+		kp, err := newProber(ip, cfg.target, cfg.normalPaths, int64(i*104729+7), true)
+		if err != nil {
+			log.Fatalf("simdriver: keepalive benign identity %q: %v", ip, err)
+		}
+		start(func() { runKeepaliveBenign(ctx, kp, cfg.keepaliveInterval) })
 	}
 
 	// RECON — white-space scanner (unlabeled IP, 404 paths, never a canary).
-	reconP, err := newProber(cfg.reconIP, cfg.target, cfg.whitespacePaths, 424242)
+	reconP, err := newProber(cfg.reconIP, cfg.target, cfg.whitespacePaths, 424242, false)
 	if err != nil {
 		log.Fatalf("simdriver: recon identity %q: %v", cfg.reconIP, err)
 	}
 	start(func() { runRatio(ctx, reconP, cfg.reconPct, benignTotalRPM, cfg.recompute, nil) })
 
 	// MALICIOUS — declared-attacker canary touches, gated so LLM runs get a clean trace.
-	malP, err := newProber(cfg.attackerIP, cfg.target, cfg.canaryPaths, 1337)
+	malP, err := newProber(cfg.attackerIP, cfg.target, cfg.canaryPaths, 1337, false)
 	if err != nil {
 		log.Fatalf("simdriver: attacker identity %q: %v", cfg.attackerIP, err)
 	}
@@ -165,7 +173,7 @@ type prober struct {
 	rng    *rand.Rand
 }
 
-func newProber(srcIP, target string, paths []string, seed int64) (*prober, error) {
+func newProber(srcIP, target string, paths []string, seed int64, keepalive bool) (*prober, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no paths for %s", srcIP)
 	}
@@ -174,10 +182,21 @@ func newProber(srcIP, target string, paths []string, seed int64) (*prober, error
 		return nil, fmt.Errorf("bad source IP %q: %w", srcIP, err)
 	}
 	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
+	// keepalive=false: a distinct completing flow per request, which the observe
+	// path folds into the baseline-of-normal. keepalive=true: REUSE one TCP
+	// connection so the observe path sees a single LONG-LIVED serving flow — the
+	// persistent "still serving" workload the bystander panel needs (a short flow
+	// is almost never "open" when the dashboard polls).
+	tr := &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: !keepalive}
+	if keepalive {
+		tr.MaxIdleConnsPerHost = 1
+		tr.MaxConnsPerHost = 1
+		tr.IdleConnTimeout = 90 * time.Second
+	}
 	return &prober{
 		target: target,
 		paths:  paths,
-		client: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: true}},
+		client: &http.Client{Timeout: 5 * time.Second, Transport: tr},
 		rng:    rand.New(rand.NewSource(seed)),
 	}, nil
 }
@@ -196,6 +215,23 @@ func (p *prober) hit() {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+}
+
+// runKeepaliveBenign holds ONE persistent connection from a legit identity, making
+// a small request every `interval` to keep it warm and serving bytes. That single
+// long-lived, low-novelty (once the baseline has learned the identity) serving flow
+// is exactly what the bystander panel shows surviving a kernel jail — "same host,
+// still serving 200" — which a short, frequently-closing flow can't reliably be.
+func runKeepaliveBenign(ctx context.Context, p *prober, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	for {
+		p.hit() // reuses the kept-alive connection -> one open flow the observe sees
+		if sleepCtx(ctx, interval) {
+			return
+		}
+	}
 }
 
 // runBenign drives one legit identity forever, paced by the diurnal profile.
@@ -318,27 +354,28 @@ func runAttacker(ctx context.Context, cfg config, gate *sync.RWMutex, label stri
 // ---- config -----------------------------------------------------------------
 
 type config struct {
-	target           string
-	tapAddr          string
-	benignIPs        []string
-	normalPaths      []string
-	attackerIP       string
-	canaryPaths      []string
-	reconIP          string
-	whitespacePaths  []string
-	baseRPM          float64
-	maliciousPct     float64
-	reconPct         float64
-	recompute        time.Duration
-	dailyCapUSD      float64
-	budgetFile       string
-	cassette         string
-	cassetteInterval time.Duration
-	liveInterval     time.Duration
-	liveBudgetUSD    float64
-	attackerBin      string
-	keyFile          string
-	costOut          string
+	target            string
+	tapAddr           string
+	benignIPs         []string
+	normalPaths       []string
+	attackerIP        string
+	canaryPaths       []string
+	reconIP           string
+	whitespacePaths   []string
+	baseRPM           float64
+	maliciousPct      float64
+	reconPct          float64
+	recompute         time.Duration
+	keepaliveInterval time.Duration
+	dailyCapUSD       float64
+	budgetFile        string
+	cassette          string
+	cassetteInterval  time.Duration
+	liveInterval      time.Duration
+	liveBudgetUSD     float64
+	attackerBin       string
+	keyFile           string
+	costOut           string
 }
 
 func (c config) validate() error {
@@ -377,6 +414,7 @@ func parseFlags() config {
 		malPct      = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
 		reconPct    = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%)")
 		recompute   = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
+		keepalive   = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
 		dailyCap    = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
 		budgetFile  = flag.String("budget-file", "/var/lib/canarysting/sim-budget.json", "daily spend ledger path")
 		cassette    = flag.String("cassette", "/tmp/m9-demo3.cassette", "cassette for Tier-B $0 replays (\"\" disables)")
@@ -393,7 +431,7 @@ func parseFlags() config {
 		benignIPs: splitCSV(*benignIPs), normalPaths: splitCSV(*normalPaths),
 		attackerIP: *attackerIP, canaryPaths: splitCSV(*canaryPaths),
 		reconIP: *reconIP, whitespacePaths: splitCSV(*wsPaths),
-		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, recompute: *recompute,
+		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, recompute: *recompute, keepaliveInterval: *keepalive,
 		dailyCapUSD: *dailyCap, budgetFile: *budgetFile,
 		cassette: *cassette, cassetteInterval: *cassEvery,
 		liveInterval: *liveEvery, liveBudgetUSD: *liveBudget,
