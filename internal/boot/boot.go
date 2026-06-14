@@ -283,12 +283,23 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		tierCfg.Mode[contract.TierJail] = contract.ModeInline
 	}
 
+	// For the DEMO-ONLY escalation band, tier on depth-of-interaction (touch count)
+	// by un-inflating the score by M at the tier decision — so the graduated
+	// Tag→Contain→Jail dwell holds even once the baseline multiplier goes live
+	// (otherwise a live M ≈2.5 forces straight-to-jail). The full B×M still rides on
+	// Verdict.Score, so the live M stays visible. Production (no DemoEscalation) is
+	// unchanged: tiering uses the full score.
+	var demoTierMult scoring.MultiplierSource
+	if opts.DemoEscalation {
+		demoTierMult = base
+	}
 	eng, err := engine.New(engine.Config{
-		Resolver:    resolver,
-		Scorer:      scorer,
-		Decider:     tiers.StaticDecider{},
-		Tiers:       tierCfg,
-		Calibration: calib,
+		Resolver:            resolver,
+		Scorer:              scorer,
+		Decider:             tiers.StaticDecider{},
+		Tiers:               tierCfg,
+		Calibration:         calib,
+		TierDepthMultiplier: demoTierMult,
 	})
 	if err != nil {
 		b.closePartial()
