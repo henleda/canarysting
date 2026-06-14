@@ -42,6 +42,12 @@ export default function FlowPage() {
   const showJourney = isCurrentFlow && !!journey?.present && sameCookie(cookie, journey.flow_id_hex);
   const ladder = ov?.escalation?.tier_ladder;
 
+  // A 404 from /api/flow/{cookie} means there is no per-flow record: bystanders
+  // are non-armed Tier-0 flows and the events store only persists Tier>=1, so
+  // there is nothing to show. Render an HONEST empty-state instead of an error —
+  // a bystander having no dossier is the proof it was never actioned.
+  const noRecord = !useFixture && !!live.error && live.error.includes('404') && !detail;
+
   return (
     <div className="app-console">
       <TopBar snapshot={useFixture ? null : snapshot} status={useFixture ? 'live' : status} />
@@ -50,23 +56,37 @@ export default function FlowPage() {
           <Breadcrumbs crumbs={[{ label: 'Operations', href: '/' }, { label: 'Flow' }, { label: cookie }]} />
           <TimeRangeBar />
         </div>
-        {!useFixture && live.error && <div className="errstrip">stale — {live.error}</div>}
+        {!useFixture && live.error && !live.error.includes('404') && (
+          <div className="errstrip">stale — {live.error}</div>
+        )}
         {!useFixture && live.notice && <div className="errstrip">{live.notice}</div>}
 
-        {/* The attacker-journey ribbon — current flow only (selectCurrentFlow).
-            Journey renders its own panel section. */}
-        {showJourney && <Journey journey={journey} />}
-
-        {/* The full per-flow detail: timeline + M-breakdown + fingerprint + cost. */}
-        <FlowDetail detail={detail} loading={useFixture ? false : live.loading} cookie={cookie} />
-
-        {/* The tier ladder — current flow only. Demoted from the wall; preserved
-            here so the fleet-wide tier climb stays reachable for this flow. */}
-        {isCurrentFlow && ladder && (
+        {noRecord ? (
           <section className="detail-section">
-            <h3>tier distribution · canary-interacting flows</h3>
-            <TierLadder ladder={ladder} />
+            <div className="t0-empty">
+              <div className="t0-empty-h">No per-flow record for {cookie}</div>
+              <p>CanarySting keeps per-flow detail only for flows that <b>touched a decoy and armed a response</b> (Tier&nbsp;1+). This cookie has no record in this window.</p>
+              <p className="t0-empty-sub">Non-armed flows — including the same-host <b>bystanders still serving</b> on the wall — are observed but never logged per flow: a <b>zero-surveillance posture</b> (Rules 8/9). A bystander having no dossier here is the proof it was never actioned. <a href="/">← back to Operations</a></p>
+            </div>
           </section>
+        ) : (
+          <>
+            {/* The attacker-journey ribbon — current flow only (selectCurrentFlow).
+                Journey renders its own panel section. */}
+            {showJourney && <Journey journey={journey} />}
+
+            {/* The full per-flow detail: timeline + M-breakdown + fingerprint + cost. */}
+            <FlowDetail detail={detail} loading={useFixture ? false : live.loading} cookie={cookie} />
+
+            {/* The tier ladder — current flow only. Demoted from the wall; preserved
+                here so the fleet-wide tier climb stays reachable for this flow. */}
+            {isCurrentFlow && ladder && (
+              <section className="detail-section">
+                <h3>tier distribution · canary-interacting flows</h3>
+                <TierLadder ladder={ladder} />
+              </section>
+            )}
+          </>
         )}
       </main>
     </div>

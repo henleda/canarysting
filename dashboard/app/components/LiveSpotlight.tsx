@@ -50,7 +50,14 @@ export default function LiveSpotlight({
     <section className="live-strip">
       <div className="ls-lead">
         <div className="ls-eyebrow mono">
-          LIVE ATTACKER · 1 of {fmtInt(armedCount)} armed this window
+          LIVE ATTACKER · 1 of {fmtInt(armedCount)} armed this window ·{' '}
+          <Link
+            href="/flows?since=1h"
+            className="ls-browse"
+            style={{ color: 'var(--canary)', textDecoration: 'underline', fontWeight: 700 }}
+          >
+            browse all {fmtInt(armedCount)} →
+          </Link>
         </div>
         <div className="ls-id">
           <Link href={`/flow/${flow.flow_id_hex}?since=1h`} className="ip mono" style={WALL_LINK}>

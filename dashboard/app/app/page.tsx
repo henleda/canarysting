@@ -7,7 +7,6 @@ import FleetSafety from '@/components/FleetSafety';
 import KernelContainment from '@/components/KernelContainment';
 import BystanderHealth from '@/components/BystanderHealth';
 import LiveSpotlight from '@/components/LiveSpotlight';
-import Credibility from '@/components/Credibility';
 
 export default function OperationsPage() {
   // PRODUCTION render path: live snapshot + status from the dashboard-backend.
@@ -37,12 +36,10 @@ export default function OperationsPage() {
         <KernelContainment containment={snapshot?.kernel_containment} />
         <BystanderHealth bystanders={snapshot?.bystanders} />
       </div>
-      {/* Row 4 — the demoted single-flow spotlight (1 of N active) beside the
-          credibility proof (live M / baseline novelty / calibration). */}
-      <div className="hero">
-        <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} />
-        <Credibility credibility={snapshot?.credibility} />
-      </div>
+      {/* Row 4 — the demoted single-flow spotlight (1 of N active). Credibility
+          moved to its own /credibility page so its baseline-multiplier feature
+          bars get full height instead of being clipped in this short strip. */}
+      <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} />
     </div>
   );
 }

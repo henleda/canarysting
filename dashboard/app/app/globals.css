@@ -73,7 +73,7 @@ body::before {
 .navitem.active .navitem-label { color: var(--canary); }
 .navitem.active .navitem-hint { color: var(--ink-dim); }
 
-.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.2fr 1.25fr 0.6fr; }
+.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.3fr 1.4fr auto; }
 
 /* Tier-0 drill-down honest empty-state (no per-flow records by design). */
 .t0-empty { border: 1px solid rgba(47,227,154,0.28); border-radius: 8px; padding: 22px 24px;
