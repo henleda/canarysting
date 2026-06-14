@@ -13,8 +13,11 @@ package catalog
 
 import "strings"
 
-// canaryMarker is a non-secret correlation marker embedded in every decoy.
-const canaryMarker = "CSTING-CANARY-"
+// canaryMarker is a non-secret correlation marker embedded in every decoy. It is a
+// NEUTRAL, product-agnostic prefix (a plausible internal ref id), NOT the literal
+// product name — a recorded LLM attacker named the deception range off the old
+// "CSTING-CANARY-" string. Still a fixed substring so carriesCanaryMarker verifies it.
+const canaryMarker = "x-ref-"
 
 // carriesCanaryMarker reports whether a payload carries the non-secret marker.
 func carriesCanaryMarker(b []byte) bool {
