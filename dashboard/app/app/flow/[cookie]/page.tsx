@@ -5,12 +5,19 @@ import TopBar from '@/components/TopBar';
 import Breadcrumbs from '@/components/Breadcrumbs';
 import TimeRangeBar from '@/components/TimeRangeBar';
 import FlowDetail from '@/components/FlowDetail';
+import Journey from '@/components/Journey';
+import TierLadder from '@/components/TierLadder';
 import { useOverview } from '@/lib/useOverview';
 import { useSince } from '@/components/SinceProvider';
 import { usePolling } from '@/lib/usePolling';
 import { flowDetailURL } from '@/lib/api';
-import { fixtureFlowDetail } from '@/lib/fixture';
+import { fixtureFlowDetail, fixtureOverview } from '@/lib/fixture';
 import type { FlowDetail as FlowDetailT } from '@/lib/types';
+
+// Compare two socket-cookie hexes ("0x118") tolerant of casing.
+function sameCookie(a: string | undefined, b: string | undefined): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
 
 export default function FlowPage() {
   const { snapshot, status } = useOverview();
@@ -22,6 +29,18 @@ export default function FlowPage() {
   const useFixture = process.env.NEXT_PUBLIC_FIXTURE === '1';
   const live = usePolling<FlowDetailT>(flowDetailURL(cookie, since, sessionParam || undefined), sinceSec);
   const detail = useFixture ? fixtureFlowDetail : live.data;
+  const ov = useFixture ? fixtureOverview : snapshot;
+
+  // selectCurrentFlow constraint: the wall's "current flow" elements (the
+  // attacker-journey ribbon + the tier ladder) are only meaningful for the flow
+  // the engine is currently tracking. Render them here ONLY when the cookie being
+  // viewed IS that current flow — otherwise the timeline + M-breakdown in this
+  // flow's own payload are the truth. This is where the wall-demoted journey +
+  // ladder are preserved.
+  const isCurrentFlow = sameCookie(cookie, ov?.escalation?.flow?.flow_id_hex);
+  const journey = ov?.journey;
+  const showJourney = isCurrentFlow && !!journey?.present && sameCookie(cookie, journey.flow_id_hex);
+  const ladder = ov?.escalation?.tier_ladder;
 
   return (
     <div className="app-console">
@@ -33,7 +52,22 @@ export default function FlowPage() {
         </div>
         {!useFixture && live.error && <div className="errstrip">stale — {live.error}</div>}
         {!useFixture && live.notice && <div className="errstrip">{live.notice}</div>}
+
+        {/* The attacker-journey ribbon — current flow only (selectCurrentFlow).
+            Journey renders its own panel section. */}
+        {showJourney && <Journey journey={journey} />}
+
+        {/* The full per-flow detail: timeline + M-breakdown + fingerprint + cost. */}
         <FlowDetail detail={detail} loading={useFixture ? false : live.loading} cookie={cookie} />
+
+        {/* The tier ladder — current flow only. Demoted from the wall; preserved
+            here so the fleet-wide tier climb stays reachable for this flow. */}
+        {isCurrentFlow && ladder && (
+          <section className="detail-section">
+            <h3>tier distribution · canary-interacting flows</h3>
+            <TierLadder ladder={ladder} />
+          </section>
+        )}
       </main>
     </div>
   );

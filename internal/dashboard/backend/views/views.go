@@ -95,8 +95,8 @@ type ReconLiveView struct {
 	Note   string              `json:"note"`
 }
 
-// BystanderFlowView mirrors the tap's bystander entries: a live LEGITIMATE
-// workload still serving (coarse traffic only; rule 9), shown to prove flow-
+// BystanderFlowView mirrors the tap's bystander entries: a live workload still
+// serving (not actioned) (coarse traffic only; rule 9), shown to prove flow-
 // precise containment — same host, untouched, while an attacker is kernel-jailed.
 type BystanderFlowView struct {
 	FlowID      uint64  `json:"flow_id"`
@@ -106,8 +106,8 @@ type BystanderFlowView struct {
 }
 
 // BystanderView is the dashboard-native "contain the flow, not the host" proof:
-// legitimate workloads still serving on the same host while an attacker socket is
-// kernel-jailed. Carries a count + a fixed note. Active when at least one serves.
+// workloads still serving (not actioned) on the same host while an attacker socket
+// is kernel-jailed. Carries a count + a fixed note. Active when at least one serves.
 type BystanderView struct {
 	Active bool                `json:"active"`
 	Count  int                 `json:"count"`
@@ -170,9 +170,30 @@ type Overview struct {
 	// flows that touched no canary, shown to prove restraint (we see, we don't act).
 	ReconLive ReconLiveView `json:"recon_live"`
 
-	// Bystanders: legitimate workloads still serving on the same host while an
-	// attacker is kernel-jailed — the dashboard-native flow-precision proof.
+	// Bystanders: workloads still serving (not actioned) on the same host while an
+	// attacker is kernel-jailed — the dashboard-native flow-precision proof. (We
+	// contain the flow, not the host — never asserted "legitimate".)
 	Bystanders BystanderView `json:"bystanders"`
+
+	// ArmedFlows is the FleetWall headline count: DISTINCT armed flows (sessions)
+	// in this window. It is the windowed funnel's top rail (DecoyTouched), exposed
+	// at the Overview top-level so the wall's hero number traces to ONE source.
+	ArmedFlows ArmedFlowsView `json:"armed_flows"`
+
+	// Simulated data-gates the ⚠ on-screen disclosure that this whole surface is
+	// driven by the simdriver (not a live customer fleet). It is NEVER hardcoded —
+	// it mirrors CrossCustomerView.Simulated (tap SimulatedPeers), so it lights up
+	// from the same presentation signal and goes dark on a real deployment.
+	Simulated bool `json:"simulated"`
+}
+
+// ArmedFlowsView is the Overview headline "armed flows" count: DISTINCT sessions
+// in the window (== DeriveFlowsList(events,-1).TotalCount == FlowFunnel.DecoyTouched).
+// These are decoy-ARMED flows (a planted-decoy touch crossed into the response
+// pipeline), counted as DISTINCT sessions — NOT unique attackers (cookies recycle,
+// split at the 10-min idle gap) and NEVER the per-event interaction count.
+type ArmedFlowsView struct {
+	DistinctCount int `json:"distinct_count"`
 }
 
 // RealAttackCostView is the M9 real-cost meter. It mirrors the tap's
@@ -215,6 +236,17 @@ type EscalationView struct {
 	// LadderCaption is the honest note that T0 is cumulative observed-normal
 	// traffic while T1-3 are windowed canary-interacting flows.
 	LadderCaption string `json:"ladder_caption"`
+
+	// FlowFunnel is the FleetWall windowed DISTINCT-flow funnel (each flow counted
+	// once at its highest tier). It is the per-FLOW companion to the per-EVENT
+	// TierLadder — the two intentionally differ (one flow emits many events).
+	FlowFunnel FlowFunnelView `json:"flow_funnel"`
+
+	// FunnelCaption is the TWO-RAIL discipline note for the funnel: it is NOT the
+	// LadderCaption (that describes the per-event ladder; reusing it here would
+	// contradict the distinct-flow funnel). T0 observed is its own cumulative rail
+	// (never summed); the funnel stages are distinct flows within the window.
+	FunnelCaption string `json:"funnel_caption"`
 }
 
 // FlowView is the currently-tracked attacker flow shown in the live panel.
@@ -405,6 +437,17 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 	flow := selectCurrentFlow(events)
 	ladder, denom := buildLadder(summary, state.Observe.CompletedFolds)
 
+	// FleetWall windowed DISTINCT-flow funnel. DISTINCT-JAILED DISCIPLINE: the
+	// HEADLINE jailed number is funnel.Jailed — the PER-SESSION distinct-jailed count
+	// (sessions at exact peak tier == 3; equals DeriveFlowsList(events,3).Filtered and
+	// the /flows?tier=3 drill-down). kernel_containment.jailed_flows is the PER-COOKIE/
+	// PER-SOCKET containment list (one row per cookie at its max tier); the two coincide
+	// EXCEPT when a recycled cookie mixes a T3 session with a non-T3 session, so they are
+	// not asserted to be always equal. attacker_cost.jailed (= per-EVENT
+	// cost.Summary.TierCounts[3]) must NEVER be a headline; one flow can emit many T3
+	// events, so the per-event count overclaims the number of jailed flows.
+	funnel := DeriveFlowFunnel(events)
+
 	ov := Overview{
 		Scope:        state.Scope,
 		At:           state.At,
@@ -416,6 +459,9 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 			TierLadder:        ladder,
 			LadderDenominator: denom,
 			LadderCaption:     "Two windows, not one denominator: T0 = cumulative observed-normal traffic (eBPF folds since start, pinned to the full bar); T1-3 fractions are of the attacker subtotal within the events window only. The two are intentionally not mixed.",
+			FlowFunnel:        funnel,
+			// Two-rail funnel caption — deliberately NOT the per-event LadderCaption.
+			FunnelCaption: "Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows within this window, each flow once at its highest tier — not per event.",
 		},
 		AttackerCost:      buildAttackerCost(summary),
 		KernelContainment: buildKernelContainment(events),
@@ -424,6 +470,13 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		Journey:           buildJourney(flow, events, now),
 		ReconLive:         buildReconLive(state.ReconLive),
 		Bystanders:        buildBystanders(state.Bystanders),
+		// ArmedFlows headline = distinct armed sessions (== funnel.DecoyTouched ==
+		// DeriveFlowsList(events,-1).TotalCount). DISTINCT sessions, never per-event.
+		ArmedFlows: ArmedFlowsView{DistinctCount: DeriveFlowsList(events, -1).TotalCount},
+		// Simulated mirrors the tap's cross-customer Simulated signal (SimulatedPeers)
+		// — data-gated, never hardcoded — so the ⚠ "simulated traffic" disclosure
+		// lights from the same source and goes dark on a real deployment.
+		Simulated: state.CrossCustomer.Simulated,
 	}
 	return ov
 }

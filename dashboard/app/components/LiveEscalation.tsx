@@ -1,3 +1,4 @@
+// RETIRED: no longer rendered on the wall (demoted to LiveSpotlight on Row4). Retained only for the shared WALL_LINK export below. TODO: relocate WALL_LINK to lib/format.ts and delete this file.
 import Link from 'next/link';
 import PanelHead from './PanelHead';
 import Spark from './Spark';

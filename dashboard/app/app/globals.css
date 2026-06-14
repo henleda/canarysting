@@ -73,7 +73,7 @@ body::before {
 .navitem.active .navitem-label { color: var(--canary); }
 .navitem.active .navitem-hint { color: var(--ink-dim); }
 
-.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.2fr 1.2fr 0.8fr; }
+.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.2fr 1.25fr 0.6fr; }
 
 /* Tier-0 drill-down honest empty-state (no per-flow records by design). */
 .t0-empty { border: 1px solid rgba(47,227,154,0.28); border-radius: 8px; padding: 22px 24px;
@@ -396,3 +396,69 @@ body { min-height: 100%; }
 .funnel-step.t1 .fs-num { color: var(--tag); }
 .funnel-step.t2 .fs-num { color: var(--contain); }
 .funnel-step.t3 .fs-num { color: var(--sting); }
+
+/* ===================================================================== *
+ * FleetWall reframe — Row-2 FleetSafety hero, Row-4 LiveSpotlight strip,  *
+ * and a reusable sim-badge. ADDITIVE ONLY — no signed-off class (.score,  *
+ * .funnel, .precision-zero, .hero, .cell) is restyled here.               *
+ * ===================================================================== */
+
+/* The /precision placement caveat (Rule 7) — quieted, with a deep-link. */
+.pz-caveat { color: var(--ink-faint); }
+.pz-caveat a { color: var(--canary); text-decoration: none; }
+.pz-caveat a:hover { text-decoration: underline; }
+
+/* Reusable simulated-traffic disclosure (data-gated on Overview.simulated). */
+.sim-badge { display: inline-flex; align-self: flex-start; font-family: var(--mono); font-size: 10.5px;
+  letter-spacing: 0.03em; color: var(--canary); border: 1px solid rgba(255,206,58,0.35);
+  background: rgba(255,206,58,0.06); border-radius: 3px; padding: 4px 10px; }
+
+/* Row 2 — FleetSafety: a full-width hero, two stacked strips, no scroll. */
+.fleet-safety { background: var(--panel); padding: 22px 32px; overflow: hidden; display: flex;
+  flex-direction: column; gap: 16px; min-height: 0; border-bottom: 1px solid var(--line); }
+/* Scope the structural-zero number DOWN in the wall hero: the base 92px is sized for
+   the full-page /precision hero and competes with the fleet band here. ADDITIVE — the
+   base .precision-zero .pz-num rule (and /precision) is unchanged. */
+.fleet-safety .pz-num { font-size: 64px; }
+.fs-top { display: flex; flex-direction: column; gap: 14px; }
+.fs-bottom { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+
+/* The three-number fleet band — each headline on its own basis rail. */
+.fs-band { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.fs-stat { display: block; background: var(--bg-2); padding: 14px 18px; text-decoration: none; color: inherit; }
+.fs-stat:hover { background: var(--panel-2); }
+.fs-scale-num { font-family: var(--expanded); font-weight: 800; font-size: 40px; line-height: 0.9;
+  letter-spacing: -0.01em; color: var(--ink); }
+.fs-scale-num.t0 { color: var(--safe); }
+.fs-scale-num.t3 { color: var(--sting); }
+.fs-stat-k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-dim); margin-top: 8px; }
+.fs-basis { font-family: var(--mono); font-size: 9.5px; line-height: 1.5; color: var(--ink-faint); margin-top: 5px; }
+
+/* Blast-radius line + the verbatim two-rails caption + the subordinate fraction. */
+.fs-blast { font-family: var(--sans); font-size: 11.5px; color: var(--ink-dim); line-height: 1.5; }
+.fs-note { font-family: var(--mono); font-size: 9.5px; line-height: 1.55; color: var(--ink-faint); }
+.fs-fraction { font-family: var(--sans); font-size: 11.5px; color: var(--ink-dim); text-decoration: none;
+  align-self: flex-start; }
+.fs-fraction b { color: var(--ink); }
+.fs-fraction:hover { color: var(--canary); }
+
+/* Row 4 — LiveSpotlight: the demoted single-flow strip. Compact, one row. */
+.live-strip { background: var(--panel); padding: 18px 32px; overflow: hidden; display: grid;
+  grid-template-columns: auto 1fr auto; align-items: center; gap: 26px; }
+.live-strip.empty { display: flex; align-items: center; justify-content: center; }
+.live-strip .ls-empty { font-size: 11px; letter-spacing: 0.12em; }
+.ls-lead { min-width: 0; }
+.ls-eyebrow { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--sting); margin-bottom: 6px; }
+.ls-id { display: flex; align-items: baseline; gap: 12px; }
+.ls-id .ip { font-family: var(--expanded); font-weight: 800; font-size: 20px; letter-spacing: 0.01em; }
+.ls-id .role { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--sting); border: 1px solid rgba(255,77,96,0.5); border-radius: 2px; padding: 2px 7px;
+  background: rgba(255,77,96,0.08); }
+.ls-spark { min-width: 0; }
+.ls-spark .spark { margin: 0; height: 28px; }
+.ls-score { text-align: right; flex-shrink: 0; }
+/* NEW compact score — the signed-off 104px .score is intentionally untouched. */
+.score-strip { font-family: var(--expanded); font-weight: 900; font-size: 28px; line-height: 0.9;
+  color: var(--sting); text-shadow: 0 0 18px rgba(255,77,96,0.4); letter-spacing: -0.01em; }

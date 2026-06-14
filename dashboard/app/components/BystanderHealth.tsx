@@ -1,4 +1,6 @@
+import Link from 'next/link';
 import PanelHead from './PanelHead';
+import { WALL_LINK } from './LiveEscalation';
 import { fmtBytes, fmtTimeLong } from '@/lib/format';
 import type { BystanderView, BystanderFlow } from '@/lib/types';
 
@@ -44,7 +46,9 @@ export default function BystanderHealth({ bystanders }: { bystanders: BystanderV
 function BystanderRow({ f }: { f: BystanderFlow }) {
   return (
     <div className="ev">
-      <span className="ts">{f.flow_id_hex}</span>
+      <span className="ts">
+        <Link href={`/flow/${f.flow_id_hex}?since=1h`} style={WALL_LINK}>{f.flow_id_hex}</Link>
+      </span>
       <span className="what">
         {fmtBytes(f.bytes)} served · {fmtTimeLong(f.duration_sec)}
       </span>

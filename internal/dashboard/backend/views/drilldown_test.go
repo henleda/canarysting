@@ -181,6 +181,100 @@ func TestDeriveFlowsListTierFilterAndSort(t *testing.T) {
 	}
 }
 
+// --- FlowFunnel (FleetWall windowed distinct-flow funnel) ---
+
+// TestDeriveFlowFunnelMatchesFlowsList is the CI gate: the funnel stages MUST equal
+// the flows-table tier-filtered counts, so the headline funnel can never drift from
+// the drill-down table. This pins the distinct-jailed discipline at the type level.
+func TestDeriveFlowFunnelMatchesFlowsList(t *testing.T) {
+	evs := []intelligence.AdversaryInteractionEvent{
+		// 0x10: peaks at T1 (decoy touched, not contained, not jailed)
+		evScore(0x10, 1, "tag", ".env", 0, 1),
+		// 0x20: peaks at T2 (contained) — multiple T2 events, still ONE distinct flow
+		evScore(0x20, 1, "tag", ".env", 5, 1),
+		evScore(0x20, 2, "contain", ".aws/credentials", 10, 2),
+		evScore(0x20, 2, "contain", "backup/db.sql", 15, 3),
+		// 0x30: peaks at T3 (jailed) — multiple T3 events, still ONE distinct flow
+		evScore(0x30, 2, "contain", ".env", 20, 2),
+		evScore(0x30, 3, "jail", ".aws/credentials", 25, 4),
+		evScore(0x30, 3, "jail", "internal/buckets", 30, 5),
+		// 0x40: also peaks at T3
+		evScore(0x40, 3, "jail", ".env", 35, 6),
+	}
+	fv := DeriveFlowFunnel(evs)
+
+	if got, want := fv.DecoyTouched, DeriveFlowsList(evs, -1).TotalCount; got != want {
+		t.Fatalf("DecoyTouched=%d, want DeriveFlowsList(-1).TotalCount=%d", got, want)
+	}
+	if got, want := fv.Contained, DeriveFlowsList(evs, 2).Filtered; got != want {
+		t.Fatalf("Contained=%d, want DeriveFlowsList(2).Filtered=%d", got, want)
+	}
+	if got, want := fv.Jailed, DeriveFlowsList(evs, 3).Filtered; got != want {
+		t.Fatalf("Jailed=%d, want DeriveFlowsList(3).Filtered=%d", got, want)
+	}
+	// Distinct-jailed discipline: 2 distinct flows jailed, even though there are 3
+	// T3 EVENTS — the per-event count must NOT leak into the headline.
+	if fv.Jailed != 2 {
+		t.Fatalf("Jailed should be 2 DISTINCT flows (not 3 T3 events), got %d", fv.Jailed)
+	}
+	if fv.Contained != 1 {
+		t.Fatalf("Contained should be 1 distinct flow at exact peak T2, got %d", fv.Contained)
+	}
+	if fv.DecoyTouched != 4 || fv.DistinctActive != 4 {
+		t.Fatalf("want 4 distinct active sessions all decoy-touched, got touched=%d active=%d", fv.DecoyTouched, fv.DistinctActive)
+	}
+}
+
+// TestDeriveFlowFunnelEmpty: no events → all zeros, no panic.
+func TestDeriveFlowFunnelEmpty(t *testing.T) {
+	fv := DeriveFlowFunnel(nil)
+	if fv.DecoyTouched != 0 || fv.Contained != 0 || fv.Jailed != 0 || fv.DistinctActive != 0 {
+		t.Fatalf("want all-zero funnel for no events, got %+v", fv)
+	}
+}
+
+// TestDeriveFlowFunnelCookieReuse: a single recycled cookie carrying two sessions
+// (split at the 10-min idle gap) counts as TWO distinct flows — distinct_active is
+// sessions, not unique cookies/attackers.
+func TestDeriveFlowFunnelCookieReuse(t *testing.T) {
+	evs := []intelligence.AdversaryInteractionEvent{
+		// session 1 of cookie 0x10: peaks T2
+		evScore(0x10, 1, "tag", ".env", 0, 1),
+		evScore(0x10, 2, "contain", ".aws/credentials", 30, 2),
+		// gap of 20 minutes -> session 2 of the SAME cookie: peaks T1
+		evScore(0x10, 1, "tag", "backup/db.sql", 30+1200, 1),
+		evScore(0x10, 1, "tag", "internal/buckets", 30+1230, 2),
+	}
+	fv := DeriveFlowFunnel(evs)
+	// distinct_active counts SESSIONS (cookies recycle → split per session), so the
+	// one reused cookie is two distinct flows.
+	if fv.DistinctActive != 2 {
+		t.Fatalf("cookie reuse should yield 2 distinct sessions, got %d", fv.DistinctActive)
+	}
+	if fv.DistinctActive != fv.DecoyTouched {
+		t.Fatalf("distinct_active should equal decoy_touched (every stored session is armed), got active=%d touched=%d", fv.DistinctActive, fv.DecoyTouched)
+	}
+	if fv.DistinctActive != DeriveFlowsList(evs, -1).TotalCount {
+		t.Fatalf("distinct_active should equal DeriveFlowsList(-1).TotalCount=%d, got %d", DeriveFlowsList(evs, -1).TotalCount, fv.DistinctActive)
+	}
+	// session 1 peaks T2 (contained), session 2 peaks T1 → contained==1, jailed==0
+	if fv.Contained != 1 || fv.Jailed != 0 {
+		t.Fatalf("want contained=1 jailed=0 across the two sessions, got contained=%d jailed=%d", fv.Contained, fv.Jailed)
+	}
+	// RE-DERIVE the funnel==flows equality on the cookie-reuse / multi-session path
+	// (not hand-coded constants), so the invariant is proven where a recycled cookie
+	// splits into multiple sessions.
+	if got, want := fv.Contained, DeriveFlowsList(evs, 2).Filtered; got != want {
+		t.Fatalf("Contained=%d, want DeriveFlowsList(2).Filtered=%d", got, want)
+	}
+	if got, want := fv.Jailed, DeriveFlowsList(evs, 3).Filtered; got != want {
+		t.Fatalf("Jailed=%d, want DeriveFlowsList(3).Filtered=%d", got, want)
+	}
+	if got, want := fv.DecoyTouched, DeriveFlowsList(evs, -1).TotalCount; got != want {
+		t.Fatalf("DecoyTouched=%d, want DeriveFlowsList(-1).TotalCount=%d", got, want)
+	}
+}
+
 // --- CostBreakdown ---
 
 func TestDeriveCostBreakdown(t *testing.T) {
