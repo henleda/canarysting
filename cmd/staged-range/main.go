@@ -40,7 +40,8 @@ func main() {
 		boundary       = flag.String("scope-boundary", "", "operator-defined scope boundary; required (refuse to start if empty)")
 		window         = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
 		grpcAddr       = flag.String("grpc-addr", ":50052", "serve the Engine over gRPC at this address")
-		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (cold-start escalation)")
+		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (single-touch escalation)")
+		demoEscalation = flag.Bool("demo-escalation", false, "DEMO ONLY: a middle escalation band (Tag@~touch-1, Contain@~3, Jail@~5 at M=1) so a flow DWELLS in the inline attrition (tarpit/maze/poison) for 3-5 touches before the jail — a credible bleed, not the -aggressive single touch. Mutually exclusive with -aggressive; NEVER for production.")
 		containInline  = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
 		jailInline     = flag.Bool("jail-inline", false, "make Tier 3 (Jail) INLINE so the jailed flow's attrition outcome is reported back — which drains the pending jail into RecordJail and emits the D6-3 cross-scope confirmation. Default off (async kernel jail). For STAGED CONTRIBUTOR scopes that must emit confirmations (an async kernel jail drops the socket before any outcome is reported).")
 		baselineDB     = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store")
@@ -83,6 +84,9 @@ func main() {
 	if *consume && *sharedSpool == "" {
 		log.Fatal("staged-range: refusing to start — -consume requires -shared-spool (else there is nothing to consume; refuse rather than silently no-op)")
 	}
+	if *aggressive && *demoEscalation {
+		log.Fatal("staged-range: refusing to start — -aggressive and -demo-escalation are mutually exclusive (single-touch vs the 3-5-touch dwell band)")
+	}
 
 	reg, err := stagedlabel.LoadRegistryFile(*registryPath)
 	if err != nil {
@@ -98,6 +102,7 @@ func main() {
 		Boundary:              *boundary,
 		Window:                *window,
 		Aggressive:            *aggressive,
+		DemoEscalation:        *demoEscalation,
 		ContainInline:         *containInline,
 		JailInline:            *jailInline,
 		BaselineDBPath:        *baselineDB,

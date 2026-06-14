@@ -50,7 +50,14 @@ import (
 type Options struct {
 	Boundary   string        // operator scope boundary; empty => refuse to start
 	Window     time.Duration // scoring correlation window
-	Aggressive bool          // demo/eval: minimum per-tier confidence (cold-start escalation)
+	Aggressive bool          // demo/eval: minimum per-tier confidence (single-touch escalation)
+	// DemoEscalation is a DEMO-ONLY middle escalation band (not single-touch
+	// -aggressive, not the production default): a flow TAGS on touch 1, CONTAINS (the
+	// inline attrition pump begins — tarpit/maze/poison) around touch ~3, and JAILS
+	// around touch ~5 at M=1 — a credible 3-5-touch bleed BEFORE the kernel jail,
+	// independent of whether the baseline multiplier is live. Mutually exclusive with
+	// Aggressive. NEVER for production (jail must stay operator-elected).
+	DemoEscalation bool
 	// ContainInline makes Tier 2 (Contain) verdicts INLINE so the adapter runs the
 	// M6 attrition pump (held tarpit + deception body, with the real attacker-cost
 	// outcome reported back) instead of the default async kernel-enforced path.
@@ -252,6 +259,16 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 			contract.TierTag:     tiers.MinConfidence,
 			contract.TierContain: tiers.MinConfidence,
 			contract.TierJail:    tiers.MinConfidence,
+		}
+	} else if opts.DemoEscalation {
+		// DEMO-ONLY middle band: at M=1 (touch-count scoring) a flow Tags on touch 1,
+		// Contains (the inline pump begins) around touch ~3, and Jails around touch ~5 —
+		// a credible 3-5-touch bleed before the kernel jail, not the -aggressive single
+		// touch. Production strictness is untouched (this is gated behind the flag).
+		tierCfg.ConfidenceRequired = map[contract.Tier]float64{
+			contract.TierTag:     0.01,
+			contract.TierContain: 0.30,
+			contract.TierJail:    0.50,
 		}
 	}
 	if opts.ContainInline {

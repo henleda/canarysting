@@ -129,7 +129,12 @@ func (c Config) Normalized() Config {
 		c.Mapper = StripQueryPathMapper{}
 	}
 	if c.InlineTimeout <= 0 {
-		c.InlineTimeout = 50 * time.Millisecond
+		// MUST be >= the caller's engine-call timeout: the inline hold waits this long
+		// for the verdict, so if it is shorter than the engine call it fires first and
+		// the adapter falls closed (403) on a canary touch the engine would have decided
+		// — before the attrition pump ever runs. 250ms comfortably exceeds the 200ms
+		// engine call timeout the composition root uses.
+		c.InlineTimeout = 250 * time.Millisecond
 	}
 	if c.ResolveRetry <= 0 {
 		c.ResolveRetry = 5 * time.Millisecond

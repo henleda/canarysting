@@ -111,18 +111,21 @@ func main() {
 	defer cc.Close()
 
 	// engineCallTimeout bounds each engine Submit gRPC call. ORDERING INVARIANT:
-	// the adapter's inline-submit hold (envoy.Config.InlineTimeout, default 50ms)
-	// must be <= this engine call timeout, so the engine call returns (a verdict or
-	// its own deadline) before the adapter's inline timeout fires. The adapter's
-	// submit goroutine is buffered, so even a late engine reply is received and
-	// discarded — not a leak; but if InlineTimeout fired first the adapter would
-	// fall closed on a flow the engine would have decided, so the ordering matters.
-	// The adapter is constructed below with its default InlineTimeout; guard the
-	// relationship here so a future retune of either value surfaces a mismatch.
+	// the adapter's inline-submit hold (envoy.Config.InlineTimeout) must be >= this
+	// engine call timeout, so the engine call returns (a verdict or its own deadline)
+	// BEFORE the inline hold fires. If the hold is shorter it fires first and the
+	// adapter falls closed (403) on a flow the engine WOULD have decided — exactly the
+	// bug that made every inline canary touch a flat 403 instead of running the
+	// attrition pump (the hold defaulted to 50ms while the engine call is 200ms, and
+	// this binary never wired InlineTimeout). We now wire InlineTimeout from
+	// inlineSubmitHold below and guard the relationship so a future retune surfaces a
+	// mismatch. Keep inlineSubmitHold strictly < the Envoy ext_proc message_timeout
+	// (envoy.yaml) and AttritionMaxHold < message_timeout so the proxy never times the
+	// stream out and 5xx-es the attacker instead of serving the deception body.
 	const engineCallTimeout = 200 * time.Millisecond
-	const inlineSubmitHold = 50 * time.Millisecond // mirrors envoy.Config InlineTimeout default
-	if inlineSubmitHold > engineCallTimeout {
-		log.Printf("envoy-adapter: WARNING inline hold %v > engine call timeout %v; the inline timeout may fire before the engine call returns (adapter falls closed on a decidable flow)", inlineSubmitHold, engineCallTimeout)
+	const inlineSubmitHold = 300 * time.Millisecond // wired into envoy.Config.InlineTimeout; MUST be >= engineCallTimeout
+	if inlineSubmitHold < engineCallTimeout {
+		log.Printf("envoy-adapter: WARNING inline hold %v < engine call timeout %v; the inline timeout may fire before the engine call returns (adapter falls closed on a decidable flow)", inlineSubmitHold, engineCallTimeout)
 	}
 	eng := enginegrpc.NewClient(cc, engineCallTimeout)
 
@@ -188,6 +191,9 @@ func main() {
 		Attritor:         attr,
 		AttritionBodyCap: *bodyCap,
 		AttritionMaxHold: *maxHold,
+		// Hold long enough for the engine verdict (>= engineCallTimeout) so a canary
+		// touch runs the attrition pump instead of falling closed to a flat 403.
+		InlineTimeout: inlineSubmitHold,
 		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
 			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
 				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)
