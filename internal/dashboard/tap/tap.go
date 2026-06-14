@@ -45,8 +45,12 @@ const (
 	// reconLiveNoticeFloor is the baseline-novelty above which a NON-canary-touching
 	// live flow is surfaced as recon early-warning (observed, NOT actioned — Rule 8:
 	// only a canary touch can arm a response; this is context, never a trigger).
-	// Below it a flow is a normal-looking bystander, not recon.
-	reconLiveNoticeFloor = 0.5
+	// Below it a flow is a normal-looking bystander, not recon. Set below the obvious
+	// 0.5 midpoint so a sustained scanner — whose novelty the baseline gradually
+	// learns DOWN toward the middle — stays steadily on the watch surface instead of
+	// flickering on and off as it crosses a high threshold (it remains observe-only
+	// either way; a learned-benign flow sits near 0 and is well clear of this floor).
+	reconLiveNoticeFloor = 0.3
 	// reconLiveSurfacedFloor escalates the label "recon" (quiet) -> "surfaced"
 	// (loud). Presentation tier only; no behavioral difference (neither acts).
 	reconLiveSurfacedFloor = 0.85

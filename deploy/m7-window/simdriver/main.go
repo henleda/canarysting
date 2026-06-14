@@ -100,7 +100,11 @@ func main() {
 	// the white-space, under the bystander threshold so it reads as recon.
 	for i := 0; i < cfg.reconLive; i++ {
 		seed := int64(i*2654435761 + 99)
-		start(func() { runReconHold(ctx, cfg.reconIP, cfg.target, cfg.whitespacePaths, seed, cfg.reconHoldSec) })
+		// even phase offset across the hold window so the workers don't cycle in lockstep.
+		stagger := time.Duration(float64(i) / float64(cfg.reconLive) * cfg.reconHoldSec * float64(time.Second))
+		start(func() {
+			runReconHold(ctx, cfg.reconIP, cfg.target, cfg.whitespacePaths, seed, cfg.reconHoldSec, stagger)
+		})
 	}
 
 	// MALICIOUS — declared-attacker canary touches, gated so LLM runs get a clean trace.
@@ -319,16 +323,24 @@ const (
 // as recon, never an established workload. All paths are 404 white-space, never a
 // canary (Rule 8: recon cannot arm a response). Several run concurrently
 // (cfg.reconLive) so the recon surface stays populated without any engine change.
-func runReconHold(ctx context.Context, srcIP, target string, paths []string, seed int64, holdSec float64) {
+func runReconHold(ctx context.Context, srcIP, target string, paths []string, seed int64, holdSec float64, stagger time.Duration) {
+	// Phase-offset the start so concurrent workers don't open and close in lockstep
+	// (the cause of the recon count swinging 0<->N); evenly spread, several are
+	// always mid-session, keeping the surface steadily populated.
+	if stagger > 0 && sleepCtx(ctx, stagger) {
+		return
+	}
 	rng := rand.New(rand.NewSource(seed))
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		reconSession(ctx, srcIP, target, paths, rng, holdSec)
-		// jittered gap before the next scanner flow, so cookies churn (a stream of
-		// distinct short flows) rather than one metronome connection.
-		gap := (0.5 + rng.Float64()) * holdSec * 0.4
+		// Jittered gap before the next scanner flow — keeps the duty cycle high while
+		// the jitter DESYNCS the workers (a near-zero gap re-synchronizes them and the
+		// count swings); the backend's rolling-window retention does the real
+		// count-smoothing, so this only needs to keep flows flowing + cookies churning.
+		gap := (0.4 + 0.6*rng.Float64()) * holdSec * 0.25
 		if sleepCtx(ctx, time.Duration(gap*float64(time.Second))) {
 			return
 		}
@@ -583,7 +595,7 @@ func parseFlags() config {
 		baseRPM      = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
 		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
 		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
-		reconLive    = flag.Int("recon-live", 3, "concurrent HELD recon scanner flows (kept open ~recon-hold-sec so the dashboard recon surface stays populated; 0 disables)")
+		reconLive    = flag.Int("recon-live", 6, "concurrent HELD recon scanner flows, phase-staggered (kept open ~recon-hold-sec; the backend's rolling-window retention smooths the displayed count; 0 disables)")
 		reconHoldSec = flag.Float64("recon-hold-sec", 4.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
 		malKeepalive = flag.Duration("malicious-keepalive-interval", 3*time.Second, "canary-touch cadence on ONE sustained attacker flow that climbs Tag->Contain->Jail and reconnects (the self-running escalation->jail beat; 0 disables)")
 		recompute    = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
