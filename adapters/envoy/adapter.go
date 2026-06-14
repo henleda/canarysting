@@ -271,6 +271,10 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 	if serr != nil {
 		// Engine unavailable for an inline decision; the tier is unknown, so use the
 		// most-conservative inline posture (fail-closed by default for a canary touch).
+		// Surface WHY — a silent fall-closed on a canary touch hides a timeout/engine
+		// fault that would otherwise look like a working deny (it is what made every
+		// inline canary touch a flat 403 with no log).
+		log.Printf("envoy: inline submit FAILED for canary touch cookie=%#x (fall-closed): %v", ev.Flow.SocketCookie, serr)
 		if a.cfg.Fail.Allow(contract.TierJail) {
 			return continueResp(nil)
 		}

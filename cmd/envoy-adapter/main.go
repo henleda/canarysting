@@ -122,8 +122,13 @@ func main() {
 	// mismatch. Keep inlineSubmitHold strictly < the Envoy ext_proc message_timeout
 	// (envoy.yaml) and AttritionMaxHold < message_timeout so the proxy never times the
 	// stream out and 5xx-es the attacker instead of serving the deception body.
-	const engineCallTimeout = 200 * time.Millisecond
-	const inlineSubmitHold = 300 * time.Millisecond // wired into envoy.Config.InlineTimeout; MUST be >= engineCallTimeout
+	// Generous bounds: the engine Submit can take >200ms (scoring + baseline + the D6
+	// matcher querying the durable event store), so an inline canary-touch verdict
+	// needs real headroom or the adapter falls closed to a flat 403. Both stay well
+	// under the Envoy ext_proc message_timeout (10s) and AttritionMaxHold (8s).
+	const engineCallTimeout = 2 * time.Second
+	const inlineSubmitHold = 2500 * time.Millisecond // wired into envoy.Config.InlineTimeout; MUST be >= engineCallTimeout
+	log.Printf("envoy-adapter: inline submit hold %v, engine call timeout %v", inlineSubmitHold, engineCallTimeout)
 	if inlineSubmitHold < engineCallTimeout {
 		log.Printf("envoy-adapter: WARNING inline hold %v < engine call timeout %v; the inline timeout may fire before the engine call returns (adapter falls closed on a decidable flow)", inlineSubmitHold, engineCallTimeout)
 	}
