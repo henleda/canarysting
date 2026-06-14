@@ -1,6 +1,7 @@
 package persist
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -125,6 +126,56 @@ func TestEventLogMonotonicAndScoped(t *testing.T) {
 	})
 	if len(order) != 2 || order[0] != "e1" || order[1] != "e2" {
 		t.Fatalf("event order = %v", order)
+	}
+}
+
+// RangeEventsRecent must visit a scope's MOST-RECENT events first (reverse seq
+// order) and stop at maxN — the bound that keeps the matcher hot-path query
+// O(maxN) instead of O(whole log). maxN<=0 means a full reverse scan.
+func TestRangeEventsRecentNewestFirstAndCapped(t *testing.T) {
+	s := openTemp(t)
+	for _, b := range []string{"e1", "e2", "e3", "e4", "e5"} {
+		if _, err := s.AppendEvent("scopeA", []byte(b)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	collect := func(maxN int) []string {
+		var got []string
+		if err := s.RangeEventsRecent("scopeA", maxN, func(_ uint64, blob []byte) error {
+			got = append(got, string(blob))
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	// Cap of 2 -> exactly the two NEWEST, newest-first.
+	if got := collect(2); len(got) != 2 || got[0] != "e5" || got[1] != "e4" {
+		t.Fatalf("RangeEventsRecent(2) = %v, want [e5 e4]", got)
+	}
+	// maxN<=0 -> full reverse scan (all five, newest-first).
+	if got := collect(0); len(got) != 5 || got[0] != "e5" || got[4] != "e1" {
+		t.Fatalf("RangeEventsRecent(0) = %v, want all newest-first", got)
+	}
+	// Cap larger than the log -> all of them, no over-read.
+	if got := collect(99); len(got) != 5 {
+		t.Fatalf("RangeEventsRecent(99) len = %d, want 5", len(got))
+	}
+	// Scope isolation: a recent scan of another scope yields nothing.
+	var other []string
+	_ = s.RangeEventsRecent("scopeB", 10, func(_ uint64, blob []byte) error {
+		other = append(other, string(blob))
+		return nil
+	})
+	if len(other) != 0 {
+		t.Fatalf("RangeEventsRecent on empty scope = %v, want none", other)
+	}
+	// An fn error propagates and stops the scan.
+	sentinel := errors.New("stop")
+	if err := s.RangeEventsRecent("scopeA", 0, func(_ uint64, _ []byte) error {
+		return sentinel
+	}); !errors.Is(err, sentinel) {
+		t.Fatalf("fn error not propagated: %v", err)
 	}
 }
 

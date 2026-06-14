@@ -73,6 +73,34 @@ func TestAppendQueryRoundTrip(t *testing.T) {
 	}
 }
 
+// Query returns events in ASCENDING time order even though the bounded recent
+// scan visits them newest-first — the derived-profile fingerprint depends on the
+// ordered touch sequence, so the reverse the scan introduces must be undone.
+func TestQueryReturnsAscendingOrder(t *testing.T) {
+	s, _ := openStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if err := s.Append(ev("scopeA", base.Add(time.Duration(i)*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Query("scopeA", base.Add(-time.Hour), base.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("got %d events, want 5", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Timestamp.Before(got[i-1].Timestamp) {
+			t.Fatalf("not ascending at %d: %v before %v", i, got[i].Timestamp, got[i-1].Timestamp)
+		}
+	}
+	if !got[0].Timestamp.Equal(base) || !got[4].Timestamp.Equal(base.Add(4*time.Minute)) {
+		t.Fatalf("order endpoints wrong: first=%v last=%v", got[0].Timestamp, got[4].Timestamp)
+	}
+}
+
 func TestQueryTimeWindow(t *testing.T) {
 	s, _ := openStore(t)
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -221,6 +249,37 @@ func TestAmendOutcomeMergesIntoQuery(t *testing.T) {
 	}
 	if got[0].Score != 3 {
 		t.Fatalf("merge corrupted the event: Score = %v, want 3", got[0].Score)
+	}
+}
+
+// Double-amend last-writer-wins MUST survive the newest-first bounded scan: when
+// an outcome is amended twice for the same (cookie, ts), Query must return the
+// LATEST-written (highest-seq) value. A naive reverse scan inverts this and
+// returns the stale first amendment — this regression-guards the bounded-scan fix.
+func TestAmendOutcomeDoubleAmendKeepsLatest(t *testing.T) {
+	s, _ := openStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	if err := s.Append(ev("scopeA", now)); err != nil {
+		t.Fatal(err)
+	}
+	// First outcome (older, lower seq), then a corrected one (newer, higher seq).
+	for _, bs := range []int64{100, 200} {
+		if err := s.AmendOutcome(contract.OutcomeRecord{
+			SocketCookie: 7, Scope: "scopeA", TimestampUnixMs: now.UnixMilli(),
+			Outcome: contract.StingOutcome{Mechanism: "poison_field", BytesServed: bs},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Query("scopeA", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	if got[0].Sting.BytesServed != 200 {
+		t.Fatalf("last-writer-wins broken: BytesServed = %d, want 200 (latest amendment)", got[0].Sting.BytesServed)
 	}
 }
 

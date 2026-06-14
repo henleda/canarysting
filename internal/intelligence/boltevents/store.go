@@ -35,6 +35,21 @@ var _ intelligence.EventStore = (*Store)(nil)
 // New returns a durable EventStore backed by store (required).
 func New(store *persist.Store) *Store { return &Store{store: store} }
 
+// recentScanCap bounds how many of a scope's most-recent event/outcome blobs a
+// Query visits. Query is on the engine's inline Submit hot path (the D5 sharpen
+// and D6 sharedset matchers each call it per Submit once a scope has accrued >=3
+// jails), and its lookback window is short (sharpen/sharedset use 1h). Without a
+// cap, Query scanned the ENTIRE per-scope event log every call — fine on a fresh
+// box, but multiple SECONDS on a days-old window with tens of thousands of blobs,
+// which blew past the adapter's inline timeout and fell the verdict closed to a
+// 403. The cap turns that O(total) scan into O(recentScanCap). It is sized to
+// comfortably span the 1h lookback for any realistic east-west capture rate;
+// because Query already filters to [since, until], the cap is a cost ceiling, not
+// a correctness boundary (a scope bursting >recentScanCap touch-events into one
+// hour would undersample the matcher's emerging-flow profile — never a false
+// trigger, since Rule 8 means only a canary touch arms a response regardless).
+const recentScanCap = 4096
+
 // Append durably records one interaction event under its scope, in append order.
 func (s *Store) Append(ev intelligence.AdversaryInteractionEvent) error {
 	if ev.ScopeKey == "" {
@@ -149,7 +164,7 @@ func (s *Store) Query(scopeKey string, since, until time.Time) ([]intelligence.A
 		tsMs   int64
 	}
 	outcomes := map[outcomeKey]intelligence.StingOutcome{}
-	err := s.store.RangeEvents(contract.ScopeKey(scopeKey), func(_ uint64, blob []byte) error {
+	err := s.store.RangeEventsRecent(contract.ScopeKey(scopeKey), recentScanCap, func(_ uint64, blob []byte) error {
 		// Outcome blobs are distinguished by the OutcomeAmendmentMarker discriminator.
 		// An event blob decoded as an outcomeRecord zero-fills the marker to false and
 		// is ignored here, then decoded as an event below.
@@ -160,8 +175,15 @@ func (s *Store) Query(scopeKey string, since, until time.Time) ([]intelligence.A
 			if or.TimestampMs < sinceMs || or.TimestampMs > untilMs {
 				return nil
 			}
-			// Last-writer-wins: a later blob for the same (cookie, ts) overwrites.
-			outcomes[outcomeKey{cookie: or.SocketCookie, tsMs: or.TimestampMs}] = or.Sting
+			// Last-writer-wins, preserved under the NEWEST-FIRST scan: the first
+			// outcome we see for a (cookie, ts) has the HIGHEST seq (latest written),
+			// so keep it and let an older (lower-seq) blob seen later NOT overwrite
+			// it. (The prior ascending scan got last-writer-wins for free by visiting
+			// the older blob first; a reverse scan must guard against the inversion.)
+			k := outcomeKey{cookie: or.SocketCookie, tsMs: or.TimestampMs}
+			if _, seen := outcomes[k]; !seen {
+				outcomes[k] = or.Sting
+			}
 			return nil
 		}
 		var ev intelligence.AdversaryInteractionEvent
@@ -175,6 +197,14 @@ func (s *Store) Query(scopeKey string, since, until time.Time) ([]intelligence.A
 		out = append(out, ev)
 		return nil
 	})
+	// RangeEventsRecent visits records NEWEST-FIRST, so out is in descending
+	// seq/time order. Reverse it to ascending — the order the prior full-scan
+	// returned and the order the derived-profile fingerprint (ordered touch
+	// sequence) depends on. The outcome merge below is order-independent (map
+	// lookup), so reversing here is sufficient.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
 	// Merge outcomes into events by (cookie, timestamp) in a single O(1)-per-event
 	// pass. An outcome whose event is outside the window (or never stored) is
 	// silently dropped — it has nowhere to attach, which is correct (we never
