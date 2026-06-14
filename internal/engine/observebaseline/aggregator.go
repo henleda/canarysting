@@ -385,6 +385,79 @@ func (a *Aggregator) Features(sc contract.ScopeKey, flow contract.FlowIdentity, 
 	return deriveFeatures(agg, fs, a.floor.MinP2Samples), true
 }
 
+// LiveFlow is one currently-open flow's COARSE, observe-only view, for the
+// dashboard's recon (anomalous non-touchers) and bystander (serving non-touchers)
+// surfaces. It carries derived novelty + byte/duration totals only — NEVER a raw
+// address, port-as-identity, or payload (rule 9). High novelty on a flow that has
+// touched NO canary is exactly the "looks suspicious but we take no action"
+// recon signal: it is presentation context, never a trigger (rule 8 — observe
+// data cannot arm a response; only a canary touch does).
+type LiveFlow struct {
+	Cookie       uint64
+	Scope        contract.ScopeKey
+	IngressBytes uint64
+	EgressBytes  uint64
+	DurationSec  float64 // observed lifetime (monotonic kernel clock); coarse
+
+	// Derived baseline novelty in [0,1] — how far the flow deviates from the
+	// learned normal. Surfaced as recon CONTEXT; never feeds a verdict.
+	AdjacencyNovelty float64
+	IdentityNovelty  float64
+	VolumeDeviation  float64
+	CadenceDeviation float64
+}
+
+// LiveFlows returns a coarse, observe-only snapshot of every currently-open flow
+// the aggregator is tracking, with derived novelty. The dashboard tap classifies
+// these (against the engine's canary-touch + jailed cookie sets) into recon and
+// bystander surfaces — but this accessor takes NO action and exposes NO raw
+// identity (rule 8 + rule 9). Off-Linux (Noop reader), before any flow is
+// observed, or for a closed/evicted flow it returns nothing for that flow.
+func (a *Aggregator) LiveFlows(at time.Time) []LiveFlow {
+	// Snapshot the tracked-open cookies + scope under the lock; derive each flow's
+	// view OUTSIDE it (Features re-locks per cookie, read-only — no deadlock).
+	type tracked struct {
+		cookie uint64
+		scope  contract.ScopeKey
+	}
+	a.mu.RLock()
+	snap := make([]tracked, 0, len(a.live))
+	for cookie, lf := range a.live {
+		snap = append(snap, tracked{cookie: cookie, scope: lf.scope})
+	}
+	a.mu.RUnlock()
+
+	out := make([]LiveFlow, 0, len(snap))
+	for _, t := range snap {
+		fs, ok, err := a.reader.ReadStats(t.cookie)
+		if err != nil || !ok || fs.Closed != 0 {
+			continue // gone, unreadable, or already closed — not a live flow
+		}
+		feat, _ := a.Features(t.scope, contract.FlowIdentity{SocketCookie: t.cookie}, at)
+		out = append(out, LiveFlow{
+			Cookie:           t.cookie,
+			Scope:            t.scope,
+			IngressBytes:     fs.IngressBytes,
+			EgressBytes:      fs.EgressBytes,
+			DurationSec:      flowDurationSec(fs),
+			AdjacencyNovelty: feat.AdjacencyNovelty,
+			IdentityNovelty:  feat.IdentityNovelty,
+			VolumeDeviation:  feat.VolumeDeviation,
+			CadenceDeviation: feat.CadenceDeviation,
+		})
+	}
+	return out
+}
+
+// flowDurationSec is the flow's observed lifetime from the monotonic kernel
+// timestamps (FirstSeen/LastSeen are bpf_ktime_get_ns, NOT wall-clock). Coarse.
+func flowDurationSec(fs observe.FlowStats) float64 {
+	if fs.LastSeenNs <= fs.FirstSeenNs {
+		return 0
+	}
+	return float64(fs.LastSeenNs-fs.FirstSeenNs) / 1e9
+}
+
 // Stats returns a snapshot of the observability counters.
 func (a *Aggregator) Stats() AggStats {
 	a.mu.RLock()

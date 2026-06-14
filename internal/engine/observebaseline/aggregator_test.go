@@ -161,6 +161,62 @@ func TestBenignNeutralAttackerNovel(t *testing.T) {
 	}
 }
 
+// LiveFlows surfaces currently-open flows with derived novelty, coarse-only: a
+// brand-new identity reads as highly anomalous (the recon signal), a known-legit
+// flow reads near-neutral, and a CLOSED flow drops out.
+func TestLiveFlows(t *testing.T) {
+	r := newFakeReader()
+	gates := newRecordGates()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := New(Config{
+		Reader: r, Gates: gates, Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
+	})
+	// Establish a benign baseline so novelty is meaningful.
+	for i := 0; i < 30; i++ {
+		completeFlow(agg, r, uint64(1000+i), flowFromIPs(byte(5+i%3), 1, 1400, 12, 2_000_000), now)
+	}
+
+	// Two OPEN flows: a known-legit identity and a never-seen (anomalous) one.
+	// foldOnce tracks open flows in a.live without folding them, so their derived
+	// novelty is meaningful and they appear in LiveFlows.
+	r.set(2000, flowFromIPs(5, 1, 1400, 12, 2_000_000))
+	r.set(3000, flowFromIPs(199, 1, 1400, 12, 2_000_000))
+	agg.foldOnce(now)
+
+	byCookie := map[uint64]LiveFlow{}
+	for _, f := range agg.LiveFlows(now) {
+		byCookie[f.Cookie] = f
+	}
+	legit, ok := byCookie[2000]
+	if !ok {
+		t.Fatal("LiveFlows missing the open legit flow 2000")
+	}
+	recon, ok := byCookie[3000]
+	if !ok {
+		t.Fatal("LiveFlows missing the open anomalous flow 3000")
+	}
+	if recon.IdentityNovelty != 1.0 || recon.AdjacencyNovelty != 1.0 {
+		t.Fatalf("anomalous flow novelty not maximal: %+v", recon)
+	}
+	if legit.IdentityNovelty > 0.2 || legit.AdjacencyNovelty > 0.2 {
+		t.Fatalf("legit flow novelty too high: %+v", legit)
+	}
+	if recon.IngressBytes == 0 && recon.EgressBytes == 0 {
+		t.Fatal("expected coarse byte totals on the live flow")
+	}
+
+	// A CLOSED flow is not "live" and must drop out of LiveFlows.
+	closed := flowFromIPs(199, 1, 1400, 12, 2_000_000)
+	closed.Closed = 1
+	r.set(3000, closed)
+	for _, f := range agg.LiveFlows(now) {
+		if f.Cookie == 3000 {
+			t.Fatal("a closed flow must not appear in LiveFlows")
+		}
+	}
+}
+
 // A confirmed-malicious source is excluded from the baseline-of-normal: its
 // flows are never folded, so its identity stays at count 0 (novelty 1.0) no
 // matter how many times it connects — it cannot normalize itself.
