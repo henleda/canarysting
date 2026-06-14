@@ -276,6 +276,10 @@ func runLLMDispatch(ctx context.Context, cfg config, ledger *spendledger.Ledger,
 				log.Printf("simdriver: Tier-C live run skipped — daily cap reached (remaining $%.2f)", ledger.Remaining(time.Now()))
 				continue
 			}
+			// Remove any stale cost file so an early-exiting child leaves NO file —
+			// then parseCostUSD fails and we record the conservative per-run cap,
+			// rather than reading a prior run's lower number and under-counting.
+			_ = os.Remove(cfg.costOut)
 			runAttacker(ctx, cfg, gate, fmt.Sprintf("live($%.2f cap)", est),
 				"-hard-cap-usd", fmt.Sprintf("%.4f", est), "-key-file", cfg.keyFile, "-max-turns", "8")
 			// Record actual spend; on any parse failure record the per-run cap so
@@ -314,27 +318,27 @@ func runAttacker(ctx context.Context, cfg config, gate *sync.RWMutex, label stri
 // ---- config -----------------------------------------------------------------
 
 type config struct {
-	target          string
-	tapAddr         string
-	benignIPs       []string
-	normalPaths     []string
-	attackerIP      string
-	canaryPaths     []string
-	reconIP         string
-	whitespacePaths []string
-	baseRPM         float64
-	maliciousPct    float64
-	reconPct        float64
-	recompute       time.Duration
-	dailyCapUSD     float64
-	budgetFile      string
-	cassette        string
+	target           string
+	tapAddr          string
+	benignIPs        []string
+	normalPaths      []string
+	attackerIP       string
+	canaryPaths      []string
+	reconIP          string
+	whitespacePaths  []string
+	baseRPM          float64
+	maliciousPct     float64
+	reconPct         float64
+	recompute        time.Duration
+	dailyCapUSD      float64
+	budgetFile       string
+	cassette         string
 	cassetteInterval time.Duration
-	liveInterval    time.Duration
-	liveBudgetUSD   float64
-	attackerBin     string
-	keyFile         string
-	costOut         string
+	liveInterval     time.Duration
+	liveBudgetUSD    float64
+	attackerBin      string
+	keyFile          string
+	costOut          string
 }
 
 func (c config) validate() error {
@@ -344,10 +348,14 @@ func (c config) validate() error {
 	if len(c.canaryPaths) == 0 || len(c.whitespacePaths) == 0 {
 		return fmt.Errorf("need canary paths (malicious) and white-space paths (recon)")
 	}
-	// Rule 8 guard: recon must never touch a decoy. Refuse to start if a recon
-	// white-space path is also a canary path.
+	// Rule 8 guard: neither the recon (white-space) nor the benign (normal) class
+	// may touch a decoy — only the declared-attacker canary class does. Refuse to
+	// start if a recon OR a benign path is also a canary path.
 	if bad, ok := disjoint(c.canaryPaths, c.whitespacePaths); !ok {
 		return fmt.Errorf("recon white-space path %q is also a canary path; recon must never touch a canary (Rule 8)", bad)
+	}
+	if bad, ok := disjoint(c.canaryPaths, c.normalPaths); !ok {
+		return fmt.Errorf("benign normal path %q is also a canary path; benign workers must never touch a canary (Rule 8)", bad)
 	}
 	if c.maliciousPct < 0 || c.maliciousPct >= 100 || c.reconPct < 0 || c.reconPct >= 100 {
 		return fmt.Errorf("malicious/recon pct must be in [0,100)")

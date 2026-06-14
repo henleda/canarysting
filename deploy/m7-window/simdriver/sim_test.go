@@ -83,6 +83,16 @@ func TestValidateRule8ReconNeverTouchesCanary(t *testing.T) {
 	}
 }
 
+// The benign class must also never touch a canary (a misconfigured -normal-paths
+// containing a canary would arm responses against legitimate traffic).
+func TestValidateRule8BenignNeverTouchesCanary(t *testing.T) {
+	c := validConfig()
+	c.normalPaths = []string{"/shop", "/.env"} // /.env is a canary
+	if err := c.validate(); err == nil {
+		t.Fatal("config with a benign path that is also a canary MUST be refused (Rule 8)")
+	}
+}
+
 func TestValidatePctBounds(t *testing.T) {
 	c := validConfig()
 	c.maliciousPct = 100

@@ -118,11 +118,19 @@ func (l *Ledger) Remaining(now time.Time) float64 {
 	return 0
 }
 
-// rolloverLocked resets the running total when the UTC day advances.
+// rolloverLocked resets the running total when the UTC day advances, and
+// persists the zeroed new-day record immediately. The persist matters: a
+// long-running process that crosses midnight in memory would otherwise leave
+// yesterday's file on disk, so a crash after the rollover but before the next
+// Record could reload it on restart — fixing the day boundary as a hard cap edge.
+// A persist failure marks the ledger corrupt (fail closed), same as Record.
 func (l *Ledger) rolloverLocked(now time.Time) {
 	if d := dayKey(now); d != l.day {
 		l.day = d
 		l.spent = 0
+		if err := l.persistLocked(); err != nil {
+			l.corrupt = true
+		}
 	}
 }
 

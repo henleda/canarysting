@@ -65,6 +65,20 @@ func TestDayRolloverResets(t *testing.T) {
 	}
 }
 
+// A long-running process that crosses midnight in memory must PERSIST the zeroed
+// new day, so a crash before the next Record cannot reload yesterday's total.
+func TestRolloverPersistsNewDay(t *testing.T) {
+	p := tmpPath(t)
+	d1 := time.Date(2026, 6, 14, 23, 0, 0, 0, time.UTC)
+	l := Open(p, 20.0, d1)
+	_ = l.Record(d1, 15.0)
+	d2 := d1.Add(2 * time.Hour) // crosses into the next UTC day
+	_ = l.CanSpend(d2, 1.0)     // a query crossing midnight rolls over AND persists
+	if r := Open(p, 20.0, d2).Remaining(d2); r != 20.0 {
+		t.Fatalf("rollover not persisted; a fresh handle sees remaining = %v, want 20", r)
+	}
+}
+
 func TestPriorDayFileStartsFreshToday(t *testing.T) {
 	p := tmpPath(t)
 	yesterday := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
