@@ -282,6 +282,44 @@ func TestReap_SizeCapEvictsLeastRecentlyTouchedFirst(t *testing.T) {
 	}
 }
 
+func TestReap_BoundaryFlowAtExactCutoffIsRetained(t *testing.T) {
+	// Boundary consistency: the reaper's TTL test must match the score loop's
+	// retention boundary exactly. The score loop drops a touch only when it is
+	// strictly Before(cutoff), so a touch at last == cutoff is RETAINED. The
+	// reaper must therefore NOT evict a flow whose newest touch is exactly at the
+	// cutoff — otherwise a flow the score loop still treats as active would be
+	// dropped at the exact-boundary instant.
+	const window = 5 * time.Minute
+	s := New(window, uniformWeights{}, nil)
+	t0 := time.Unix(1_000_000, 0)
+
+	// Boundary flow: cookie 1 touches once at t0.
+	s.Score("scope", ev("scope", 1, "a", t0))
+
+	// Driver flow: cookie 2 touches at exactly t0+window, so the reap it triggers
+	// uses cutoff == (t0+window)-window == t0. Cookie 1's lastTouch == t0 == cutoff.
+	// last == cutoff is NOT Before(cutoff), so cookie 1 must survive this reap.
+	s.Score("scope", ev("scope", 2, "a", t0.Add(window)))
+	if got := s.liveCookies("scope"); got != 2 {
+		t.Fatalf("flow at exact cutoff was reaped: live cookies = %d, want 2 (boundary is strict, matching the score loop)", got)
+	}
+
+	// And it is genuinely still active per the score loop: re-touching cookie 1
+	// at exactly t0+window keeps its t0 "a" touch (last == cutoff is retained),
+	// so a second distinct type makes the base 2.0, not 1.0.
+	got, _ := s.Score("scope", ev("scope", 1, "b", t0.Add(window)))
+	if got != 2.0 {
+		t.Fatalf("score loop dropped a touch at exact cutoff: got %.2f, want 2.0 (boundary retained)", got)
+	}
+
+	// One nanosecond past the boundary, the flow is strictly idle and reapable.
+	// Cookie 3 drives a reap with cutoff just past cookie 1/2's last touches.
+	s.Score("scope", ev("scope", 3, "a", t0.Add(2*window).Add(time.Nanosecond)))
+	if got := s.liveCookies("scope"); got != 1 {
+		t.Fatalf("strictly-idle flows past the boundary not reaped: live cookies = %d, want 1 (only the active driver)", got)
+	}
+}
+
 func TestReap_DoesNotLeakAcrossScopes(t *testing.T) {
 	// Reaping a flood in one scope must not disturb another scope's flows
 	// (scope isolation — rule 5). A flow idle in scope-a is reaped; scope-b's

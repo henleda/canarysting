@@ -237,12 +237,15 @@ func (s *WindowedScorer) Score(scope contract.ScopeKey, ev contract.SignalEvent)
 // active (in-window) flow's score.
 //
 // Two passes:
-//  1. TTL eviction. Any flow whose newest touch (lastTouch) is at or before the
-//     window cutoff is idle: every one of its touches has aged out of the
+//  1. TTL eviction. Any flow whose newest touch (lastTouch) is strictly before
+//     the window cutoff is idle: every one of its touches has aged out of the
 //     correlation window, so it would contribute a zero base on its next score
 //     regardless. Dropping it is equivalent to letting it score from scratch as
-//     a new flow — no active flow loses score. This also reclaims flows whose
-//     last touch self-expired (the empty-state case).
+//     a new flow — no active flow loses score. The boundary is strict (Before)
+//     to match the score loop, which retains a touch at exactly lastTouch ==
+//     cutoff; a flow on that exact boundary is kept here and reaped on the next
+//     event past it. This also reclaims flows whose last touch self-expired (the
+//     empty-state case).
 //  2. Size cap. If the scope still exceeds maxPerScope after TTL eviction, evict
 //     the least-recently-touched flows (smallest lastTouch first) until back at
 //     the cap. Only flows that survived pass 1 are still in-window, so the cap
@@ -256,8 +259,14 @@ func (s *WindowedScorer) reap(byFlow map[uint64]*flowState, keep uint64, cutoff 
 		if cookie == keep {
 			continue
 		}
-		// At-or-before cutoff means no touch survives the window: idle.
-		if !fs.lastTouch.After(cutoff) {
+		// Strictly before cutoff means no touch survives the window: idle. This
+		// matches the score loop's retention boundary exactly — that loop keeps a
+		// touch at last == cutoff (it drops only on last.Before(cutoff)). Using
+		// the same Before(cutoff) test here ensures the reaper never evicts a flow
+		// the score loop would still treat as active, so an active flow's score is
+		// never changed at the exact-boundary instant. A flow whose lastTouch is
+		// exactly cutoff is kept now and reaped on the next event past it.
+		if fs.lastTouch.Before(cutoff) {
 			delete(byFlow, cookie)
 		}
 	}
@@ -267,7 +276,14 @@ func (s *WindowedScorer) reap(byFlow map[uint64]*flowState, keep uint64, cutoff 
 	}
 
 	// Over the cap with everything in-window: evict least-recently-touched
-	// flows (never keep) until at the cap.
+	// flows (never keep) until at the cap. The O(n log n) sort below runs ONLY
+	// on this over-cap path (the early return above gates it), so the common
+	// case — TTL eviction keeping the scope at or under maxPerScope — pays only
+	// the O(n) pass-1 scan and never sorts. The sort is bounded by the current
+	// scope's live-flow count and reached only under a genuine flood of
+	// concurrently in-window flows, which is exactly when paying for an exact
+	// LRU ordering is worth it. A cheaper partial selection is possible but not
+	// warranted while this stays an over-cap-only safety valve.
 	type entry struct {
 		cookie uint64
 		last   time.Time
