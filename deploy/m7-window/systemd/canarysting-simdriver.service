@@ -1,0 +1,24 @@
+[Unit]
+Description=CanarySting demo traffic simulator (benign + recon white-space + malicious canary east-west; configurable %-malicious; fail-closed daily ceiling on live-LLM spend)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# SIM_* are written by sim-setup.sh into /etc/canarysting/sim.env. Live Tier-C
+# runs are OFF unless SIM_LIVE_INTERVAL is non-zero AND the key file exists; the
+# daily ceiling is enforced fail-closed by the spendledger regardless.
+EnvironmentFile=/etc/canarysting/sim.env
+ExecStart=/opt/canarysting/bin/simdriver \
+  -target ${SIM_TARGET} -tap-addr ${SIM_TAP} \
+  -benign-ips ${SIM_BENIGN_IPS} -attacker-ip ${SIM_ATTACKER_IP} -recon-ip ${SIM_RECON_IP} \
+  -base-rpm ${SIM_BASE_RPM} -malicious-pct ${SIM_MALICIOUS_PCT} -recon-pct ${SIM_RECON_PCT} \
+  -daily-cap-usd ${SIM_DAILY_CAP_USD} -budget-file ${SIM_BUDGET_FILE} \
+  -cassette ${SIM_CASSETTE} -cassette-interval ${SIM_CASSETTE_INTERVAL} \
+  -live-interval ${SIM_LIVE_INTERVAL} -live-budget-usd ${SIM_LIVE_BUDGET_USD} \
+  -attacker-bin /opt/canarysting/bin/llm-attacker -key-file ${SIM_KEY_FILE}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
