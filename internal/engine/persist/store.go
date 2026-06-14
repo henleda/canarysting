@@ -272,6 +272,48 @@ func (s *Store) RangeEvents(scope contract.ScopeKey, fn func(seq uint64, blob []
 	})
 }
 
+// RangeEventsRecent calls fn for up to maxN of scope's MOST-RECENT events —
+// highest sequence numbers first (reverse insertion order) — then stops. Events
+// are keyed by a monotonic per-scope sequence (see AppendEvent), so the newest
+// records live at the end of the bucket; walking the bbolt cursor backward from
+// Last() and capping at maxN bounds a recent-window query to O(maxN) decodes
+// instead of scanning the whole (possibly days-deep) event log. This is the
+// difference between a sub-millisecond and a multi-second hot-path Submit once a
+// scope has accrued a large history. maxN <= 0 means "no cap" (full reverse scan).
+// blob must not be retained past the call.
+//
+// fn receives records NEWEST-FIRST. A caller that needs ascending order must
+// reverse its own collected output (see boltevents.Store.Query). If a scope has
+// more than maxN records, the oldest are not visited — callers must size maxN so
+// the cap comfortably spans their lookback window (it is a cost ceiling, not a
+// correctness boundary: the recent window is what the caller filters to anyway).
+func (s *Store) RangeEventsRecent(scope contract.ScopeKey, maxN int, fn func(seq uint64, blob []byte) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		sb, err := scopeSub(tx, bktEvents, scope, false)
+		if err != nil || sb == nil {
+			return err
+		}
+		c := sb.Cursor()
+		n := 0
+		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+			if v == nil {
+				continue // nested bucket, not a value (defensive; events bucket has none)
+			}
+			if len(k) != 8 {
+				continue
+			}
+			if err := fn(binary.BigEndian.Uint64(k), v); err != nil {
+				return err
+			}
+			n++
+			if maxN > 0 && n >= maxN {
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
 // --- window lifecycle metadata (global) ------------------------------------
 
 // Heartbeat records now as the last successful observe fold. The aggregator
