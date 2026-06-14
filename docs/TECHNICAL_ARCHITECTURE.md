@@ -284,11 +284,20 @@ job and `make bpf` exist to catch a C source that no longer compiles.)
 and a cgroup-v2 unified hierarchy at `/sys/fs/cgroup`. The `ebpf-run` job runs its
 test step inside a `--privileged --cgroupns=host` container that bind-mounts
 `/sys/fs/cgroup`, so the test process holds the needed caps and its loopback test
-sockets live in the same cgroup the programs attach to. The job then **asserts the
-tests did not silently skip** (greps the output for the skip message and for a
-`PASS` of `TestEnforceJailIsPrecise`) so a green check cannot be a false green from
-a job that merely skipped everything. This requires no operator action beyond
-merging the workflow.
+sockets live in the same cgroup the programs attach to. The job runs the tests with
+`go test -json` and then **asserts the tests did not silently skip** by parsing that
+structured event stream rather than grepping human-readable output: it fails the job
+if *any* root-gated test reports `skip` (the false-green signal — euid != 0, missing
+caps, or no cgroup-v2) and enforces a PASS floor across every load-bearing proof
+(`TestEnforceJailIsPrecise`, `TestFailOpenOnMiss`, `TestRateLimitSustainedThroughput`,
+`TestCloseDeleteRemovesEntry`, `TestSockopsCookieOracle`, `TestObserveNeverDropsAPacket`),
+so a green check cannot come from a job that skipped everything *or* from a proof
+that was quietly renamed/removed and stopped running. The parser is a stdlib-only Go
+program (`go` is already in the job's container; it needs no `python3`), kept outside
+the module checkout so it does not join the build. The job also caches the Go module
+download cache (`/go/pkg/mod`, keyed on `go.sum`) since the bare `golang` container
+gets no automatic module caching. This requires no operator action beyond merging the
+workflow.
 
 **Needs-operator-setup (one click, GitHub permissions, not config):** marking
 `ebpf-run` a **required status check** so it gates merges to `main`/`release`.
