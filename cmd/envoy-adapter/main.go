@@ -95,12 +95,32 @@ func newVerdictSequencer() *verdictSequencer {
 // no-ops it anyway, and it never carries per-flow state to protect. Stale or
 // duplicate (ordinal <= the recorded high) verdicts for an attributed cookie are
 // rejected.
+// seqStaleNanos: a cookie with no verdict for this long is a finished flow whose
+// high-water mark can be reaped to bound the map. It is far larger than the scoring
+// correlation window, so a legitimately out-of-order verdict (which arrives within
+// seconds) is still rejected as stale long before its mark could be reaped.
+const (
+	seqStaleNanos    = int64(30 * time.Minute)
+	seqReapThreshold = 4096 // only sweep once the map has actually grown
+)
+
 func (s *verdictSequencer) admit(cookie uint64, ordinal int64) bool {
 	if cookie == 0 {
 		return true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Bound the map: a finished flow's mark would otherwise linger forever. Sweep
+	// long-idle cookies, but only once the map has grown past a threshold so the
+	// common path stays O(1).
+	if len(s.high) > seqReapThreshold {
+		cutoff := ordinal - seqStaleNanos
+		for c, o := range s.high {
+			if o < cutoff {
+				delete(s.high, c)
+			}
+		}
+	}
 	if prev, seen := s.high[cookie]; seen && ordinal <= prev {
 		return false
 	}
@@ -143,13 +163,17 @@ func releaseVerdictForLabel(enf enforcer, l contract.FeedbackLabel) (released bo
 //
 // How a label is delivered: the staged labeler / operator feedback path calls
 // FeedbackSink.Label (see internal/intelligence/stagedlabel and
-// internal/engine/feedback). In this composition root that sink is a
-// feedbackReleaseSink wrapping the kernel enforcer; it Releases on
-// WasMalicious:false, leaves containment on a confirmed-malicious label, then
-// forwards the label to the engine's calibration intake (next) so one analyst
-// action both frees the bystander and feeds calibration. A full out-of-process
-// transport (an RPC the engine pushes labels over) is future work (docs/IDENTITY.md
-// "Lifting containment"); this in-process seam closes the dead-seam gap today.
+// internal/engine/feedback). Phase-2's composition root wraps the kernel enforcer in
+// a feedbackReleaseSink that Releases on WasMalicious:false, leaves containment on a
+// confirmed-malicious label, then forwards the label to the engine's calibration
+// intake (next) so one analyst action both frees the bystander and feeds calibration.
+//
+// STATUS: this type + releaseVerdictForLabel are built and unit-tested, but DORMANT
+// in Phase-1 — the adapter binary has no label source (the engine runs the labeler;
+// an engine->adapter label transport is Phase-2 / B5, docs/IDENTITY.md "Lifting
+// containment"). It is intentionally not instantiated in main() so nothing reads as
+// wired-but-unreachable. The ACTIVE Phase-1 un-jail is the de-escalation path
+// (enforceVerdictOrdered Releases when a later verdict drops below TierContain).
 type feedbackReleaseSink struct {
 	enf  enforcer
 	next contract.FeedbackSink // optional downstream (calibration); may be nil
@@ -328,16 +352,16 @@ func main() {
 	// ordinal; last-writer-wins by ordinal.
 	verdictSeq := newVerdictSequencer()
 
-	// Analyst-feedback delivery seam (FeedbackLabel -> containment Release). This is
-	// the production caller of releaseVerdictForLabel: a FeedbackLabel{WasMalicious:
-	// false} lifts the adapter/kernel jail; a confirmed-malicious label leaves it.
-	// There is no out-of-process label transport yet (future work, docs/IDENTITY.md
-	// "Lifting containment"), so the sink is wired here for the feedback path / a
-	// future RPC to call Label on; next is nil until the engine's calibration intake
-	// is reachable from this binary.
-	feedbackSink := &feedbackReleaseSink{enf: enf, next: nil}
-	var _ contract.FeedbackSink = feedbackSink
-	log.Printf("envoy-adapter: feedback release seam wired (false-positive label -> containment Release)")
+	// Un-jail recovery. The ACTIVE Phase-1 path is de-escalation: when a later verdict
+	// for a flow drops below TierContain, enforceVerdictOrdered (below) Releases the
+	// jail — so a Tier-3 jail is no longer permanent. A SECOND trigger — an analyst
+	// false-positive label (FeedbackLabel{WasMalicious:false}) lifting containment via
+	// feedbackReleaseSink / releaseVerdictForLabel — is built and unit-tested but
+	// DORMANT: this binary has no label source (the engine runs the labeler; an
+	// engine->adapter label transport is Phase-2 / B5, docs/IDENTITY.md "Lifting
+	// containment"). It is intentionally NOT instantiated here, so nothing reads as
+	// wired-but-unreachable; Phase-2 builds feedbackReleaseSink{enf, next: calibration
+	// intake} and feeds it the label stream.
 
 	a, err := envoy.New(envoy.Config{
 		Engine:           eng,
