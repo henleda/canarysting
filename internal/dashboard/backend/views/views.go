@@ -61,11 +61,26 @@ const (
 // Kept as a local mirror to avoid importing the tap package (which pulls in the
 // boltevents store).
 type TapState struct {
-	Scope       string                   `json:"scope"`
-	Calibration calibration.State        `json:"calibration"`
-	Baseline    baseline.GateState       `json:"baseline"`
-	Observe     observebaseline.AggStats `json:"observe"`
-	At          time.Time                `json:"at"`
+	Scope         string                   `json:"scope"`
+	Calibration   calibration.State        `json:"calibration"`
+	Baseline      baseline.GateState       `json:"baseline"`
+	Observe       observebaseline.AggStats `json:"observe"`
+	CrossCustomer CrossCustomerView        `json:"cross_customer"`
+	At            time.Time                `json:"at"`
+}
+
+// CrossCustomerView mirrors the tap's cross_customer block: the D6 consumer-side
+// signal — how many network-confirmed patterns are loaded into detection, the k
+// distinct-enrolled-scopes provenance, and whether the current adversary flow
+// matches one of them (the engine's real sharedset.Match — the same similarity
+// that feeds M). All zero when this deployment is not consuming the network.
+type CrossCustomerView struct {
+	Consuming  int     `json:"consuming"`
+	Threshold  int     `json:"threshold"`
+	FlowID     uint64  `json:"flow_id"`
+	FlowIDHex  string  `json:"flow_id_hex"`
+	Similarity float64 `json:"similarity"`
+	Matched    bool    `json:"matched"`
 }
 
 // Overview is the complete JSON payload served by GET /api/overview and pushed
@@ -279,10 +294,11 @@ type BaselineGateView struct {
 
 // AdversaryIntelView is the secondary-band right panel (three facets).
 type AdversaryIntelView struct {
-	KPI         IntelKPIView     `json:"kpi"`
-	ReconFeed   []ReconEvent     `json:"recon_feed"`            // T1, newest first, max 10
-	Fingerprint *FlowFingerprint `json:"fingerprint,omitempty"` // nil if no current flow
-	Reactions   AxisReactionView `json:"reactions"`             // AX2/AX4/AX5 deception-reaction signals
+	KPI           IntelKPIView      `json:"kpi"`
+	ReconFeed     []ReconEvent      `json:"recon_feed"`            // T1, newest first, max 10
+	Fingerprint   *FlowFingerprint  `json:"fingerprint,omitempty"` // nil if no current flow
+	Reactions     AxisReactionView  `json:"reactions"`             // AX2/AX4/AX5 deception-reaction signals
+	CrossCustomer CrossCustomerView `json:"cross_customer"`        // D6: network-confirmed patterns consumed + current-flow match
 }
 
 // AxisReactionView surfaces the AX2/AX4/AX5 reaction signals — what the attacker DID
@@ -349,7 +365,7 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		AttackerCost:      buildAttackerCost(summary),
 		KernelContainment: buildKernelContainment(events),
 		Credibility:       buildCredibility(state, events, calib),
-		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now),
+		AdversaryIntel:    buildAdversaryIntel(summary, events, flow, now, state.CrossCustomer),
 		Journey:           buildJourney(flow, events, now),
 	}
 	return ov
@@ -727,7 +743,7 @@ func buildCredibility(state TapState, events []intelligence.AdversaryInteraction
 	}
 }
 
-func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryInteractionEvent, flow *FlowView, now time.Time) AdversaryIntelView {
+func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryInteractionEvent, flow *FlowView, now time.Time, cc CrossCustomerView) AdversaryIntelView {
 	var fp *FlowFingerprint
 	if flow != nil {
 		groups := groupByFlow(events)
@@ -741,9 +757,10 @@ func buildAdversaryIntel(summary cost.Summary, events []intelligence.AdversaryIn
 			BytesServed:       summary.BytesServed,
 			DefenderCostLabel: "flat",
 		},
-		ReconFeed:   buildReconFeed(events, now, maxReconItems),
-		Fingerprint: fp,
-		Reactions:   reactionView(summary),
+		ReconFeed:     buildReconFeed(events, now, maxReconItems),
+		Fingerprint:   fp,
+		Reactions:     reactionView(summary),
+		CrossCustomer: cc,
 	}
 }
 

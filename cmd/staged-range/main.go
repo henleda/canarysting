@@ -149,6 +149,7 @@ func main() {
 		src := &tap.Source{
 			Scope: contract.ScopeKey(*boundary), Calib: built.Calib,
 			Baseline: built.Baseline, Events: built.Events, Aggregator: built.Aggregator,
+			SharedSet: built.SharedSet,
 		}
 		go func() {
 			log.Printf("staged-range: dashboard tap on %s", *tapAddr)

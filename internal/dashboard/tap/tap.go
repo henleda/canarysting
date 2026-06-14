@@ -26,7 +26,14 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
+	"github.com/canarysting/canarysting/internal/intelligence/network"
+	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 )
+
+// crossMatchThreshold is the similarity at/above which the current adversary flow is
+// called a cross-customer "match" for the dashboard (the matcher feeds M continuously
+// below this too; this is only the legible on-screen yes/no). Demo-tuned.
+const crossMatchThreshold = 0.5
 
 // Source holds the read-only handles the tap surfaces. Any may be nil (the tap
 // degrades gracefully — a nil store just yields empty/zero sections).
@@ -36,6 +43,7 @@ type Source struct {
 	Baseline   *baseline.Store
 	Events     *boltevents.Store
 	Aggregator *observebaseline.Aggregator
+	SharedSet  *sharedset.Store // D6 cross-customer consumer (nil if not consuming)
 	Now        func() time.Time // injectable clock (nil => time.Now)
 
 	// ledger holds the M9 attacker's live real-cost meter — the one (small,
@@ -53,11 +61,26 @@ func (s *Source) now() time.Time {
 // State is the live scalar state of a scope (calibration + baseline gates + the
 // observe-path fold counters). Small; safe to poll frequently.
 type State struct {
-	Scope       string                   `json:"scope"`
-	Calibration calibration.State        `json:"calibration"`
-	Baseline    baseline.GateState       `json:"baseline"`
-	Observe     observebaseline.AggStats `json:"observe"`
-	At          time.Time                `json:"at"`
+	Scope         string                   `json:"scope"`
+	Calibration   calibration.State        `json:"calibration"`
+	Baseline      baseline.GateState       `json:"baseline"`
+	Observe       observebaseline.AggStats `json:"observe"`
+	CrossCustomer CrossCustomerState       `json:"cross_customer"`
+	At            time.Time                `json:"at"`
+}
+
+// CrossCustomerState surfaces the D6 cross-customer network from the CONSUMER side:
+// how many network-confirmed patterns this deployment has loaded, the k-of-distinct-
+// enrolled-scopes provenance, and whether the CURRENT adversary flow matches one of
+// those patterns (the engine's real sharedset.Match — the same similarity that feeds
+// M). All zero when this deployment is not consuming the network.
+type CrossCustomerState struct {
+	Consuming  int     `json:"consuming"`   // # network-confirmed patterns loaded into detection
+	Threshold  int     `json:"threshold"`   // k distinct ENROLLED scopes a pattern needed to cross
+	FlowID     uint64  `json:"flow_id"`     // current adversary flow evaluated (0 = none)
+	FlowIDHex  string  `json:"flow_id_hex"` // hex form for the dashboard
+	Similarity float64 `json:"similarity"`  // best similarity of that flow to a consumed pattern [0,1]
+	Matched    bool    `json:"matched"`     // similarity >= crossMatchThreshold
 }
 
 // Handler returns the tap's HTTP mux. Endpoints:
@@ -93,7 +116,49 @@ func (s *Source) handleState(w http.ResponseWriter, _ *http.Request) {
 	if s.Aggregator != nil {
 		st.Observe = s.Aggregator.Stats()
 	}
+	if s.SharedSet != nil {
+		cc := CrossCustomerState{Consuming: s.SharedSet.Len(), Threshold: network.AggregationThreshold}
+		// Evaluate the CURRENT adversary flow against the consumed patterns with the
+		// engine's real matcher (same similarity that feeds M). Only when consuming.
+		if cc.Consuming > 0 && s.Events != nil {
+			if cookie, ok := s.currentAdversaryFlow(now); ok {
+				sim := s.SharedSet.Match(s.Scope, contract.FlowIdentity{SocketCookie: cookie}, now)
+				cc.FlowID = cookie
+				cc.FlowIDHex = "0x" + strconv.FormatUint(cookie, 16)
+				cc.Similarity = sim
+				cc.Matched = sim >= crossMatchThreshold
+			}
+		}
+		st.CrossCustomer = cc
+	}
 	writeJSON(w, st)
+}
+
+// currentAdversaryFlow picks the flow to evaluate for a cross-customer match: the
+// most-escalated recent flow (highest max tier, tie-broken by most recent), mirroring
+// the dashboard's selectCurrentFlow. Considers only flows that reached Tier>=Contain
+// (a real adversary), within the last 30 minutes. Returns its socket cookie.
+func (s *Source) currentAdversaryFlow(now time.Time) (uint64, bool) {
+	if s.Events == nil {
+		return 0, false
+	}
+	evs, err := s.Events.Query(string(s.Scope), now.Add(-30*time.Minute), now)
+	if err != nil || len(evs) == 0 {
+		return 0, false
+	}
+	var bestCookie uint64
+	var bestTier int
+	var bestAt time.Time
+	found := false
+	for _, e := range evs {
+		if e.Tier < 2 { // below Tier 2 (Contain) is not a committed adversary
+			continue
+		}
+		if !found || e.Tier > bestTier || (e.Tier == bestTier && e.Timestamp.After(bestAt)) {
+			bestCookie, bestTier, bestAt, found = e.FlowID, e.Tier, e.Timestamp, true
+		}
+	}
+	return bestCookie, found
 }
 
 func (s *Source) handleEvents(w http.ResponseWriter, r *http.Request) {

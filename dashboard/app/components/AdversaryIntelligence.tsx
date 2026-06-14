@@ -2,7 +2,7 @@ import Link from 'next/link';
 import PanelHead from './PanelHead';
 import { fmtBytes, fmtInt, fmtK, fmtOffsetLabel, fmtTimeLong } from '@/lib/format';
 import { WALL_LINK } from './LiveEscalation';
-import type { AdversaryIntelView, AxisReactionView, FlowFingerprint, ReconEvent } from '@/lib/types';
+import type { AdversaryIntelView, AxisReactionView, CrossCustomerView, FlowFingerprint, ReconEvent } from '@/lib/types';
 
 // AdversaryIntelligence is the band-right cell (widest). Three facets in the
 // intel-grid: the attacker-cost KPI (board-level), the recon early-warning feed,
@@ -75,9 +75,48 @@ export default function AdversaryIntelligence({ intel }: { intel: AdversaryIntel
               fingerprint building…
             </span>
           )}
+          <CrossCustomerSignal cc={intel?.cross_customer} />
         </div>
       </div>
     </section>
+  );
+}
+
+// CrossCustomerSignal surfaces the D6 consumer-side network signal: how many
+// network-confirmed patterns this deployment has loaded, and — the headline — whether
+// the CURRENT adversary flow matches one (the engine's real matcher, the same
+// similarity that feeds M). The match means a deployment that had never seen this
+// attacker recognized it from the cross-customer network. Honest framing: k>=threshold
+// distinct ENROLLED scopes vouched for the pattern (threshold-enforcement, not
+// Sybil-resistance). Renders nothing when this deployment is not consuming the network.
+function CrossCustomerSignal({ cc }: { cc: CrossCustomerView | undefined }) {
+  if (!cc || cc.consuming <= 0) return null;
+  const pct = Math.round((cc.similarity || 0) * 100);
+  return (
+    <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-dim)', marginBottom: 4 }}>
+        cross-customer network
+      </div>
+      {cc.matched ? (
+        <div style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--sting)' }}>
+          ⚠ matches a pattern confirmed by ≥{cc.threshold} deployments · sim {pct}%
+          <div className="faint" style={{ fontSize: 9, color: 'var(--ink-dim)', marginTop: 2 }}>
+            recognized from the network — detection sharpened (feeds the baseline multiplier)
+          </div>
+        </div>
+      ) : (
+        <div className="legend">
+          <div className="lr">
+            <span className="lk">consuming</span>
+            <span className="lv">{cc.consuming} confirmed pattern{cc.consuming === 1 ? '' : 's'}</span>
+          </div>
+          <div className="lr">
+            <span className="lk">provenance</span>
+            <span className="lv">≥{cc.threshold} deployments</span>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

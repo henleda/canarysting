@@ -184,6 +184,16 @@ export const fixtureOverview: Overview = {
       poison_reached: 3,
       poison_class: 'success',
     },
+    // D6 cross-customer: this deployment has consumed a network-confirmed pattern, and
+    // the current adversary flow matches it (the engine's real matcher).
+    cross_customer: {
+      consuming: 1,
+      threshold: 3,
+      flow_id: 0x118,
+      flow_id_hex: '0x118',
+      similarity: 0.86,
+      matched: true,
+    },
   },
 
   // M9 live cost meter (fixture: a run mid-burn at ~$2.31 of a $5 cap).
