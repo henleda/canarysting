@@ -420,8 +420,20 @@ body { min-height: 100%; }
    the full-page /precision hero and competes with the fleet band here. ADDITIVE — the
    base .precision-zero .pz-num rule (and /precision) is unchanged. */
 .fleet-safety .pz-num { font-size: 64px; }
-.fs-top { display: flex; flex-direction: column; gap: 14px; }
-.fs-bottom { display: flex; flex-direction: column; gap: 8px; margin-top: auto; }
+.fs-top { display: flex; flex-direction: column; gap: 12px; }
+.fs-bottom { display: flex; flex-direction: column; gap: 8px; }
+
+/* CSS-grid children default to min-height:auto, so a tall panel grows past its fr
+   track and OVERLAPS the row below instead of clipping. Each wall panel already has
+   overflow:hidden, so min-height:0 makes the fr row heights authoritative and the
+   no-scroll wall hold its layout. (Fixes the FleetSafety→KernelContainment overlap.) */
+.app > * { min-height: 0; }
+
+/* The DISTINCT-flow funnel is now the fleet-scale headline (the redundant 3-stat
+   band was removed), so give its numbers more presence in the wall hero only — the
+   base /precision .funnel-step is unchanged. */
+.fleet-safety .funnel-step .fs-num { font-size: 36px; }
+.fleet-safety .funnel { gap: 10px; }
 
 /* The three-number fleet band — each headline on its own basis rail. */
 .fs-band { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line);
