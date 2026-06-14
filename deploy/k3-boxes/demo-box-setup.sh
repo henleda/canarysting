@@ -48,7 +48,7 @@ echo "=== FAST engine: M=1 (NO -observe-cgroup), fresh small DB, -demo-escalatio
 "$BIN/staged-range" -scope-boundary "$SCOPE" -grpc-addr 127.0.0.1:50052 \
   -baseline-db "$STATE/demo.db" \
   -contain-inline -demo-escalation \
-  -dashboard-tap-addr 127.0.0.1:8088 \
+  -dashboard-tap-addr 0.0.0.0:8088 \
   -ground-truth-registry "$ETC/ground-truth-registry.json" -i-am-running-a-staged-range \
   >/tmp/demo-engine.log 2>&1 &
 sleep 2
