@@ -69,18 +69,26 @@ func New(cfg Config) (*Service, error) {
 }
 
 // Submit ingests a signal event and returns the current verdict for the flow.
-// The scope is taken from the event if the adapter already resolved it; else the
-// engine resolves it. For async tiers the verdict is advisory to the adapter and
-// the authoritative enforcement is programmed into the kernel out of band.
+//
+// SCOPE IS RESOLVED, NEVER TRUSTED FROM THE WIRE. The engine derives the scope
+// from the flow via its own resolver — the single authority on scope mapping
+// (docs/SCOPE.md: "Other packages ask it for the scope key; they do not re-derive
+// it"). A wire-supplied ev.Scope is only ever an echo/optimization and is NOT
+// honored verbatim: if it disagrees with the resolved scope the RESOLVED scope
+// wins. This closes the B1 forge: a caller that reaches the gRPC surface cannot
+// pick an arbitrary scope (e.g. a victim deployment's) to drive learned-state
+// writes or a kernel jail on the wrong scope. Trusting the wire scope would also
+// violate rule 5 (scope isolation), since a forged scope is a cross-boundary
+// write. For async tiers the verdict is advisory to the adapter and the
+// authoritative enforcement is programmed into the kernel out of band.
 func (s *Service) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
-	scopeKey := ev.Scope
-	if scopeKey == "" {
-		k, err := s.cfg.Resolver.Resolve(ev.Flow)
-		if err != nil {
-			return contract.Verdict{}, err
-		}
-		scopeKey = k
+	scopeKey, err := s.cfg.Resolver.Resolve(ev.Flow)
+	if err != nil {
+		return contract.Verdict{}, err
 	}
+	// A non-empty wire scope that disagrees with what the resolver derived is a
+	// forged or stale claim; ignore it and use the resolved scope. (We do not error
+	// out: the resolver is authoritative, so honoring it is always the safe action.)
 
 	score, err := s.cfg.Scorer.Score(scopeKey, ev)
 	if err != nil {

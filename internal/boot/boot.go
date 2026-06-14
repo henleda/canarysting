@@ -427,9 +427,16 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 	if err != nil {
 		return v, err
 	}
+	// B1: the durable write + feature lookup MUST key on the RESOLVED scope (v.Scope),
+	// never the raw wire ev.Scope. The inner engine resolves the scope from the flow
+	// and ignores a disagreeing wire scope; if we keyed the side effects on the wire
+	// scope a forged ev.Scope would still land a durable cross-scope interaction write
+	// and a cross-scope feature read (defeats rule 5). Correct the event so both the
+	// durable store and the feature aggregator see only the resolved scope.
+	ev.Scope = v.Scope
 	var feats map[string]float64
 	if e.agg != nil {
-		if f, ok := e.agg.Features(ev.Scope, ev.Flow, ev.Timestamp); ok {
+		if f, ok := e.agg.Features(v.Scope, ev.Flow, ev.Timestamp); ok {
 			feats = observebaseline.FeaturesMap(f)
 		}
 	}

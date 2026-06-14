@@ -72,9 +72,14 @@ func TestSubmit_EscalatesAcrossTiersEndToEnd(t *testing.T) {
 }
 
 func TestSubmit_ScopeAIsolationFromScopeB(t *testing.T) {
-	// One engine, two scopes via explicit ev.Scope (a multi-scope deployment).
+	// One engine, two scopes in a real multi-scope deployment: the RESOLVER (the
+	// authority) derives the scope FROM THE FLOW — here a zone per source PID —
+	// never from a wire-supplied scope. Flow PID 10 -> scope-a, PID 20 -> scope-b.
 	resolver, _ := scope.NewStaticResolver(scope.Config{
-		Cluster: func(contract.FlowIdentity) (contract.ScopeKey, bool) { return "unused", true },
+		Zones: []scope.Zone{
+			{Key: "scope-a", Match: func(f contract.FlowIdentity) bool { return f.PID == 10 }},
+			{Key: "scope-b", Match: func(f contract.FlowIdentity) bool { return f.PID == 20 }},
+		},
 	})
 	calib := calibration.New(calibration.Config{EvidenceFloor: 1000})
 	eng, err := New(Config{
@@ -87,17 +92,103 @@ func TestSubmit_ScopeAIsolationFromScopeB(t *testing.T) {
 		t.Fatal(err)
 	}
 	t0 := time.Unix(1_000_000, 0)
+	flowA := contract.FlowIdentity{SocketCookie: 1, PID: 10}
+	flowB := contract.FlowIdentity{SocketCookie: 1, PID: 20}
 	// Drive scope-a up to Contain (3 distinct touches), same socket cookie.
 	for i, ct := range []string{"a", "b", "c"} {
-		eng.Submit(touch("scope-a", 1, ct, t0.Add(time.Duration(i)*time.Second)))
+		ev := contract.SignalEvent{Flow: flowA, Canary: contract.CanaryType(ct), Timestamp: t0.Add(time.Duration(i) * time.Second)}
+		if _, err := eng.Submit(ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// scope-b, same cookie, one touch: must be Observe — unaffected by scope-a.
-	v, err := eng.Submit(touch("scope-b", 1, "a", t0))
+	v, err := eng.Submit(contract.SignalEvent{Flow: flowB, Canary: "a", Timestamp: t0})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if v.Scope != "scope-b" {
+		t.Fatalf("resolver derived wrong scope: got %q want scope-b", v.Scope)
+	}
 	if v.Tier != contract.TierObserve || v.Score != 1.0 {
 		t.Fatalf("scope-b leaked from scope-a: tier %d score %.1f", v.Tier, v.Score)
+	}
+}
+
+// TestSubmit_IgnoresForgedWireScope is the B1 defense-in-depth check: a caller
+// that reaches the engine and stamps an arbitrary ev.Scope MUST NOT have that
+// scope honored. The engine resolves the scope from the flow (here: a single
+// operator boundary "real"), so a forged "victim" scope on the wire is dropped —
+// the verdict, and therefore any learned-state write / kernel action, lands on
+// the resolved scope, never the attacker's chosen one.
+func TestSubmit_IgnoresForgedWireScope(t *testing.T) {
+	eng, _ := newTestEngine(t, 1000) // boundary "scope"
+	ev := contract.SignalEvent{
+		Flow:      contract.FlowIdentity{SocketCookie: 7},
+		Canary:    "a",
+		Scope:     "victim-deployment", // forged: not what the resolver derives
+		Timestamp: time.Unix(1_000_000, 0),
+	}
+	v, err := eng.Submit(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Scope != "scope" {
+		t.Fatalf("engine honored a forged wire scope: verdict scope = %q, want resolved %q", v.Scope, "scope")
+	}
+	if v.Scope == "victim-deployment" {
+		t.Fatal("engine acted on the attacker-supplied scope — B1 forge not closed")
+	}
+}
+
+// TestSubmit_ForgedScopeCannotDriveCrossScopeState proves the forged scope never
+// reaches the scorer's per-scope state: an attacker who claims a victim scope and
+// drives many touches must not move the verdict for that victim scope on a later
+// LEGITIMATE submit. Because the engine resolves the scope from the flow, the
+// attacker's touches accrue under the resolved scope, not the claimed one.
+func TestSubmit_ForgedScopeCannotDriveCrossScopeState(t *testing.T) {
+	// Resolver derives scope from PID: attacker flow (PID 99) -> "attacker",
+	// victim flow (PID 11) -> "victim".
+	resolver, _ := scope.NewStaticResolver(scope.Config{
+		Zones: []scope.Zone{
+			{Key: "attacker", Match: func(f contract.FlowIdentity) bool { return f.PID == 99 }},
+			{Key: "victim", Match: func(f contract.FlowIdentity) bool { return f.PID == 11 }},
+		},
+	})
+	calib := calibration.New(calibration.Config{EvidenceFloor: 1000})
+	eng, err := New(Config{
+		Resolver: resolver,
+		Scorer:   scoring.New(5*time.Minute, calib, nil),
+		Decider:  tiers.StaticDecider{},
+		Tiers:    tiers.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Unix(1_000_000, 0)
+	attacker := contract.FlowIdentity{SocketCookie: 5, PID: 99}
+	// Attacker drives many distinct touches while FALSELY claiming the victim scope.
+	for i, ct := range []string{"a", "b", "c", "d", "e", "f"} {
+		ev := contract.SignalEvent{Flow: attacker, Canary: contract.CanaryType(ct), Scope: "victim", Timestamp: t0.Add(time.Duration(i) * time.Second)}
+		v, err := eng.Submit(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Scope != "attacker" {
+			t.Fatalf("attacker touch %d landed on scope %q, want resolved %q", i, v.Scope, "attacker")
+		}
+	}
+	// A legitimate victim-scope flow now submits a single touch: it must be Observe,
+	// proving the attacker's forged-scope touches never accrued to the victim scope.
+	victim := contract.FlowIdentity{SocketCookie: 6, PID: 11}
+	v, err := eng.Submit(contract.SignalEvent{Flow: victim, Canary: "a", Timestamp: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Scope != "victim" {
+		t.Fatalf("victim flow resolved to %q, want victim", v.Scope)
+	}
+	if v.Tier != contract.TierObserve || v.Score != 1.0 {
+		t.Fatalf("forged-scope touches leaked into the victim scope: tier %d score %.1f", v.Tier, v.Score)
 	}
 }
 

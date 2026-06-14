@@ -16,6 +16,7 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/canarysting/canarysting/adapters/envoy"
@@ -25,6 +26,7 @@ import (
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/sting/attrition"
 	"github.com/canarysting/canarysting/internal/sting/containment"
+	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
 // enforcer programs and lifts kernel containment for an attributed flow. Its
@@ -36,6 +38,20 @@ type enforcer interface {
 	// operator clear). Idempotent; a cookie-0 flow is a no-op.
 	Release(contract.Verdict) error
 	Close() error
+}
+
+// engineDialCreds chooses the gRPC transport credentials for the engine dial.
+// When all three of cert/key/ca are set it builds mTLS client credentials (the
+// engine then verifies this client's cert against its client-CA — the B1 forge
+// defense). When all three are empty it falls back to an insecure dial, valid
+// ONLY for a loopback/same-host engine (the engine itself refuses to serve a
+// routable address in plaintext). A partial config (some but not all set) is a
+// misconfiguration and errors, so a half-specified mTLS never silently downgrades.
+func engineDialCreds(cert, key, ca string) (credentials.TransportCredentials, error) {
+	if cert == "" && key == "" && ca == "" {
+		return insecure.NewCredentials(), nil
+	}
+	return grpccreds.ClientCreds(grpccreds.ClientConfig{CertFile: cert, KeyFile: key, CAFile: ca})
 }
 
 // enforceVerdict is the testable core of the OnVerdict->kernel seam. It reconciles
@@ -141,13 +157,28 @@ func main() {
 		stingFloor = flag.Int("sting-floor", 0, "attrition floor for inline Tier 2/3: 0=passive(tarpit/velocity), 1=moderate(+poison_field/fake_tree), 2=aggressive(+token_bait). 0 => no fake-resource deception (tarpit only)")
 		bodyCap    = flag.Int("attrition-body-cap", 64<<10, "max deception-body bytes assembled into the single ext_proc ImmediateResponse")
 		maxHold    = flag.Duration("attrition-max-hold", 8*time.Second, "max wall-time to hold ONE inline attrition flow before returning the deception body. MUST be < the proxy's ext_proc message_timeout (Envoy's is 10s here) so the body is actually delivered (else the proxy returns a gateway timeout) and the imposed-time number reflects what the attacker really waited")
+
+		// mTLS to the engine. Set all three to dial mTLS (the engine then verifies
+		// THIS client's cert against its client-CA). Leave all three empty for an
+		// insecure dial — only valid when the engine is loopback/same-host (the
+		// engine refuses to serve a routable addr in plaintext).
+		engineTLSCert = flag.String("engine-tls-cert", "", "client certificate (PEM) the adapter presents to the engine; requires -engine-tls-key and -engine-tls-ca")
+		engineTLSKey  = flag.String("engine-tls-key", "", "client private key (PEM)")
+		engineTLSCA   = flag.String("engine-tls-ca", "", "CA bundle (PEM) the engine's server certificate must chain to (enables mTLS dial)")
 	)
 	flag.Parse()
 	if *scopeFlag == "" {
 		log.Fatal("envoy-adapter: -scope is required (the adapter never falls back to a global scope)")
 	}
 
-	cc, err := grpc.NewClient(*engineAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Pick the engine dial credentials: mTLS when cert/key/ca are configured, else
+	// an insecure dial (documented: loopback/same-host only — the engine refuses to
+	// serve a routable addr in plaintext, so this only connects to a co-located one).
+	dialCreds, err := engineDialCreds(*engineTLSCert, *engineTLSKey, *engineTLSCA)
+	if err != nil {
+		log.Fatalf("envoy-adapter: engine TLS: %v", err)
+	}
+	cc, err := grpc.NewClient(*engineAddr, grpc.WithTransportCredentials(dialCreds))
 	if err != nil {
 		log.Fatalf("envoy-adapter: dialing engine %s: %v", *engineAddr, err)
 	}

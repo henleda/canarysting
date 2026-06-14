@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/intelligence/stagedlabel"
+	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
 // simulatedSpoolMarker reports whether the consumed shared spool is flagged as
@@ -51,19 +53,24 @@ func simulatedSpoolMarker(spool string) bool {
 
 func main() {
 	var (
-		boundary       = flag.String("scope-boundary", "", "operator-defined scope boundary; required (refuse to start if empty)")
-		window         = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
-		grpcAddr       = flag.String("grpc-addr", ":50052", "serve the Engine over gRPC at this address")
-		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (single-touch escalation)")
-		demoEscalation = flag.Bool("demo-escalation", false, "DEMO ONLY: a middle escalation band (Tag@~touch-1, Contain@~3, Jail@~5 at M=1) so a flow DWELLS in the inline attrition (tarpit/maze/poison) for 3-5 touches before the jail — a credible bleed, not the -aggressive single touch. Mutually exclusive with -aggressive; NEVER for production.")
-		containInline  = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
-		jailInline     = flag.Bool("jail-inline", false, "make Tier 3 (Jail) INLINE so the jailed flow's attrition outcome is reported back — which drains the pending jail into RecordJail and emits the D6-3 cross-scope confirmation. Default off (async kernel jail). For STAGED CONTRIBUTOR scopes that must emit confirmations (an async kernel jail drops the socket before any outcome is reported).")
-		baselineDB     = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store")
-		observeCgroup  = flag.String("observe-cgroup", "", "cgroup v2 path to attach the OBSERVE-ONLY baseline path")
-		windowBucketer = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
-		maxGap         = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot")
-		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
-		demoFloor      = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
+		boundary = flag.String("scope-boundary", "", "operator-defined scope boundary; required (refuse to start if empty)")
+		window   = flag.Duration("window", scoring.DefaultWindow, "scoring correlation window")
+		grpcAddr = flag.String("grpc-addr", ":50052", "serve the Engine over gRPC at this address")
+
+		// mTLS for the engine gRPC surface — same fail-closed posture as cmd/engine.
+		grpcTLSCert     = flag.String("grpc-tls-cert", "", "engine gRPC server certificate (PEM); requires -grpc-tls-key and -grpc-tls-client-ca")
+		grpcTLSKey      = flag.String("grpc-tls-key", "", "engine gRPC server private key (PEM)")
+		grpcTLSClientCA = flag.String("grpc-tls-client-ca", "", "CA bundle (PEM) every adapter client certificate must chain to (enables mTLS RequireAndVerifyClientCert)")
+		aggressive      = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence (single-touch escalation)")
+		demoEscalation  = flag.Bool("demo-escalation", false, "DEMO ONLY: a middle escalation band (Tag@~touch-1, Contain@~3, Jail@~5 at M=1) so a flow DWELLS in the inline attrition (tarpit/maze/poison) for 3-5 touches before the jail — a credible bleed, not the -aggressive single touch. Mutually exclusive with -aggressive; NEVER for production.")
+		containInline   = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
+		jailInline      = flag.Bool("jail-inline", false, "make Tier 3 (Jail) INLINE so the jailed flow's attrition outcome is reported back — which drains the pending jail into RecordJail and emits the D6-3 cross-scope confirmation. Default off (async kernel jail). For STAGED CONTRIBUTOR scopes that must emit confirmations (an async kernel jail drops the socket before any outcome is reported).")
+		baselineDB      = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store")
+		observeCgroup   = flag.String("observe-cgroup", "", "cgroup v2 path to attach the OBSERVE-ONLY baseline path")
+		windowBucketer  = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
+		maxGap          = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot")
+		resetSchema     = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
+		demoFloor       = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
 
 		tapAddr      = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
 		simPeersDemo = flag.Bool("sim-peers-demo", false, "DEMO ONLY: mark the consumed cross-customer patterns as SIMULATED (cmd/sim-peers) so the dashboard discloses they came from synthetic peers we operate, not real customers. Auto-detected too if a <shared-spool>.simulated marker is present, so a forgotten flag can't silently present simulated data as real.")
@@ -183,7 +190,8 @@ func main() {
 		*boundary, *registryPath, *observeCgroup != "", *baselineDB)
 
 	eng := labelingEngine{inner: built.Engine, labeler: labeler}
-	if err := serveGRPC(*grpcAddr, eng, built.OutcomeReporter); err != nil {
+	tls := grpccreds.ServerConfig{CertFile: *grpcTLSCert, KeyFile: *grpcTLSKey, ClientCAFile: *grpcTLSClientCA}
+	if err := serveGRPC(*grpcAddr, eng, built.OutcomeReporter, tls); err != nil {
 		log.Fatalf("staged-range: gRPC server: %v", err)
 	}
 }
@@ -199,19 +207,36 @@ type labelingEngine struct {
 func (e labelingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
 	v, err := e.inner.Submit(ev)
 	if err == nil {
+		// B1: feed the labeler the RESOLVED scope (v.Scope), never the raw wire
+		// ev.Scope. The inner engine resolves the scope from the flow and ignores a
+		// disagreeing wire scope; the labeler keys its disposition lookup AND the
+		// feedback label it writes on ev.Scope, so a forged wire scope would land a
+		// cross-scope learned-state write (defeats rule 5). Correct the event first.
+		ev.Scope = v.Scope
 		e.labeler.OnVerdict(ev, v)
 	}
 	return v, err
 }
 
-func serveGRPC(addr string, eng contract.Engine, reporter contract.OutcomeReporter) error {
+// serveGRPC mirrors cmd/engine's transport posture: mTLS when tls names a
+// cert/key/client-CA, else fail-closed on a routable addr (bare loopback warned).
+// The staged range still exposes the same containment-driving surface, so it gets
+// the same protection.
+func serveGRPC(addr string, eng contract.Engine, reporter contract.OutcomeReporter, tls grpccreds.ServerConfig) error {
+	opts, posture, bareLoopback, err := grpccreds.ServerOption(addr, tls)
+	if err != nil {
+		return fmt.Errorf("staged-range: gRPC transport: %w", err)
+	}
+	if bareLoopback {
+		log.Printf("staged-range: WARNING serving gRPC in PLAINTEXT on loopback %s — no mTLS. Configure -grpc-tls-cert/-key/-client-ca for any non-loopback or shared-host deployment.", addr)
+	}
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s := grpc.NewServer()
+	s := grpc.NewServer(opts...)
 	enginegrpc.Register(s, eng, reporter)
-	log.Printf("staged-range: gRPC Engine service listening on %s", addr)
+	log.Printf("staged-range: gRPC Engine service listening on %s (%s)", addr, posture)
 	return s.Serve(lis)
 }
 
