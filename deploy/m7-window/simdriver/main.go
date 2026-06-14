@@ -94,6 +94,15 @@ func main() {
 	}
 	start(func() { runRatio(ctx, reconP, cfg.reconPct, benignTotalRPM, cfg.recompute, nil) })
 
+	// RECON (held) — a few concurrent scanner flows kept open ~reconHoldSec each so
+	// the dashboard's recon surface stays populated (a sub-second probe is almost
+	// never open at the poll instant). Each is a distinct churning .112 flow over
+	// the white-space, under the bystander threshold so it reads as recon.
+	for i := 0; i < cfg.reconLive; i++ {
+		seed := int64(i*2654435761 + 99)
+		start(func() { runReconHold(ctx, cfg.reconIP, cfg.target, cfg.whitespacePaths, seed, cfg.reconHoldSec) })
+	}
+
 	// MALICIOUS — declared-attacker canary touches, gated so LLM runs get a clean trace.
 	malP, err := newProber(cfg.attackerIP, cfg.target, cfg.canaryPaths, 1337, false)
 	if err != nil {
@@ -104,8 +113,8 @@ func main() {
 	// LLM dispatch — Tier-B cassette ($0) + opt-in Tier-C live ($, ledger-gated).
 	start(func() { runLLMDispatch(ctx, cfg, ledger, &gate) })
 
-	log.Printf("simdriver: target=%s benign=%d@%.0frpm malicious=%.1f%% recon=%.1f%% dailyCap=$%.2f live=%s",
-		cfg.target, len(cfg.benignIPs), cfg.baseRPM, cfg.maliciousPct, cfg.reconPct, cfg.dailyCapUSD, cfg.liveInterval)
+	log.Printf("simdriver: target=%s benign=%d@%.0frpm malicious=%.1f%% recon=%.1f%% reconLive=%d@%.1fs dailyCap=$%.2f live=%s",
+		cfg.target, len(cfg.benignIPs), cfg.baseRPM, cfg.maliciousPct, cfg.reconPct, cfg.reconLive, cfg.reconHoldSec, cfg.dailyCapUSD, cfg.liveInterval)
 	<-ctx.Done()
 	log.Printf("simdriver: shutting down")
 	wg.Wait()
@@ -279,6 +288,72 @@ func runRatio(ctx context.Context, p *prober, pct float64, benignRPM func() floa
 	}
 }
 
+// reconHoldMaxSec bounds a held-recon flow's lifetime BELOW the dashboard's
+// bystander threshold (a flow open >= ~8s reads as an established serving workload,
+// not a scanner). Keep held sessions comfortably under it so a scanner flow always
+// classifies as recon (transient + anomalous), never as a bystander.
+const reconHoldMaxSec = 7.0
+
+// runReconHold keeps ONE recon scanner flow open at a time: it opens a fresh
+// connection from the recon IP (a new socket cookie the observe path sees as a
+// LIVE flow), probes the white-space over ~holdSec so the flow is reliably OPEN
+// when the dashboard polls (a sub-second probe almost never is — the reason the
+// recon surface read empty), then closes it and, after a short jittered gap,
+// starts another. holdSec stays under the bystander threshold so the scanner reads
+// as recon, never an established workload. All paths are 404 white-space, never a
+// canary (Rule 8: recon cannot arm a response). Several run concurrently
+// (cfg.reconLive) so the recon surface stays populated without any engine change.
+func runReconHold(ctx context.Context, srcIP, target string, paths []string, seed int64, holdSec float64) {
+	rng := rand.New(rand.NewSource(seed))
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		reconSession(ctx, srcIP, target, paths, rng, holdSec)
+		// jittered gap before the next scanner flow, so cookies churn (a stream of
+		// distinct short flows) rather than one metronome connection.
+		gap := (0.5 + rng.Float64()) * holdSec * 0.4
+		if sleepCtx(ctx, time.Duration(gap*float64(time.Second))) {
+			return
+		}
+	}
+}
+
+// reconSession opens one keepalive connection from srcIP and probes the white-space
+// a few times over ~holdSec, holding a single live flow open, then closes it (FIN
+// via CloseIdleConnections). The kept-alive connection means the sequential probes
+// reuse ONE socket cookie, so the observe path sees a single flow whose lifetime is
+// ~holdSec — long enough to be caught by the dashboard poll, short enough to stay
+// under the bystander threshold.
+func reconSession(ctx context.Context, srcIP, target string, paths []string, rng *rand.Rand, holdSec float64) {
+	local, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srcIP, "0"))
+	if err != nil {
+		return
+	}
+	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
+	tr := &http.Transport{
+		DialContext:         dialer.DialContext,
+		MaxConnsPerHost:     1,
+		MaxIdleConnsPerHost: 1,
+		IdleConnTimeout:     time.Duration((holdSec + 2) * float64(time.Second)),
+	}
+	defer tr.CloseIdleConnections() // FIN the flow when the session ends
+	client := &http.Client{Timeout: 4 * time.Second, Transport: tr}
+	deadline := time.Now().Add(time.Duration(holdSec * float64(time.Second)))
+	for time.Now().Before(deadline) {
+		path := paths[rng.Intn(len(paths))]
+		if req, err := http.NewRequestWithContext(ctx, http.MethodGet, target+path, nil); err == nil {
+			if resp, err := client.Do(req); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}
+		if sleepCtx(ctx, time.Duration(1.4*float64(time.Second))) {
+			return
+		}
+	}
+}
+
 // ---- LLM dispatch (Tier-B cassette $0, Tier-C live $ ledger-gated) -----------
 
 func runLLMDispatch(ctx context.Context, cfg config, ledger *spendledger.Ledger, gate *sync.RWMutex) {
@@ -365,6 +440,8 @@ type config struct {
 	baseRPM           float64
 	maliciousPct      float64
 	reconPct          float64
+	reconLive         int
+	reconHoldSec      float64
 	recompute         time.Duration
 	keepaliveInterval time.Duration
 	dailyCapUSD       float64
@@ -397,33 +474,44 @@ func (c config) validate() error {
 	if c.maliciousPct < 0 || c.maliciousPct >= 100 || c.reconPct < 0 || c.reconPct >= 100 {
 		return fmt.Errorf("malicious/recon pct must be in [0,100)")
 	}
+	if c.reconLive < 0 {
+		return fmt.Errorf("recon-live must be >= 0")
+	}
+	// A held-recon flow MUST stay under the dashboard's bystander threshold, or the
+	// scanner would mis-classify as an established serving workload. Refuse to start
+	// otherwise (only matters when held workers are enabled).
+	if c.reconLive > 0 && (c.reconHoldSec <= 0 || c.reconHoldSec > reconHoldMaxSec) {
+		return fmt.Errorf("recon-hold-sec must be in (0,%.0f] (under the bystander threshold); got %.1f", reconHoldMaxSec, c.reconHoldSec)
+	}
 	return nil
 }
 
 func parseFlags() config {
 	var (
-		target      = flag.String("target", "http://127.0.0.1:8080", "Envoy base URL (one-box demo: loopback)")
-		tapAddr     = flag.String("tap-addr", "http://127.0.0.1:8088", "engine tap base URL for the LLM cost meter")
-		benignIPs   = flag.String("benign-ips", "10.20.1.101,10.20.1.102,10.20.1.103", "legit source IPs (one benign worker each)")
-		normalPaths = flag.String("normal-paths", "/shop,/search,/products,/account,/cart,/checkout,/orders", "normal application paths (NEVER canaries)")
-		attackerIP  = flag.String("attacker-ip", "10.20.1.111", "declared-attacker source IP (touches canaries)")
-		canaryPaths = flag.String("canary-paths", "/.env,/.aws/credentials,/backup/db.sql,/internal/buckets,/admin/metrics", "seeded canary paths the attacker touches")
-		reconIP     = flag.String("recon-ip", "10.20.1.112", "UNLABELED recon/scanner source IP (white-space probing; never a canary)")
-		wsPaths     = flag.String("whitespace-paths", "/wp-login.php,/phpmyadmin/,/.svn/entries,/server-status,/actuator/env,/api/v2/admin,/cgi-bin/status,/owa/auth.owa", "non-canary white-space paths (404s) the recon scanner probes")
-		baseRPM     = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
-		malPct      = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
-		reconPct    = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%)")
-		recompute   = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
-		keepalive   = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
-		dailyCap    = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
-		budgetFile  = flag.String("budget-file", "/var/lib/canarysting/sim-budget.json", "daily spend ledger path")
-		cassette    = flag.String("cassette", "/tmp/m9-demo3.cassette", "cassette for Tier-B $0 replays (\"\" disables)")
-		cassEvery   = flag.Duration("cassette-interval", 4*time.Minute, "Tier-B cassette replay cadence")
-		liveEvery   = flag.Duration("live-interval", 0, "Tier-C live-run attempt cadence (0 = OFF; opt-in)")
-		liveBudget  = flag.Float64("live-budget-usd", 0.5, "per-run hard cap for a Tier-C live run")
-		attackerBin = flag.String("attacker-bin", "/opt/canarysting/bin/llm-attacker", "path to the llm-attacker binary")
-		keyFile     = flag.String("key-file", "/etc/canarysting/anthropic.key", "Anthropic key for Tier-C live runs (live OFF if absent)")
-		costOut     = flag.String("cost-out", "/tmp/sim-llm-cost.json", "where the llm-attacker writes its run ledger")
+		target       = flag.String("target", "http://127.0.0.1:8080", "Envoy base URL (one-box demo: loopback)")
+		tapAddr      = flag.String("tap-addr", "http://127.0.0.1:8088", "engine tap base URL for the LLM cost meter")
+		benignIPs    = flag.String("benign-ips", "10.20.1.101,10.20.1.102,10.20.1.103", "legit source IPs (one benign worker each)")
+		normalPaths  = flag.String("normal-paths", "/shop,/search,/products,/account,/cart,/checkout,/orders", "normal application paths (NEVER canaries)")
+		attackerIP   = flag.String("attacker-ip", "10.20.1.111", "declared-attacker source IP (touches canaries)")
+		canaryPaths  = flag.String("canary-paths", "/.env,/.aws/credentials,/backup/db.sql,/internal/buckets,/admin/metrics", "seeded canary paths the attacker touches")
+		reconIP      = flag.String("recon-ip", "10.20.1.112", "UNLABELED recon/scanner source IP (white-space probing; never a canary)")
+		wsPaths      = flag.String("whitespace-paths", "/wp-login.php,/phpmyadmin/,/.svn/entries,/server-status,/actuator/env,/api/v2/admin,/cgi-bin/status,/owa/auth.owa", "non-canary white-space paths (404s) the recon scanner probes")
+		baseRPM      = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
+		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
+		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
+		reconLive    = flag.Int("recon-live", 3, "concurrent HELD recon scanner flows (kept open ~recon-hold-sec so the dashboard recon surface stays populated; 0 disables)")
+		reconHoldSec = flag.Float64("recon-hold-sec", 5.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
+		recompute    = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
+		keepalive    = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
+		dailyCap     = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
+		budgetFile   = flag.String("budget-file", "/var/lib/canarysting/sim-budget.json", "daily spend ledger path")
+		cassette     = flag.String("cassette", "/tmp/m9-demo3.cassette", "cassette for Tier-B $0 replays (\"\" disables)")
+		cassEvery    = flag.Duration("cassette-interval", 4*time.Minute, "Tier-B cassette replay cadence")
+		liveEvery    = flag.Duration("live-interval", 0, "Tier-C live-run attempt cadence (0 = OFF; opt-in)")
+		liveBudget   = flag.Float64("live-budget-usd", 0.5, "per-run hard cap for a Tier-C live run")
+		attackerBin  = flag.String("attacker-bin", "/opt/canarysting/bin/llm-attacker", "path to the llm-attacker binary")
+		keyFile      = flag.String("key-file", "/etc/canarysting/anthropic.key", "Anthropic key for Tier-C live runs (live OFF if absent)")
+		costOut      = flag.String("cost-out", "/tmp/sim-llm-cost.json", "where the llm-attacker writes its run ledger")
 	)
 	flag.Parse()
 	return config{
@@ -431,7 +519,7 @@ func parseFlags() config {
 		benignIPs: splitCSV(*benignIPs), normalPaths: splitCSV(*normalPaths),
 		attackerIP: *attackerIP, canaryPaths: splitCSV(*canaryPaths),
 		reconIP: *reconIP, whitespacePaths: splitCSV(*wsPaths),
-		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, recompute: *recompute, keepaliveInterval: *keepalive,
+		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, reconLive: *reconLive, reconHoldSec: *reconHoldSec, recompute: *recompute, keepaliveInterval: *keepalive,
 		dailyCapUSD: *dailyCap, budgetFile: *budgetFile,
 		cassette: *cassette, cassetteInterval: *cassEvery,
 		liveInterval: *liveEvery, liveBudgetUSD: *liveBudget,
