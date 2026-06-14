@@ -19,4 +19,7 @@ type noopEnforcer struct{}
 func (noopEnforcer) Apply(contract.Verdict, containment.Action) error {
 	return errors.New("enforcer: kernel containment requires Linux")
 }
+func (noopEnforcer) Release(contract.Verdict) error {
+	return errors.New("enforcer: kernel containment requires Linux")
+}
 func (noopEnforcer) Close() error { return nil }

@@ -14,8 +14,17 @@ const cgroupV2Root = "/sys/fs/cgroup"
 
 // newResolver returns the real kernel-backed CookieResolver: the sockops
 // MapResolver that captures each accepted connection's socket cookie and resolves
-// the adapter's 4-tuple lookups against the pinned-in-memory flow_cookies map.
+// the adapter's 4-tuple lookups against the pinned-in-memory flow_cookies map,
+// WRAPPED in the staleness guard so a stale entry (missed TCP_CLOSE + reused
+// ephemeral port) can never hand a misattributed cookie to enforcement — a jailed
+// bystander is a critical failure (docs/IDENTITY.md, CLAUDE.md rule 4). The guard
+// confirms the resolved entry is the current capture (stable cookie + non-zero,
+// non-advancing generation) before the adapter ever stamps it onto a flow.
 // Requires CAP_BPF + CAP_NET_ADMIN.
 func newResolver() (identity.CookieResolver, error) {
-	return sockops.NewMapResolver(cgroupV2Root)
+	mr, err := sockops.NewMapResolver(cgroupV2Root)
+	if err != nil {
+		return nil, err
+	}
+	return identity.NewStaleGuard(mr), nil
 }

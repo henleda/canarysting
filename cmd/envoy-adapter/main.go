@@ -8,6 +8,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"log"
 	"net"
@@ -26,29 +27,71 @@ import (
 	"github.com/canarysting/canarysting/internal/sting/containment"
 )
 
-// enforcer programs kernel containment for an attributed flow. Its construction
-// is build-tagged (real on Linux, no-op elsewhere) so cilium/ebpf stays out of
-// the adapter's import closure — only this composition root touches it.
+// enforcer programs and lifts kernel containment for an attributed flow. Its
+// construction is build-tagged (real on Linux, no-op elsewhere) so cilium/ebpf
+// stays out of the adapter's import closure — only this composition root touches it.
 type enforcer interface {
 	Apply(contract.Verdict, containment.Action) error
+	// Release lifts containment for a flow (de-escalation / false-positive /
+	// operator clear). Idempotent; a cookie-0 flow is a no-op.
+	Release(contract.Verdict) error
 	Close() error
 }
 
-// enforceVerdict is the testable core of the OnVerdict->kernel seam. It programs
-// kernel containment ONLY for an async (kernel-enforced) Tier-2/3 verdict on an
-// attributable flow: inline tiers were actioned at the proxy, Tiers 0-1 never
-// contain, and a cookie-0 flow is unattributable. It returns the action it
-// applied (applied=true) so the caller can emit positive containment evidence.
-func enforceVerdict(enf enforcer, v contract.Verdict) (act containment.Action, applied bool, err error) {
+// enforceVerdict is the testable core of the OnVerdict->kernel seam. It reconciles
+// the kernel containment state to the latest async verdict for an attributable
+// flow:
+//
+//   - Tier 2/3 -> Apply the matching containment action (rate-limit / jail).
+//   - Tier 0/1 -> Release any containment the flow previously had (DE-ESCALATION:
+//     a flow that fell back below TierContain must not stay jailed — without this
+//     a Tier-3 jail is never lifted in production and the delete-on-close eBPF is
+//     the ONLY thing that ever frees it).
+//
+// It acts only on async (kernel-enforced) verdicts: inline tiers were actioned at
+// the proxy, and a cookie-0 flow is unattributable (never enforced, nothing to
+// release). It returns the action it applied (applied=true) so the caller can emit
+// positive containment evidence; a de-escalation reports released=true.
+func enforceVerdict(enf enforcer, v contract.Verdict) (act containment.Action, applied, released bool, err error) {
 	if v.Mode != contract.ModeAsync || v.Flow.SocketCookie == 0 {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	a, ok := containment.ActionForTier(v.Tier)
 	if !ok {
-		return 0, false, nil
+		// Below TierContain: lift any containment this flow previously had.
+		// Release is idempotent, so a never-contained flow is a cheap no-op.
+		return 0, false, true, enf.Release(v)
 	}
-	return a, true, enf.Apply(v, a)
+	return a, true, false, enf.Apply(v, a)
 }
+
+// releaseVerdictForLabel lifts containment for a flow an analyst confirmed was a
+// false positive (FeedbackLabel{WasMalicious:false}). A confirmed-malicious label
+// leaves containment in place. It is the second de-escalation trigger alongside the
+// verdict-drop path, and the building block the operator clear path reuses. It
+// returns released=true when it actually issued a Release (an attributable,
+// not-malicious label).
+func releaseVerdictForLabel(enf enforcer, l contract.FeedbackLabel) (released bool, err error) {
+	if l.WasMalicious || l.Flow.SocketCookie == 0 {
+		return false, nil
+	}
+	return true, enf.Release(contract.Verdict{Flow: l.Flow, Scope: l.Scope, Tier: l.Tier})
+}
+
+// operatorClear is the operator clear seam: lift containment for a single
+// attributed flow by cookie, on demand (the full CLI/RPC surface can come later).
+// It returns ErrUnattributableClear for a cookie-0 request so an operator typo
+// cannot silently no-op against "every unattributable flow". Release itself is
+// idempotent, so clearing an already-clear flow is safe.
+func operatorClear(enf enforcer, cookie uint64) error {
+	if cookie == 0 {
+		return errClearUnattributable
+	}
+	return enf.Release(contract.Verdict{Flow: contract.FlowIdentity{SocketCookie: cookie}})
+}
+
+// errClearUnattributable guards the operator clear path against a cookie-0 request.
+var errClearUnattributable = errors.New("operator clear: cookie 0 is unattributable; refusing to clear")
 
 // demoCanaryPaths pins canary types to negative-space HTTP paths — paths a
 // legitimate flow never requests, so a touch is almost certainly hostile
@@ -202,18 +245,30 @@ func main() {
 		OnVerdict: func(ev contract.SignalEvent, v contract.Verdict) {
 			log.Printf("CANARY TOUCH scope=%s canary=%s cookie=%#x tier=%d mode=%d score=%.2f",
 				ev.Scope, ev.Canary, ev.Flow.SocketCookie, v.Tier, v.Mode, v.Score)
-			// The verdict->kernel seam lives HERE (not in the thin adapter).
-			act, applied, err := enforceVerdict(enf, v)
+			// The verdict->kernel seam lives HERE (not in the thin adapter). It both
+			// PROGRAMS containment at Tier 2/3 and RELEASES it when a later verdict for
+			// the same flow drops below TierContain (de-escalation — without this a
+			// Tier-3 jail is never lifted in production).
+			act, applied, released, err := enforceVerdict(enf, v)
 			if err != nil {
-				// A confirmed Tier-2/3 verdict that we FAILED to program is a
-				// containment miss — surface it prominently, never swallow it.
-				log.Printf("KERNEL CONTAINMENT FAILED action=%s cookie=%#x tier=%d: %v", act, v.Flow.SocketCookie, v.Tier, err)
+				// A confirmed Tier-2/3 verdict we FAILED to program, OR a de-escalation
+				// we FAILED to release, is a containment miss — surface it prominently,
+				// never swallow it (a failed release leaves a flow jailed too long).
+				if released {
+					log.Printf("KERNEL CONTAINMENT RELEASE FAILED cookie=%#x tier=%d: %v", v.Flow.SocketCookie, v.Tier, err)
+				} else {
+					log.Printf("KERNEL CONTAINMENT FAILED action=%s cookie=%#x tier=%d: %v", act, v.Flow.SocketCookie, v.Tier, err)
+				}
 				return
 			}
 			if applied {
 				// Positive evidence that the kernel verdict_map was programmed (the
 				// demo gate keys on this — silence alone is not proof of a jail).
 				log.Printf("KERNEL CONTAINMENT applied action=%s cookie=%#x tier=%d", act, v.Flow.SocketCookie, v.Tier)
+			}
+			if released {
+				// Positive evidence the kernel entry was lifted (de-escalation).
+				log.Printf("KERNEL CONTAINMENT released cookie=%#x tier=%d (de-escalated below contain)", v.Flow.SocketCookie, v.Tier)
 			}
 		},
 		// OnOutcome runs after the inline Tier 2/3 attrition hold completes. This is
