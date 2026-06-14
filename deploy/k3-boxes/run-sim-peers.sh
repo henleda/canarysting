@@ -29,9 +29,13 @@ go run ./cmd/aggregator -confirm-in "$WORK/confirm.ndjson" -cleared-out "$WORK/c
 echo "=== ship the crossings to the consuming engine's shared spool ==="
 sudo install -m0644 "$WORK/cleared.ndjson" "$SHARED_SPOOL"
 echo "  -> $SHARED_SPOOL ($(wc -l < "$WORK/cleared.ndjson") crossed patterns)"
+# Provenance marker: the engine auto-discloses "simulated" from this even if the
+# operator forgets -sim-peers-demo, so synthetic peers can never read as real.
+echo "simulated peer data (cmd/sim-peers); synthetic scopes we operate, not real customers" | sudo tee "${SHARED_SPOOL}.simulated" >/dev/null
+echo "  + provenance marker -> ${SHARED_SPOOL}.simulated (engine auto-discloses 'simulated')"
 echo "  the wire (one crossed pattern — opaque + 7 coarse fields; NO token, NO raw data):"
 echo "    $(head -1 "$WORK/cleared.ndjson")"
 echo
-echo "NEXT: run the engine with  -consume -shared-spool $SHARED_SPOOL -sim-peers-demo"
-echo "      (the -sim-peers-demo flag makes the dashboard disclose the peers are SIMULATED)."
+echo "NEXT: run the engine with  -consume -shared-spool $SHARED_SPOOL"
+echo "      (the dashboard auto-discloses 'simulated' from the .simulated marker; -sim-peers-demo forces it too)."
 echo "DISCLOSE in the demo: these are $PEERS scopes WE synthesized (sim-peer-*), not real peer customers."
