@@ -234,6 +234,7 @@ export interface CrossCustomerView {
   flow_id_hex: string;
   similarity: number; // best similarity of that flow to a consumed pattern [0,1]
   matched: boolean; // similarity >= threshold
+  simulated: boolean; // consumed patterns are SIMULATED peers (demo "art of the possible")
 }
 
 // AdversaryIntelView is the secondary-band right panel (three facets).

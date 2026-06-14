@@ -193,6 +193,7 @@ export const fixtureOverview: Overview = {
       flow_id_hex: '0x118',
       similarity: 0.86,
       matched: true,
+      simulated: true,
     },
   },
 
