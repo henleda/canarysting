@@ -387,6 +387,9 @@ func reconSession(ctx context.Context, srcIP, target string, paths []string, rng
 // surviving bystanders. The attacker IP is the only class allowed to touch canaries
 // (Rule 8 — validate() guarantees recon/benign paths are disjoint from canaries).
 func runKeepaliveMalicious(ctx context.Context, srcIP, target string, canaryPaths []string, seed int64, interval time.Duration) {
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
 	rng := rand.New(rand.NewSource(seed))
 	for {
 		if ctx.Err() != nil {
