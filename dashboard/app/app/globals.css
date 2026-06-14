@@ -49,7 +49,47 @@ body::before {
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .dim { color: var(--ink-dim); } .faint { color: var(--ink-faint); }
 
-.app { height: 100vh; display: grid; grid-template-rows: 60px 1.3fr 1.15fr 1.35fr; }
+/* ===================================================================== *
+ * Console shell — a fixed left nav rail + the page body. Lets the         *
+ * Operations wall stay decluttered (Recon / Adversary Intel on their own  *
+ * pages). The rail spans full height; .app/.app-console fill the body.    *
+ * ===================================================================== */
+.shell { height: 100vh; display: grid; grid-template-columns: 196px 1fr; background: var(--bg); }
+.shell-body { min-width: 0; min-height: 0; height: 100vh; overflow: hidden; }
+
+.sidenav { border-right: 1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,0.015), transparent);
+  padding: 16px 10px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; }
+.sidenav-label { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--ink-faint); padding: 4px 12px 10px; }
+.navitem { display: flex; align-items: stretch; gap: 0; text-decoration: none; border-radius: 6px; overflow: hidden;
+  border: 1px solid transparent; }
+.navitem:hover { background: rgba(255,255,255,0.025); border-color: var(--line); }
+.navitem .navitem-bar { width: 3px; flex: none; background: transparent; border-radius: 3px; }
+.navitem .navitem-body { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; min-width: 0; }
+.navitem .navitem-label { font-family: var(--display); font-weight: 700; font-size: 12.5px; letter-spacing: 0.02em; color: var(--ink-dim); }
+.navitem .navitem-hint { font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; color: var(--ink-faint); }
+.navitem.active { background: rgba(255,206,58,0.06); border-color: rgba(255,206,58,0.28); }
+.navitem.active .navitem-bar { background: var(--canary); box-shadow: 0 0 10px rgba(255,206,58,0.5); }
+.navitem.active .navitem-label { color: var(--canary); }
+.navitem.active .navitem-hint { color: var(--ink-dim); }
+
+.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.2fr 1.2fr 0.8fr; }
+
+/* Tier-0 drill-down honest empty-state (no per-flow records by design). */
+.t0-empty { border: 1px solid rgba(47,227,154,0.28); border-radius: 8px; padding: 22px 24px;
+  background: linear-gradient(180deg, rgba(47,227,154,0.05), rgba(47,227,154,0.015)); max-width: 720px; }
+.t0-empty-h { font-family: var(--display); font-weight: 800; font-size: 16px; color: var(--safe); letter-spacing: 0.01em; margin-bottom: 12px; }
+.t0-empty p { font-family: var(--sans); font-size: 12.5px; line-height: 1.6; color: var(--ink-dim); margin: 0 0 10px; }
+.t0-empty p:last-child { margin-bottom: 0; }
+.t0-empty b { color: var(--ink); }
+.t0-empty .t0-empty-sub { color: var(--ink-faint); }
+.t0-empty a { color: var(--canary); text-decoration: none; }
+.t0-empty a:hover { text-decoration: underline; }
+
+/* AdversaryIntelligence on its own page: its .intel-grid is height:100%, so give
+   it a defined height off the fixed-height wall. */
+.intel-standalone { height: 540px; }
+.intel-standalone .cell { height: 100%; }
 
 /* ---- top bar ---- */
 .topbar { display: flex; align-items: center; gap: 26px; padding: 0 28px; border-bottom: 1px solid var(--line);
@@ -265,7 +305,7 @@ body { min-height: 100%; }
  * Interactive console drill-down (M8 routed pages). Additive only — the  *
  * home wall above is untouched. Reuses the signed-off design tokens.     *
  * ===================================================================== */
-.app-console { display: grid; grid-template-rows: 60px 1fr; height: 100vh; background: var(--bg); }
+.app-console { display: grid; grid-template-rows: 60px 1fr; height: 100%; min-height: 0; background: var(--bg); }
 .detail-page { flex: 1; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; gap: 28px; }
 .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
