@@ -24,6 +24,16 @@ type Config struct {
 	Decider     tiers.Decider
 	Tiers       tiers.Config
 	Calibration calibration.Calibrator
+	// TierDepthMultiplier, when non-nil, un-inflates the score by the baseline
+	// multiplier M for the TIER decision ONLY, so the tier reflects depth of
+	// interaction (the touch-count base B) rather than B×M. Verdict.Score still
+	// carries the full B×M, so the live M stays visible to the dashboard. This is
+	// wired ONLY for the DEMO-ONLY escalation band (-demo-escalation): that band's
+	// graduated Tag→Contain→Jail thresholds are expressed in touch units and would
+	// otherwise collapse once M goes live (a live M ≈2.5 makes a single touch's
+	// score vault past the higher thresholds, forcing straight-to-jail). nil in
+	// production — tiering uses the full score, unchanged.
+	TierDepthMultiplier scoring.MultiplierSource
 }
 
 // Service is the concrete contract.Engine.
@@ -77,7 +87,20 @@ func (s *Service) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
 		return contract.Verdict{}, err
 	}
 
-	tier, mode, err := s.cfg.Decider.Decide(scopeKey, score, s.cfg.Tiers)
+	// The tier is decided on depth-of-interaction. Normally that is the score
+	// itself; under the demo-escalation band (TierDepthMultiplier wired) we divide
+	// out the baseline multiplier M so a live M cannot compress the graduated
+	// Tag→Contain→Jail climb (its thresholds are in touch units). Verdict.Score
+	// below is unchanged (full B×M), so the live M stays visible. M is floored at 1
+	// (docs/BASELINE_MULTIPLIER.md), so this never inflates the tier input.
+	tierInput := score
+	if s.cfg.TierDepthMultiplier != nil {
+		if m := s.cfg.TierDepthMultiplier.Multiplier(scopeKey, ev.Flow, ev.Timestamp); m >= 1 {
+			tierInput = score / m
+		}
+	}
+
+	tier, mode, err := s.cfg.Decider.Decide(scopeKey, tierInput, s.cfg.Tiers)
 	if err != nil {
 		return contract.Verdict{}, err
 	}

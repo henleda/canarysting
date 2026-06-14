@@ -136,3 +136,29 @@ func TestNewRejectsNilLoader(t *testing.T) {
 		t.Fatal("New should reject a nil loader")
 	}
 }
+
+// TestEscalateThenReleaseRemovesEntry is the B3 de-escalation invariant at the
+// containment layer: a flow jailed at Tier 3 and then Released must leave NO entry
+// in the verdict map (the fakeLoader deletes on Release, mirroring the kernel's
+// bpf_map_delete_elem). Proves a de-escalation actually frees the kernel state
+// rather than leaving a stale jail behind.
+func TestEscalateThenReleaseRemovesEntry(t *testing.T) {
+	f := newFakeLoader()
+	c := mustContainer(t, f)
+	const cookie = 0xD06
+	if err := c.Apply(verdict(contract.TierJail, cookie), Jail); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.programmed[cookie]; !ok {
+		t.Fatal("escalate did not program the jail")
+	}
+	if err := c.Release(verdict(contract.TierJail, cookie)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.programmed[cookie]; ok {
+		t.Fatal("de-escalation left the verdict-map entry in place (stale jail)")
+	}
+	if f.released[cookie] != 1 {
+		t.Fatalf("Release was not forwarded exactly once: %d", f.released[cookie])
+	}
+}

@@ -18,6 +18,12 @@ type kernelEnforcer struct {
 func (e *kernelEnforcer) Apply(v contract.Verdict, a containment.Action) error {
 	return e.c.Apply(v, a)
 }
+
+// Release lifts the kernel verdict for the flow (de-escalation / false-positive /
+// operator clear). Idempotent via the containment layer.
+func (e *kernelEnforcer) Release(v contract.Verdict) error {
+	return e.c.Release(v)
+}
 func (e *kernelEnforcer) Close() error { return e.l.Close() }
 
 // newEnforcer loads + attaches the enforce programs at the cgroup-v2 root (the

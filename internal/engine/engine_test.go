@@ -212,6 +212,66 @@ func TestSubmit_AbnormalFlowEscalatesOnFewerTouches(t *testing.T) {
 	}
 }
 
+// TestSubmit_DemoTierDepthMultiplierDwellsAtLiveM proves the demo-escalation band's
+// graduated Tag→Contain→Jail dwell holds even when the baseline multiplier is live:
+// with TierDepthMultiplier wired, the tier is decided on depth-of-interaction
+// (touch count = score/M), so a live M ≈3 no longer forces straight-to-jail. The
+// Verdict.Score still carries the full B×M (the live M stays visible). The control
+// (no TierDepthMultiplier) confirms that without the fix the same 2 touches jail.
+func TestSubmit_DemoTierDepthMultiplierDwellsAtLiveM(t *testing.T) {
+	resolver, _ := scope.NewStaticResolver(scope.Config{Boundary: "scope"})
+	demo := tiers.DefaultConfig()
+	demo.ConfidenceRequired = map[contract.Tier]float64{
+		contract.TierTag:     0.01, // threshold 1.01
+		contract.TierContain: 0.30, // threshold 2.60
+		contract.TierJail:    0.50, // threshold 4.50
+	}
+	const M = 3.0
+	ts := time.Unix(1_000_000, 0)
+	newEng := func(depth bool) *Service {
+		calib := calibration.New(calibration.Config{EvidenceFloor: 1000})
+		scorer := scoring.New(5*time.Minute, calib, nil).UseMultiplier(fixedMultiplier(M))
+		cfg := Config{Resolver: resolver, Scorer: scorer, Decider: tiers.StaticDecider{}, Tiers: demo}
+		if depth {
+			cfg.TierDepthMultiplier = fixedMultiplier(M)
+		}
+		eng, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return eng
+	}
+
+	// WITH depth tiering: tier climbs by distinct-touch count regardless of M.
+	eng := newEng(true)
+	eng.Submit(touch("scope", 1, "a", ts)) // B=1
+	v, _ := eng.Submit(touch("scope", 1, "b", ts))
+	if v.Tier != contract.TierTag {
+		t.Fatalf("2 touches @ M=%.0f: tier=%d, want Tag(%d) — depth tiering must dwell, not jail", M, v.Tier, contract.TierTag)
+	}
+	if v.Score != 2*M { // B×M still rides the verdict so the live M stays visible
+		t.Fatalf("Verdict.Score=%.2f, want %.2f (full B×M)", v.Score, 2*M)
+	}
+	v, _ = eng.Submit(touch("scope", 1, "c", ts)) // B=3
+	if v.Tier != contract.TierContain {
+		t.Fatalf("3 touches @ M=%.0f: tier=%d, want Contain(%d)", M, v.Tier, contract.TierContain)
+	}
+	eng.Submit(touch("scope", 1, "d", ts))
+	v, _ = eng.Submit(touch("scope", 1, "e", ts)) // B=5
+	if v.Tier != contract.TierJail {
+		t.Fatalf("5 touches @ M=%.0f: tier=%d, want Jail(%d)", M, v.Tier, contract.TierJail)
+	}
+
+	// CONTROL — no depth tiering: the same 2 touches jail immediately (score 6.0 >
+	// Jail threshold 4.5), the all-jail behavior this fix corrects.
+	ctl := newEng(false)
+	ctl.Submit(touch("scope", 2, "a", ts))
+	cv, _ := ctl.Submit(touch("scope", 2, "b", ts))
+	if cv.Tier != contract.TierJail {
+		t.Fatalf("control (no depth tiering): 2 touches @ M=%.0f tier=%d, want Jail(%d) — confirms M compresses without the fix", M, cv.Tier, contract.TierJail)
+	}
+}
+
 // badResolver always fails Validate and Resolve.
 type badResolver struct{}
 
