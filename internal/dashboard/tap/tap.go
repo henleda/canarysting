@@ -55,6 +55,13 @@ const (
 	// maxBystanderFlows caps the serving-workload list (the "still 200 on the same
 	// host" proof) so a busy benign population doesn't flood the panel.
 	maxBystanderFlows = 8
+	// bystanderEstablishedSec: a non-armed serving flow open at least this long is an
+	// ESTABLISHED workload (a keepalive/persistent connection), surfaced as a
+	// bystander. Duration, not novelty, is the discriminator: a persistent workload
+	// never closes, so it never folds into the baseline and forever reads as "novel"
+	// — but it is a neighbor we did NOT touch, not recon. The threshold is above a
+	// single request's max lifetime so one slow GET can't masquerade as a workload.
+	bystanderEstablishedSec = 8.0
 )
 
 // Source holds the read-only handles the tap surfaces. Any may be nil (the tap
@@ -231,11 +238,16 @@ func (s *Source) currentAdversaryFlow(now time.Time) (uint64, bool) {
 // data is context, never a trigger). Canary-touchers (armedCookies, Tier>=1) are
 // excluded from both — they belong to the escalation/containment surfaces. Of the
 // remaining NON-armed live flows:
-//   - RECON: peak baseline-novelty >= reconLiveNoticeFloor — anomalous; "we see it,
-//     we don't act" (the restraint proof).
-//   - BYSTANDER: low novelty AND actively serving (bytes>0) — a real workload still
-//     serving on the same host while an attacker is kernel-jailed elsewhere
-//     (the dashboard-native "contain the flow, not the host" proof).
+//   - BYSTANDER: an ESTABLISHED serving flow (open >= bystanderEstablishedSec) —
+//     a persistent workload still serving on the same host while an attacker is
+//     kernel-jailed elsewhere (the "contain the flow, not the host" proof).
+//   - RECON: a transient flow that looks anomalous-from-baseline (peak novelty >=
+//     reconLiveNoticeFloor) — "we see it, we don't act" (the restraint proof).
+//
+// The split is DURATION-then-novelty, deliberately: a persistent keepalive workload
+// never closes, so it never folds into the baseline and forever reads as novel — but
+// it is a neighbor we did NOT touch, not recon. Established serving non-touchers are
+// bystanders; transient anomalous non-touchers are recon.
 func (s *Source) buildLiveSurfaces(now time.Time) ([]ReconLiveFlow, []BystanderFlow) {
 	flows := s.Aggregator.LiveFlows(now)
 	if len(flows) == 0 {
@@ -248,6 +260,19 @@ func (s *Source) buildLiveSurfaces(now time.Time) ([]ReconLiveFlow, []BystanderF
 		if armed[f.Cookie] {
 			continue // a canary-toucher belongs to escalation/containment, not here
 		}
+		// ESTABLISHED serving workload -> bystander (duration, not novelty).
+		if f.IngressBytes+f.EgressBytes > 0 && f.DurationSec >= bystanderEstablishedSec {
+			if len(byst) < maxBystanderFlows {
+				byst = append(byst, BystanderFlow{
+					FlowID:      f.Cookie,
+					FlowIDHex:   "0x" + strconv.FormatUint(f.Cookie, 16),
+					Bytes:       f.IngressBytes + f.EgressBytes,
+					DurationSec: f.DurationSec,
+				})
+			}
+			continue
+		}
+		// Transient + anomalous-from-baseline -> recon.
 		nov, top := peakNovelty(f)
 		if nov >= reconLiveNoticeFloor {
 			if len(recon) >= maxReconLiveFlows {
@@ -266,19 +291,7 @@ func (s *Source) buildLiveSurfaces(now time.Time) ([]ReconLiveFlow, []BystanderF
 				DurationSec: f.DurationSec,
 				Severity:    sev,
 			})
-			continue
 		}
-		// Low-novelty, non-armed, ACTIVELY-SERVING -> a legitimate bystander workload
-		// (the "still 200 on the same host while the attacker is jailed" proof).
-		if f.IngressBytes+f.EgressBytes == 0 || len(byst) >= maxBystanderFlows {
-			continue
-		}
-		byst = append(byst, BystanderFlow{
-			FlowID:      f.Cookie,
-			FlowIDHex:   "0x" + strconv.FormatUint(f.Cookie, 16),
-			Bytes:       f.IngressBytes + f.EgressBytes,
-			DurationSec: f.DurationSec,
-		})
 	}
 	return recon, byst
 }
