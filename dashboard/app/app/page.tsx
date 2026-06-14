@@ -9,7 +9,6 @@ import AttackerCost from '@/components/AttackerCost';
 import KernelContainment from '@/components/KernelContainment';
 import Credibility from '@/components/Credibility';
 import AdversaryIntelligence from '@/components/AdversaryIntelligence';
-import Journey from '@/components/Journey';
 import ReconLive from '@/components/ReconLive';
 import BystanderHealth from '@/components/BystanderHealth';
 
@@ -45,13 +44,11 @@ export default function OperationsPage() {
         <KernelContainment containment={snapshot?.kernel_containment} />
         <BystanderHealth bystanders={snapshot?.bystanders} />
       </div>
-      <div className="journey-row">
-        <Journey journey={snapshot?.journey} />
-      </div>
-      <div className="journey-row">
-        <ReconLive recon={snapshot?.recon_live} />
-      </div>
+      {/* Context band — 3 cells fill the 3-column grid: recon (we see it, we don't
+          act) + credibility (live M / baseline novelty) + adversary intelligence
+          (the cross-customer network). */}
       <div className="band">
+        <ReconLive recon={snapshot?.recon_live} />
         <Credibility credibility={snapshot?.credibility} />
         <AdversaryIntelligence intel={snapshot?.adversary_intel} />
       </div>
