@@ -46,36 +46,43 @@ The same 8-byte cookie is observed at three points with **no second join**:
    and is reliably attributable. The cookie is per-socket and host-local — capture
    and enforcement are node-local (K8s inherits this per ROADMAP §7).
 
-## Staleness guard (the real generation, not a stub)
+## Staleness guard (what actually protects a bystander)
 
 The `flow_cookies` LRU map is keyed by the 4-tuple, so a **missed `TCP_CLOSE` plus a
 reused ephemeral port** can leave a stale entry that resolves a NEW (possibly
 legitimate) connection to the OLD connection's cookie until the new
-`PASSIVE_ESTABLISHED` capture overwrites it. Acting on that resolution misattributes
-a verdict. Delete-on-close is best-effort (a belt); the generation is the suspenders.
+`PASSIVE_ESTABLISHED` capture overwrites it. Two independent properties keep that
+from jailing a bystander:
 
-The guard has two halves:
+1. **Enforcement keys on the LIVE, never-reused socket cookie — so a stale
+   verdict-map entry is inert.** The enforce path (`enforce_egress`) reads the
+   offending socket's cookie **directly** via `bpf_get_socket_cookie(skb)` and Linux
+   socket cookies are monotonic and **never reused**. A cookie left over from a closed
+   connection is therefore carried by **no** live socket: it cannot match a live
+   flow's egress, so it cannot jail a bystander even if it lingers in the map. This is
+   the primary guarantee and it holds with no extra machinery. (Delete-on-close in the
+   sockops program is a best-effort tidy-up of the resolution map, not the safety
+   property.)
 
-1. **Kernel half (`bpf/sockops/sockops.bpf.c`).** Each `PASSIVE_ESTABLISHED` capture
-   stamps a **real, monotonic, host-global `generation`** (from the `gen_seq` array
-   map) into `flow_val` — replacing the previous hardcoded `1`. A fresh capture for a
-   reused tuple therefore always carries a strictly higher generation than any stale
-   entry, giving userspace a freshness ordinal it can compare.
-2. **Userspace half (`adapters/envoy/identity.StaleGuardResolver`).** A pure-Go
-   decorator over the `CookieResolver` that hands a resolution to enforcement only if
-   it can confirm the entry is the CURRENT capture: it re-reads the tuple and refuses
-   (returns a MISS → unattributable → never enforce) if the entry vanished, changed
-   cookie, advanced its generation between the reads, or carries a zero generation (no
-   ordinal to confirm against — the fail-safe default). A refuse-to-jail is always
-   preferable to a possibly-misattributed jail (fail safe on uncertainty). The
-   composition root (`cmd/envoy-adapter`) wraps the real `MapResolver` in this guard.
+2. **A userspace cookie-change re-read guards the ATTRIBUTION.** Attribution drives
+   scoring, evidence, the operator's view, and any future ingress-hold enforcement
+   that does NOT read the cookie live — so a stale *resolution* there would charge the
+   wrong flow. `adapters/envoy/identity.StaleGuardResolver` is a pure-Go decorator
+   over the `CookieResolver` that re-reads the tuple and hands a resolution onward
+   only if the socket cookie is **the same across both reads**. If the entry vanished
+   (eviction/close) or the cookie **changed** — a newer connection captured on the
+   same 4-tuple, the reused-ephemeral-port churn — it returns a MISS → unattributable
+   → never enforce. Because cookies are never reused, a changed cookie is unambiguous
+   proof the entry churned; the comparison needs no kernel cooperation. A refuse-to-
+   attribute is always preferable to a possible misattribution (fail safe on
+   uncertainty). The composition root (`cmd/envoy-adapter`) wraps the real
+   `MapResolver` in this guard.
 
-Why this is enough rather than re-keying enforcement: the enforce path
-(`enforce_egress`) reads the live socket's cookie **directly** and Linux socket
-cookies are monotonic and never reused, so a stale cookie programmed into the verdict
-map is usually inert. The guard protects the *attribution* itself — scoring,
-evidence, the operator's view, and any future ingress-hold enforcement that does not
-read the cookie live.
+The kernel `flow_val.generation` field is a **layout-only vestige** (kept so the C
+value struct stays byte-for-byte identical to the bpf2go-generated `sockopsFlowVal`
+and `identity.Resolution`, asserted by the sockops layout test); the committed object
+does not stamp a real monotonic generation, so the guard does **not** key on it. The
+socket-cookie-change comparison is the actual freshness signal.
 
 ## Lifting containment (de-escalation, false-positive, operator clear)
 
@@ -88,6 +95,13 @@ to the LATEST async verdict for a flow:
   jailed.
 - **False positive:** a `FeedbackLabel{WasMalicious:false}` releases the flow
   (`releaseVerdictForLabel`); a confirmed-malicious label leaves containment in place.
+  Delivery: the adapter composition root wires a `feedbackReleaseSink` (implements
+  `contract.FeedbackSink`) over the kernel enforcer. The feedback path / staged
+  labeler calls `FeedbackSink.Label`, which Releases on a false-positive label and
+  then forwards the label to the engine's calibration intake — one analyst action
+  both frees the bystander (node-side, where containment is enforced) and feeds
+  calibration. A full out-of-process label transport (an RPC the engine pushes labels
+  over) is future work; the in-process sink closes the dead-seam gap today.
 - **Operator clear:** `operatorClear(cookie)` is the on-demand seam to lift one
   attributed flow; it refuses cookie 0 (the full CLI/RPC surface can come later).
 

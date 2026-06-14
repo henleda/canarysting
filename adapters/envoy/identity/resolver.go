@@ -60,8 +60,12 @@ func (t FourTuple) SourceAddr() (netip.Addr, bool) {
 }
 
 // Resolution is the kernel-side value for a FourTuple: the socket cookie plus the
-// coarse identifiers (cgroup/pid) and a generation that lets the resolver treat a
-// stale or ambiguous entry as a MISS rather than risk a misattributed verdict.
+// coarse identifiers (cgroup/pid). Generation is a layout-only vestige kept so this
+// struct stays byte-for-byte identical to the bpf2go-generated sockopsFlowVal /
+// the C flow_val (asserted by the layout test); it is NOT a live freshness signal.
+// Attribution freshness is enforced by the socket-cookie-change re-read in
+// StaleGuardResolver — the cookie is monotonic and never reused, so it is the only
+// reliable churn signal. See docs/IDENTITY.md.
 type Resolution struct {
 	Cookie     uint64
 	CgroupID   uint64
