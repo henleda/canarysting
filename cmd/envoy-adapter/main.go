@@ -12,6 +12,7 @@ import (
 	"flag"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -81,6 +82,81 @@ func enforceVerdict(enf enforcer, v contract.Verdict) (act containment.Action, a
 	return a, true, false, enf.Apply(v, a)
 }
 
+// verdictSequencer enforces per-flow verdict ordering so a STALE async verdict can
+// never undo a newer one for the same cookie. Async verdicts are decided and
+// delivered out of band; under concurrency a later high-tier (jail) verdict and an
+// earlier low-tier verdict for the same flow can arrive at this seam out of order.
+// Without ordering, the stale low-tier verdict's Release would lift a jail the newer
+// verdict programmed — re-opening a contained flow. The sequencer records, per
+// cookie, the highest ordinal applied so far and DROPS any verdict whose ordinal is
+// older-or-equal (last-writer-wins by ordinal, not by arrival order).
+//
+// The ordinal is the originating SignalEvent's timestamp (a later event ⇒ a later
+// verdict). It is monotonic per flow at the source and needs no engine change. Ties
+// (equal ordinal) are dropped: a verdict no newer than the last applied carries no
+// new information and must not flip state. Concurrency-safe (the adapter delivers
+// verdicts from multiple request goroutines).
+type verdictSequencer struct {
+	mu   sync.Mutex
+	high map[uint64]int64 // cookie -> highest applied ordinal
+}
+
+func newVerdictSequencer() *verdictSequencer {
+	return &verdictSequencer{high: make(map[uint64]int64)}
+}
+
+// admit reports whether a verdict at the given ordinal for cookie is the newest seen
+// and should be applied. It records the ordinal as the new high-water mark when it
+// admits. A cookie-0 (unattributable) verdict is always admitted: enforceVerdict
+// no-ops it anyway, and it never carries per-flow state to protect. Stale or
+// duplicate (ordinal <= the recorded high) verdicts for an attributed cookie are
+// rejected.
+// seqStaleNanos: a cookie with no verdict for this long is a finished flow whose
+// high-water mark can be reaped to bound the map. It is far larger than the scoring
+// correlation window, so a legitimately out-of-order verdict (which arrives within
+// seconds) is still rejected as stale long before its mark could be reaped.
+const (
+	seqStaleNanos    = int64(30 * time.Minute)
+	seqReapThreshold = 4096 // only sweep once the map has actually grown
+)
+
+func (s *verdictSequencer) admit(cookie uint64, ordinal int64) bool {
+	if cookie == 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Bound the map: a finished flow's mark would otherwise linger forever. Sweep
+	// long-idle cookies, but only once the map has grown past a threshold so the
+	// common path stays O(1).
+	if len(s.high) > seqReapThreshold {
+		cutoff := ordinal - seqStaleNanos
+		for c, o := range s.high {
+			if o < cutoff {
+				delete(s.high, c)
+			}
+		}
+	}
+	if prev, seen := s.high[cookie]; seen && ordinal <= prev {
+		return false
+	}
+	s.high[cookie] = ordinal
+	return true
+}
+
+// enforceVerdictOrdered gates enforceVerdict behind the per-flow sequencer: a
+// verdict older-or-equal to the last applied for its cookie is DROPPED (stale=true),
+// touching the enforcer not at all, so a stale low-tier verdict cannot Release a jail
+// a newer verdict programmed. A fresh (newest-seen) verdict flows through to
+// enforceVerdict unchanged.
+func enforceVerdictOrdered(enf enforcer, seq *verdictSequencer, v contract.Verdict, ordinal int64) (act containment.Action, applied, released, stale bool, err error) {
+	if !seq.admit(v.Flow.SocketCookie, ordinal) {
+		return 0, false, false, true, nil
+	}
+	act, applied, released, err = enforceVerdict(enf, v)
+	return act, applied, released, false, err
+}
+
 // releaseVerdictForLabel lifts containment for a flow an analyst confirmed was a
 // false positive (FeedbackLabel{WasMalicious:false}). A confirmed-malicious label
 // leaves containment in place. It is the second de-escalation trigger alongside the
@@ -94,9 +170,49 @@ func releaseVerdictForLabel(enf enforcer, l contract.FeedbackLabel) (released bo
 	return true, enf.Release(contract.Verdict{Flow: l.Flow, Scope: l.Scope, Tier: l.Tier})
 }
 
+// feedbackReleaseSink is the adapter-side delivery seam for analyst labels. It
+// implements contract.FeedbackSink so the SAME FeedbackLabel that calibrates the
+// engine ALSO lifts adapter/kernel containment for a false positive — releasing a
+// jail is the adapter's job because containment is enforced node-side, not in the
+// engine (rules 1/2). Without this seam releaseVerdictForLabel is unreachable in
+// production (a label can never lift a jail).
+//
+// How a label is delivered: the staged labeler / operator feedback path calls
+// FeedbackSink.Label (see internal/intelligence/stagedlabel and
+// internal/engine/feedback). Phase-2's composition root wraps the kernel enforcer in
+// a feedbackReleaseSink that Releases on WasMalicious:false, leaves containment on a
+// confirmed-malicious label, then forwards the label to the engine's calibration
+// intake (next) so one analyst action both frees the bystander and feeds calibration.
+//
+// STATUS: this type + releaseVerdictForLabel are built and unit-tested, but DORMANT
+// in Phase-1 — the adapter binary has no label source (the engine runs the labeler;
+// an engine->adapter label transport is Phase-2 / B5, docs/IDENTITY.md "Lifting
+// containment"). It is intentionally not instantiated in main() so nothing reads as
+// wired-but-unreachable. The ACTIVE Phase-1 un-jail is the de-escalation path
+// (enforceVerdictOrdered Releases when a later verdict drops below TierContain).
+type feedbackReleaseSink struct {
+	enf  enforcer
+	next contract.FeedbackSink // optional downstream (calibration); may be nil
+}
+
+var _ contract.FeedbackSink = (*feedbackReleaseSink)(nil)
+
+// Label lifts containment for a false-positive label and forwards every label to the
+// downstream sink. A release failure is returned (the caller must see a jail that did
+// not lift); a downstream error is returned too. Both are attempted regardless so a
+// release failure never silently drops calibration and vice versa.
+func (s *feedbackReleaseSink) Label(l contract.FeedbackLabel) error {
+	_, relErr := releaseVerdictForLabel(s.enf, l)
+	var fwdErr error
+	if s.next != nil {
+		fwdErr = s.next.Label(l)
+	}
+	return errors.Join(relErr, fwdErr)
+}
+
 // operatorClear is the operator clear seam: lift containment for a single
 // attributed flow by cookie, on demand (the full CLI/RPC surface can come later).
-// It returns ErrUnattributableClear for a cookie-0 request so an operator typo
+// It returns errClearUnattributable for a cookie-0 request so an operator typo
 // cannot silently no-op against "every unattributable flow". Release itself is
 // idempotent, so clearing an already-clear flow is safe.
 func operatorClear(enf enforcer, cookie uint64) error {
@@ -261,6 +377,23 @@ func main() {
 	}
 	defer enf.Close()
 
+	// Per-flow verdict ordering: a stale concurrent async verdict must not undo a
+	// newer one for the same cookie (a late low-tier Release re-opening a jail a
+	// later verdict programmed). The originating event timestamp is the per-flow
+	// ordinal; last-writer-wins by ordinal.
+	verdictSeq := newVerdictSequencer()
+
+	// Un-jail recovery. The ACTIVE Phase-1 path is de-escalation: when a later verdict
+	// for a flow drops below TierContain, enforceVerdictOrdered (below) Releases the
+	// jail — so a Tier-3 jail is no longer permanent. A SECOND trigger — an analyst
+	// false-positive label (FeedbackLabel{WasMalicious:false}) lifting containment via
+	// feedbackReleaseSink / releaseVerdictForLabel — is built and unit-tested but
+	// DORMANT: this binary has no label source (the engine runs the labeler; an
+	// engine->adapter label transport is Phase-2 / B5, docs/IDENTITY.md "Lifting
+	// containment"). It is intentionally NOT instantiated here, so nothing reads as
+	// wired-but-unreachable; Phase-2 builds feedbackReleaseSink{enf, next: calibration
+	// intake} and feeds it the label stream.
+
 	a, err := envoy.New(envoy.Config{
 		Engine:           eng,
 		Registry:         reg,
@@ -279,8 +412,14 @@ func main() {
 			// The verdict->kernel seam lives HERE (not in the thin adapter). It both
 			// PROGRAMS containment at Tier 2/3 and RELEASES it when a later verdict for
 			// the same flow drops below TierContain (de-escalation — without this a
-			// Tier-3 jail is never lifted in production).
-			act, applied, released, err := enforceVerdict(enf, v)
+			// Tier-3 jail is never lifted in production). The per-flow sequencer DROPS a
+			// stale async verdict (one older than the last applied for this cookie) so a
+			// late low-tier Release cannot lift a jail a newer verdict programmed.
+			act, applied, released, stale, err := enforceVerdictOrdered(enf, verdictSeq, v, ev.Timestamp.UnixNano())
+			if stale {
+				log.Printf("VERDICT DROPPED (stale, out-of-order) cookie=%#x tier=%d", v.Flow.SocketCookie, v.Tier)
+				return
+			}
 			if err != nil {
 				// A confirmed Tier-2/3 verdict we FAILED to program, OR a de-escalation
 				// we FAILED to release, is a containment miss — surface it prominently,

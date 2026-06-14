@@ -41,7 +41,12 @@ struct flow_key {
 	__u8  dst_ip[16];
 };
 
-// flow_val mirrors identity.Resolution.
+// flow_val mirrors identity.Resolution. The generation field is a layout-only
+// vestige kept so the C value struct stays byte-for-byte identical to the
+// bpf2go-generated sockopsFlowVal and identity.Resolution (asserted by the
+// layout test); it is NOT a live staleness signal. Userspace attribution
+// freshness is enforced by the socket-cookie-change re-read in
+// identity.StaleGuardResolver, not by this field. See docs/IDENTITY.md.
 struct flow_val {
 	__u64 cookie;
 	__u64 cgroup_id;
@@ -55,41 +60,6 @@ struct {
 	__type(key, struct flow_key);
 	__type(value, struct flow_val);
 } flow_cookies SEC(".maps");
-
-// gen_seq is the monotonic generation source: a single-entry array map holding a
-// host-global counter bumped on every PASSIVE_ESTABLISHED capture. It makes the
-// flow_val.generation a REAL staleness ordinal (was a hardcoded 1) so userspace can
-// detect that an entry it resolved was replaced by a newer connection on the SAME
-// 4-tuple — the missed-TCP_CLOSE + reused-ephemeral-port case that would otherwise
-// misattribute a verdict to a bystander (docs/IDENTITY.md, CLAUDE.md rule 4). A
-// fresh capture always has a strictly higher generation than any stale entry, so a
-// re-resolve that returns a higher generation than the one the caller is about to
-// enforce on is proof the entry churned and the cookie may no longer be that flow's.
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, __u64);
-} gen_seq SEC(".maps");
-
-// next_generation returns a strictly-increasing, host-global generation. The
-// read-modify-write is not atomic across CPUs, so two concurrent accepts can
-// briefly collide on a value; that only ever weakens the guard toward a MISS (a
-// refuse-to-enforce), never toward jailing a bystander, so the cheap non-atomic
-// path is acceptable here (a 0 is never returned — first capture is generation 1).
-static __always_inline __u32 next_generation(void)
-{
-	__u32 zero = 0;
-	__u64 *seq = bpf_map_lookup_elem(&gen_seq, &zero);
-	if (!seq)
-		return 1;
-	__u64 g = *seq + 1;
-	*seq = g;
-	// Fold to 32 bits; generation is an ordinal, not an index. 0 means "unset",
-	// so skip it on the (astronomically distant) wrap.
-	__u32 g32 = (__u32)g;
-	return g32 == 0 ? 1 : g32;
-}
 
 // build_key fills the host-canonical key from the sock_ops context.
 // local_port is HOST byte order; remote_port is NETWORK byte order; the ip4/ip6
@@ -134,7 +104,10 @@ int canary_sockops(struct bpf_sock_ops *skops)
 		build_key(skops, &k);
 		struct flow_val v = {};
 		v.cookie     = bpf_get_socket_cookie(skops);
-		v.generation = next_generation(); // real monotonic ordinal (was a stub 1)
+		// generation is a layout-only vestige (see flow_val); userspace freshness is
+		// the cookie-change re-read in StaleGuardResolver, not this field. Left as a
+		// constant — matches the committed .o (this is the reverted stub).
+		v.generation = 1;
 		// cgroup_id / pid are informational (the cookie is the join key); they are
 		// often not meaningful in the accept softirq context, so leave them 0.
 		bpf_map_update_elem(&flow_cookies, &k, &v, BPF_ANY);
