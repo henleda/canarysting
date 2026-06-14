@@ -123,43 +123,50 @@ type FlowsList struct {
 }
 
 // FlowFunnelView is the FleetWall windowed funnel: DISTINCT flows (sessions),
-// each counted ONCE at its HIGHEST tier, within this events window. It is the
-// two-rail companion to the cumulative T0 observed rail (CompletedFolds) — the
-// two are NEVER summed into one denominator (see Derive's EscalationView caption).
+// counted by CUMULATIVE REACH — each flow is counted in every stage it reached
+// (maxTier >= N), within this events window. A funnel drawn with › arrows is a
+// "reached at least tier N" cohort, NOT an exact-peak histogram: flows escalate
+// THROUGH containment to the jail, so an exact-peak-T2 count would read ~0 even
+// when most flows passed through containment. It is the two-rail companion to the
+// cumulative T0 observed rail (CompletedFolds) — the two are NEVER summed into one
+// denominator (see Derive's EscalationView caption).
 //
 // HONESTY (distinct-jailed discipline): Jailed here is the count of DISTINCT
-// flows whose peak tier == 3 — the ONLY honest headline "jailed" number. It is
+// flows whose peak tier >= 3 — the ONLY honest headline "jailed" number. It is
 // NOT attacker_cost.jailed (= cost.Summary.TierCounts[3], a per-EVENT count),
 // which is FORBIDDEN as a headline because one flow can emit many T3 events.
 //
-// DecoyTouched is every session (peak >= 1) — a "decoy-armed flow" is a DISTINCT
-// session, NOT a unique attacker (cookies recycle; sessions split at the 10-min
-// idle gap). DistinctActive == len(sessions) == DecoyTouched by construction
-// (boltevents stores only Tier>=1, so every stored session has peak >= 1).
+// DecoyTouched is every session (reached tier >= 1) — a "decoy-armed flow" is a
+// DISTINCT session, NOT a unique attacker (cookies recycle; sessions split at the
+// 10-min idle gap). DistinctActive == len(sessions) == DecoyTouched by
+// construction (boltevents stores only Tier>=1, so every stored session reached
+// tier >= 1).
 type FlowFunnelView struct {
-	// DecoyTouched = sessions with peak tier >= 1. Equals DeriveFlowsList(events,-1).TotalCount and equals DistinctActive (every stored session is tier >= 1).
+	// DecoyTouched = sessions that reached tier >= 1 (touched a decoy). Equals DeriveFlowsList(events,-1).TotalCount and equals DistinctActive.
 	DecoyTouched int `json:"decoy_touched"`
-	// Contained = sessions with EXACT peak tier == 2 (matches DeriveFlowsList(events,2).Filtered).
+	// Contained = sessions that reached tier >= 2 (containment / active response) this window. Equals FlowsReached(events,2).Filtered.
 	Contained int `json:"contained"`
-	// Jailed = sessions with EXACT peak tier == 3 (matches DeriveFlowsList(events,3).Filtered).
+	// Jailed = sessions that reached tier >= 3 (kernel jail) this window. Equals DeriveFlowsList(events,3).Filtered (== exact peak 3, since 3 is the top tier).
 	// The ONLY honest headline jailed number; never attacker_cost.jailed (per-event).
 	Jailed int `json:"jailed"`
 	// DistinctActive = total distinct sessions in the window (== DecoyTouched).
 	DistinctActive int `json:"distinct_active"`
 }
 
-// DeriveFlowFunnel builds the windowed DISTINCT-flow funnel. It reuses the SAME
-// session grouping + per-session peak-tier semantics as DeriveFlowsList (the
-// forward pass in buildFlowRow uses Tier >= maxTier), so the equalities below
-// hold by construction and the funnel can never disagree with the flows table:
+// DeriveFlowFunnel builds the windowed DISTINCT-flow funnel by CUMULATIVE REACH.
+// It reuses the SAME session grouping + per-session peak-tier semantics as
+// DeriveFlowsList (the forward pass in buildFlowRow uses Tier >= maxTier), so the
+// equalities below hold by construction and the funnel can never disagree with the
+// flows table:
 //
-//	DecoyTouched   == DeriveFlowsList(events,-1).TotalCount   (all sessions, peak>=1)
-//	Contained      == DeriveFlowsList(events, 2).Filtered     (exact peak==2)
-//	Jailed         == DeriveFlowsList(events, 3).Filtered     (exact peak==3)
+//	DecoyTouched   == DeriveFlowsList(events,-1).TotalCount   (all sessions, reached>=1)
+//	Contained      == FlowsReached(events, 2).Filtered        (reached>=2)
+//	Jailed         == FlowsReached(events, 3).Filtered        (reached>=3 == exact peak 3)
 //	DistinctActive == len(sessions)
 //
-// Each flow is counted ONCE, at its highest tier — this is a per-FLOW funnel, not
-// a per-event tier histogram (the per-event TierCounts live in cost.Summary).
+// Each flow is counted in EVERY stage it reached — this is a cumulative-reach
+// per-FLOW funnel, not a per-event tier histogram (the per-event TierCounts live
+// in cost.Summary).
 func DeriveFlowFunnel(events []intelligence.AdversaryInteractionEvent) FlowFunnelView {
 	sessions := groupByFlowSessions(events)
 	var fv FlowFunnelView
@@ -174,13 +181,13 @@ func DeriveFlowFunnel(events []intelligence.AdversaryInteractionEvent) FlowFunne
 			}
 		}
 		if peak >= 1 {
-			fv.DecoyTouched++ // distinct flows that armed (every stored session, by construction)
+			fv.DecoyTouched++ // reached tier >= 1 (every stored session, by construction)
 		}
-		if peak == 2 {
-			fv.Contained++ // EXACT peak T2
+		if peak >= 2 {
+			fv.Contained++ // reached tier >= 2 — escalated into containment/active response
 		}
-		if peak == 3 {
-			fv.Jailed++ // EXACT peak T3 — distinct sockets dropped in-kernel
+		if peak >= 3 {
+			fv.Jailed++ // reached tier >= 3 — distinct sockets dropped in-kernel
 		}
 	}
 	return fv
@@ -416,13 +423,38 @@ func mBreakdownFromEvents(events []intelligence.AdversaryInteractionEvent) *MBre
 }
 
 // DeriveFlowsList builds the flows table. Each SESSION is a row. tierFilter >= 0
-// keeps only rows whose PeakTier == tierFilter; -1 keeps all.
+// keeps only rows whose PeakTier == tierFilter (EXACT peak); -1 keeps all.
 func DeriveFlowsList(events []intelligence.AdversaryInteractionEvent, tierFilter int) FlowsList {
+	return flowsListFiltered(events, func(peak int) bool {
+		return tierFilter < 0 || peak == tierFilter
+	})
+}
+
+// FlowsReached builds the flows table filtered to sessions that REACHED at least
+// minTier (PeakTier >= minTier) — the cumulative-reach companion to
+// DeriveFlowsList's exact-peak filter, backing the funnel's reached stages. It
+// reuses the exact same session-building/sorting path as DeriveFlowsList, so
+// TotalCount is the same total distinct-session count and the equalities hold by
+// construction:
+//
+//	FlowsReached(events, 1).Filtered == DeriveFlowsList(events,-1).TotalCount (all sessions, reached>=1)
+//	FlowsReached(events, 3).Filtered == DeriveFlowsList(events, 3).Filtered   (reached>=3 == exact peak 3)
+func FlowsReached(events []intelligence.AdversaryInteractionEvent, minTier int) FlowsList {
+	return flowsListFiltered(events, func(peak int) bool {
+		return peak >= minTier
+	})
+}
+
+// flowsListFiltered is the shared session-build + sort path for the flows table.
+// keep decides, from a session's peak tier, whether its row is retained. Both
+// DeriveFlowsList (exact peak) and FlowsReached (cumulative reach) route through
+// here so the two can never disagree on TotalCount or row shape/order.
+func flowsListFiltered(events []intelligence.AdversaryInteractionEvent, keep func(peak int) bool) FlowsList {
 	sessions := groupByFlowSessions(events)
 	rows := make([]FlowRow, 0, len(sessions))
 	for _, s := range sessions {
 		row := buildFlowRow(s)
-		if tierFilter >= 0 && row.PeakTier != tierFilter {
+		if !keep(row.PeakTier) {
 			continue
 		}
 		rows = append(rows, row)

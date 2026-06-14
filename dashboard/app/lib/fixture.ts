@@ -25,8 +25,9 @@ export const fixtureOverview: Overview = {
   calibration: { calibrated: true, evidence_seen: 50, evidence_floor: 50 },
 
   // Fleet band: distinct armed flows this window (snapshot, not cumulative).
-  // Internally consistent with the backend invariants: decoy_touched == distinct_count
-  // == fixtureFlowsList.total_count (3); distinct_active == decoy_touched.
+  // Internally consistent with the cumulative-reach invariants: decoy_touched ==
+  // distinct_count == distinct_active == fixtureFlowsList.total_count (3 = rows reaching
+  // tier >= 1).
   armed_flows: { distinct_count: 3 },
 
   escalation: {
@@ -46,14 +47,15 @@ export const fixtureOverview: Overview = {
     ladder_denominator: 381,
     ladder_caption:
       'Two windows, not one denominator: T0 = cumulative observed-normal traffic (eBPF folds since start, pinned to the full bar); T1-3 fractions are of the attacker subtotal within the events window only. The two are intentionally not mixed.',
-    // The DISTINCT-flow funnel: each flow counted once at its highest tier, within
-    // this window (sessions, not events). decoy_touched == distinct_count ==
-    // fixtureFlowsList.total_count (3); distinct_active == decoy_touched. contained ==
-    // count of rows at exact peak T2 (1); jailed == count at exact peak T3 (1) ==
-    // kernel_containment.jailed_flows length.
-    flow_funnel: { decoy_touched: 3, contained: 1, jailed: 1, distinct_active: 3 },
+    // The DISTINCT-flow funnel by CUMULATIVE REACH: each flow counted in every
+    // stage it reached, within this window (sessions, not events). decoy_touched ==
+    // distinct_count == distinct_active == fixtureFlowsList.total_count (3 = rows with
+    // peak >= 1); contained == rows with peak >= 2 (2: the T2 + T3 rows); jailed ==
+    // rows with peak >= 3 (1 = kernel_containment.jailed_flows length). So
+    // /flows?min_tier=2 shows 2 rows and /flows?tier=3 shows 1.
+    flow_funnel: { decoy_touched: 3, contained: 2, jailed: 1, distinct_active: 3 },
     funnel_caption:
-      'Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows within this window, each flow once at its highest tier — not per event.',
+      'Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows that reached at least that tier within this window — a flow is counted in each stage it reached, not per event.',
     tier_ladder: [
       {
         tier: 0,

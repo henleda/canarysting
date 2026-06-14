@@ -15,6 +15,7 @@ const ITEMS: Item[] = [
   { href: '/intel?since=1h', label: 'Adversary Intel', hint: 'the compounding moat', match: (p) => p.startsWith('/intel') },
   { href: '/cost?since=1h', label: 'Attacker Cost', hint: 'the inversion', match: (p) => p.startsWith('/cost') },
   { href: '/precision?since=1h', label: 'Bystanders', hint: 'flow-precise, zero FP', match: (p) => p.startsWith('/precision') },
+  { href: '/credibility', label: 'Credibility', hint: 'learned state · M · calibration', match: (p) => p.startsWith('/credibility') },
   { href: '/flows?since=1h', label: 'Flows', hint: 'per-tier sessions', match: (p) => p.startsWith('/flows') || p.startsWith('/flow') },
 ];
 

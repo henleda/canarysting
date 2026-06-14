@@ -28,7 +28,13 @@ export function flowDetailURL(cookie: string, since: string, session?: number): 
   const s = session && session > 0 ? `&session=${session}` : '';
   return `/api/flow/${cookie}?since=${since}${s}`;
 }
-export function flowsURL(tier: number, since: string): string {
+// flowsURL builds the /api/flows request. `minTier` (1..3, optional) selects the
+// CUMULATIVE-reach cohort (rows that reached >= minTier) and, when set, takes
+// precedence over the exact `tier` filter — matching the backend's two params.
+export function flowsURL(tier: number, since: string, minTier?: number): string {
+  if (minTier && minTier >= 1 && minTier <= 3) {
+    return `/api/flows?since=${since}&min_tier=${minTier}`;
+  }
   return `/api/flows?since=${since}${tier >= 0 ? `&tier=${tier}` : ''}`;
 }
 export function costURL(since: string): string {
@@ -45,6 +51,7 @@ async function fetchJSON<T>(url: string, label: string): Promise<T> {
 }
 export const fetchFlowDetail = (cookie: string, since: string, session?: number) =>
   fetchJSON<FlowDetail>(flowDetailURL(cookie, since, session), 'flow');
-export const fetchFlows = (tier: number, since: string) => fetchJSON<FlowsList>(flowsURL(tier, since), 'flows');
+export const fetchFlows = (tier: number, since: string, minTier?: number) =>
+  fetchJSON<FlowsList>(flowsURL(tier, since, minTier), 'flows');
 export const fetchCost = (since: string) => fetchJSON<CostBreakdown>(costURL(since), 'cost');
 export const fetchRecon = (since: string) => fetchJSON<ReconTimeline>(reconURL(since), 'recon');
