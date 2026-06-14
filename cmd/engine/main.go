@@ -23,6 +23,7 @@ import (
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
+	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
 func main() {
@@ -37,6 +38,14 @@ func main() {
 		windowBucketer = flag.Bool("window-bucketer", false, "use the coarse M7 learning-window bucketer (8 buckets) instead of the production 168-bucket default")
 		maxGap         = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot (0 => default)")
 		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build, instead of refusing to start")
+
+		// mTLS for the engine gRPC surface (the only out-of-process seam). The
+		// surface drives kernel containment, so it is mTLS or fail-closed: set all
+		// three to serve mTLS; leave all three empty to serve bare loopback (warned)
+		// only — a routable plaintext addr is refused at startup.
+		grpcTLSCert     = flag.String("grpc-tls-cert", "", "engine gRPC server certificate (PEM); requires -grpc-tls-key and -grpc-tls-client-ca")
+		grpcTLSKey      = flag.String("grpc-tls-key", "", "engine gRPC server private key (PEM)")
+		grpcTLSClientCA = flag.String("grpc-tls-client-ca", "", "CA bundle (PEM) every adapter client certificate must chain to (enables mTLS RequireAndVerifyClientCert)")
 	)
 	flag.Parse()
 
@@ -66,7 +75,8 @@ func main() {
 	}
 
 	if *grpcAddr != "" {
-		if err := serveGRPC(*grpcAddr, built.Engine, built.OutcomeReporter); err != nil {
+		tls := grpccreds.ServerConfig{CertFile: *grpcTLSCert, KeyFile: *grpcTLSKey, ClientCAFile: *grpcTLSClientCA}
+		if err := serveGRPC(*grpcAddr, built.Engine, built.OutcomeReporter, tls); err != nil {
 			log.Fatalf("engine: gRPC server: %v", err)
 		}
 		return
