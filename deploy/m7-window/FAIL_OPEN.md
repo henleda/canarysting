@@ -16,10 +16,18 @@ would hurt, fail-closed only where it's safe**:
 | 2 Contain | attrition | **fail-open by default** (operator-configurable) | a contain mistake should not drop traffic unless the operator opts in. |
 | 3 Jail | kernel drop | **fail-closed** (operator-configurable) | the most conservative inline posture for a confirmed multi-touch attacker. |
 
+This table is the ADAPTER's inline `FailPolicy` (`adapters/envoy/policy.go`) — what
+the proxy does on a *canary touch* when the engine is unreachable/slow. It is the
+authoritative answer to "what happens to a request when the engine is down,"
+because the proxy is the thing in the request path. (Note: the engine's own
+`tiers.DefaultConfig` independently defaults Tier-2 fail-CLOSED — a different,
+internal decision point; the adapter policy above is what governs the live request.)
+
 **Proven, not asserted:** `adapters/envoy/policy_test.go::TestFailPolicyDefault`
-(T0/T1 fail-open, T2 fail-open by default, T3 fail-closed) and
-`TestFailPolicyConfigurable` (the operator can flip T2/T3). The fail-CLOSED path
-on an inline timeout is pinned by `adapter_test.go::TestProcessInlineTimeoutFailsClosed`.
+(adapter: T0/T1 fail-open, T2 fail-open by default, T3 fail-closed) and
+`TestFailPolicyConfigurable` (the operator can flip T2/T3). The fail-closed path
+for a **Tier-3** inline timeout is pinned by
+`adapter_test.go::TestProcessInlineTimeoutFailsClosed`.
 
 Crucially: **only a canary touch ever reaches the inline decision at all.** Every
 non-canary request CONTINUEs immediately with **no engine round-trip** (the common
@@ -33,8 +41,10 @@ configured ceiling). On exceed, it takes the per-tier fail policy above — it n
 hangs the request. So the worst-case added latency on the *only* requests that
 consult the engine (canary touches — which legitimate workloads never make) is
 `InlineTimeout`, and on legitimate traffic it is **zero** (no round-trip). The T1
-bounded-scan fix (`persist.RangeEventsRecent`) keeps the engine's own Submit
-sub-second even on a days-old store, so the timeout is a backstop, not the norm.
+bounded-scan fix (`persist.RangeEventsRecent`) keeps the **per-scope event-log
+scan** sub-second even on a days-old store (that unbounded scan was the prior
+bottleneck), so the verdict returns well inside the hold and `InlineTimeout` is a
+backstop, not the norm.
 
 ## 3. Default async — the kernel enforces, the proxy doesn't block
 

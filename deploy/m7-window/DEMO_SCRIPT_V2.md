@@ -2,8 +2,9 @@
 
 > **This SUPERSEDES `DEMO_SCRIPT.md` (the Option-B dual-dashboard script).** The
 > rebuild (PRs #33/#34/#35/#36/#37) made the two-box split unnecessary: one box now
-> runs **observe ON** (calibrated, M live) **and** serves sub-second verdicts (the
-> bounded-scan fix, T1), driven by a continuous traffic simulator (T2). Everything
+> runs **observe ON** (calibrated, M live) **and** serves a fast inline verdict (the
+> T1 bounded-scan fix removed the days-old-store scan bottleneck; the adapter
+> bounds the inline hold), driven by a continuous traffic simulator (T2). Everything
 > below is **one box, one screen.**
 
 ## The wedge (north star — lead with this, in these words)
@@ -34,7 +35,7 @@ the escalation. No scripted puppetry; you narrate a live system.
 ## Pre-flight (the one-box staging recipe)
 
 1. **Network/IP:** `curl ifconfig.me` matches the box SG `:22` CIDR; re-authorize if drifted.
-2. **Engine — observe ON, M live, fast verdicts:** the demo-box engine runs with `-observe-cgroup` (M live; the T1 bounded scan keeps Submit sub-second), `-baseline-db`, `-contain-inline`, `-demo-escalation`, `-consume -shared-spool <spool> -sim-peers-demo`, `-dashboard-tap-addr 0.0.0.0:8088`. Confirm `/raw/state` shows `Calibrated:true`, `baseline_live:true`, and `base_m > 1`.
+2. **Engine (`cmd/staged-range`) — observe ON, M live, fast verdicts:** runs with `-observe-cgroup` (M live; the T1 bounded scan removed the days-old-store scan bottleneck so the inline verdict returns well inside the adapter's hold), `-baseline-db`, `-contain-inline`, `-demo-escalation`, `-consume -shared-spool <spool> -sim-peers-demo`, `-dashboard-tap-addr 0.0.0.0:8088`, **plus the REQUIRED `-ground-truth-registry <file> -i-am-running-a-staged-range`** (it refuses to start without them). Confirm `/raw/state` shows `calibration.Calibrated:true`, `baseline.Live:true`, **`baseline.BucketSufficient:true` for the active time bucket** (else M=1.0 regardless of the other pills, and "the baseline sharpens the score" won't be demonstrable), and `base_m > 1` on a touched flow.
 3. **Traffic sim (T2):** `deploy/m7-window/sim-setup.sh` (benign + recon `.112` + malicious `.111`, %-malicious, fail-closed `$20/day` cap, live Tier-C OFF by default). Confirm `canarysting-simdriver` is active.
 4. **Simulated peers (T4):** `deploy/k3-boxes/run-sim-peers.sh` → ships crossed patterns + the `.simulated` marker to the shared spool; the engine auto-discloses "simulated" on the cross-customer panel.
 5. **Tunnel:** `ssh -i ~/.ssh/canarysting-dev -L 3001:127.0.0.1:3001 ubuntu@<box>` → `localhost:3001`. Keep a warm spare SSH session.
@@ -78,7 +79,7 @@ the escalation. No scripted puppetry; you narrate a live system.
 | A live attacker run flakes / hits the cyber-safeguard refusal | fall back to the $0 cassette (`run-attack.sh --cassette /tmp/m9-demo3.cassette`); narrate it as the recording. |
 | Tunnel drops / tab stale | warm-spare SSH; `curl ifconfig.me` + re-authorize `:22`; reload the tab. |
 | A sim/engine process died | restart just that unit; do NOT re-run setup live (it wipes warm state). |
-| Cross-customer panel doesn't say "simulated" | the `.simulated` marker is missing — re-run `run-sim-peers.sh` (it writes the marker) or add `-sim-peers-demo`. NEVER demo the panel without the disclosure. |
+| Cross-customer panel doesn't say "simulated" | the `.simulated` marker is missing/unread — re-run `run-sim-peers.sh` (writes the marker) **and restart `staged-range`** (the marker is read at startup only, not polled), or restart it with `-sim-peers-demo`. NEVER demo the panel without the disclosure. |
 | CISO presses on deployment risk | § FAIL_OPEN.md — fail-open at Tier 1, fail-closed at Tier 3, bounded inline hold; the proof is the unit tests, cited there. |
 
 ## Appendix — economic attrition (only if asked)

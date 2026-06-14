@@ -22,9 +22,10 @@ or drift — it's zero *by construction*.
 
 **The challenge:** from any identity, with any traffic — recon, scanning, weird
 adjacencies, volume floods, novel identities, slow-and-low — get CanarySting to
-**tag, contain, tarpit, or jail a flow that never touched a decoy.** Watch the
-ReconLive panel: it will *surface* your most anomalous flows ("we see you") and
-take **no action** on any of them. The only way to a verdict is a decoy touch.
+**arm a response (tag/contain/tarpit/jail) on a flow that touched no decoy.** Watch
+the ReconLive panel: it *surfaces* your most anomalous flows ("we see you") as
+observe-only — **none has armed a response** (none reached Tier 1+). The only path
+to a verdict is a decoy touch that crosses the threshold.
 
 **What it proves if they fail:** the zero-FP guarantee is structural, not a knob.
 
