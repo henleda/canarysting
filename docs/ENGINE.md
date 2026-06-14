@@ -24,6 +24,8 @@ One weighted function. **There is no "count mode" and "weighted mode"** — only
 
 Canary interaction events carry the canary type and the flow identity. The score is always computed *within a scope* — never across scopes.
 
+- **Per-flow state is bounded (memory safety, not a learned parameter).** The scorer keeps windowed touch state per (scope, socket cookie). Over a multi-week pilot of real east-west traffic that map would otherwise grow without bound (one entry per distinct flow, forever) and OOM the engine. `WindowedScorer` reaps it on every `Score` call, driven by the event's own logical time so it stays deterministic and race-clean: (1) it drops any flow whose newest touch has aged out of the correlation window — an idle flow contributes a zero base on its next touch anyway, so this changes no active flow's score; and (2) it imposes a per-scope ceiling (`DefaultMaxCookiesPerScope`, override with `WithMaxCookiesPerScope`) that, only under a genuine flood of concurrently in-window flows, evicts the least-recently-touched flows first. This is a hard memory ceiling, NOT a learned parameter — it has no uncalibrated default / feedback / evidence-floor lifecycle because it never influences a score; an evicted flow simply scores from scratch on its next touch, exactly as a never-seen flow would.
+
 ## Tiers (`tiers/`)
 
 Four tiers (see `docs/ARCHITECTURE.md` §4). The engine maps the current score to a tier using thresholds that come from `calibration/`.
