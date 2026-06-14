@@ -91,7 +91,6 @@ export default function AdversaryIntelligence({ intel }: { intel: AdversaryIntel
 // Sybil-resistance). Renders nothing when this deployment is not consuming the network.
 function CrossCustomerSignal({ cc }: { cc: CrossCustomerView | undefined }) {
   if (!cc || cc.consuming <= 0) return null;
-  const pct = Math.round((cc.similarity || 0) * 100);
   return (
     <div style={{ marginTop: 8, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
       <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-dim)', marginBottom: 4 }}>
@@ -99,9 +98,10 @@ function CrossCustomerSignal({ cc }: { cc: CrossCustomerView | undefined }) {
       </div>
       {cc.matched ? (
         <div style={{ fontSize: 11, lineHeight: 1.45, color: 'var(--sting)' }}>
-          ⚠ matches a pattern confirmed by ≥{cc.threshold} deployments · sim {pct}%
+          ✓ recognized — confirmed by ≥{cc.threshold} deployments
           <div className="faint" style={{ fontSize: 9, color: 'var(--ink-dim)', marginTop: 2 }}>
-            recognized from the network — detection sharpened (feeds the baseline multiplier)
+            coarse cross-customer fingerprint match · detection sharpened (feeds the baseline multiplier). The
+            shared pattern is privacy-preserving — the discriminating detail never crosses a deployment boundary.
           </div>
         </div>
       ) : (
