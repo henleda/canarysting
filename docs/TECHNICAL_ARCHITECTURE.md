@@ -237,3 +237,99 @@ Throughout, the canary touch is the only thing that ever triggers a response, an
 - The operator review surface for the proposed benign-exclusion set and canary placement.
 - Bounds and a kill switch on attrition resource use, so the sting cannot exhaust the host.
 - The freedom-to-operate review noted in `ARCHITECTURE.md`, kept current as the baseline and attrition mechanisms are detailed.
+
+---
+
+## 12. Privileged eBPF CI: testing the kernel datapath for real
+
+Section 2.3 calls the socket-cookie identity join "load-bearing" and Section 9
+names it as "fiddly engineering that has to be correct or the product is
+dangerous." The kernel enforcement datapath — jail precision, fail-open-on-miss,
+the rate-limit token-bucket math, and the close-delete socket lifecycle — is the
+single most catastrophic-if-wrong code path in the system. A jailed bystander is
+a critical failure (`CLAUDE.md` safety rule). So those behaviors must be tested
+*by actually loading the eBPF programs into a kernel and attaching them to a
+cgroup*, not merely by compiling the C.
+
+### 12.1 Two CI jobs, two different jobs
+
+The CI (`.github/workflows/ci.yml`) has two eBPF-related jobs:
+
+- **`ebpf` (clang build).** Compiles `bpf/**/*.bpf.c` to BPF objects with clang,
+  generating `vmlinux.h` from the runner's kernel BTF. This is a toolchain smoke
+  test: it proves the C still compiles for the BPF target. It does **not** run
+  anything.
+- **`ebpf-run` (privileged kernel datapath tests).** Actually loads the kernel
+  programs and runs the ~13 root-gated behavioral tests in `bpf/enforce`,
+  `bpf/observe`, and `bpf/sockops`. These tests `t.Skip()` whenever `euid != 0`
+  (they need `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_PERFMON` and a cgroup-v2 attach), so
+  before this job they had **zero** automated behavioral coverage on a merge.
+
+### 12.2 Why no clang or `vmlinux.h` is needed to *run* the tests
+
+The bpf2go-generated `*_bpfel.o` objects and `*_bpfel.go` wrappers are **committed
+to the repo** and embedded via `//go:embed`. So running the behavioral tests needs
+only a BPF-capable Linux kernel with a cgroup-v2 unified hierarchy and the right
+capabilities — not the build toolchain. This is why `ebpf-run` can run on a stock
+GitHub-hosted runner inside a privileged container, with no kernel build step.
+
+(If `bpf/**/*.bpf.c` changes, regenerate the committed objects with `go generate
+./bpf/...` on a Linux box with clang + a generated `vmlinux.h`; the `ebpf` build
+job and `make bpf` exist to catch a C source that no longer compiles.)
+
+### 12.3 What is config-complete vs needs-operator-setup
+
+**Config-complete (works on GitHub-hosted runners, no infra to provision):**
+`ubuntu-latest` is a real VM (not a container), so its kernel exposes BPF syscalls
+and a cgroup-v2 unified hierarchy at `/sys/fs/cgroup`. The `ebpf-run` job runs its
+test step inside a `--privileged --cgroupns=host` container that bind-mounts
+`/sys/fs/cgroup`, so the test process holds the needed caps and its loopback test
+sockets live in the same cgroup the programs attach to. The job runs the tests with
+`go test -json` and then **asserts the tests did not silently skip** by parsing that
+structured event stream rather than grepping human-readable output: it fails the job
+if *any* root-gated test reports `skip` (the false-green signal — euid != 0, missing
+caps, or no cgroup-v2) and enforces a PASS floor across every load-bearing proof
+(`TestEnforceJailIsPrecise`, `TestFailOpenOnMiss`, `TestRateLimitSustainedThroughput`,
+`TestCloseDeleteRemovesEntry`, `TestSockopsCookieOracle`, `TestObserveNeverDropsAPacket`),
+so a green check cannot come from a job that skipped everything *or* from a proof
+that was quietly renamed/removed and stopped running. The parser is a stdlib-only Go
+program (`go` is already in the job's container; it needs no `python3`), kept outside
+the module checkout so it does not join the build. The job also caches the Go module
+download cache (`/go/pkg/mod`, keyed on `go.sum`) since the bare `golang` container
+gets no automatic module caching. This requires no operator action beyond merging the
+workflow.
+
+**Needs-operator-setup (one click, GitHub permissions, not config):** marking
+`ebpf-run` a **required status check** so it gates merges to `main`/`release`.
+GitHub does not let a workflow mark itself required; an admin sets it once in the
+repo's branch-protection rules:
+
+> Settings → Branches → Branch protection rule for `main` (and `release`) →
+> "Require status checks to pass before merging" → add
+> **`ebpf (privileged kernel datapath tests)`** (the job's `name:`).
+
+Until that box is checked the job runs on every PR and is visible/red on failure,
+but it does not *block* merge.
+
+### 12.4 If the hosted-runner path ever stops working
+
+GitHub could change hosted-runner kernels or container privileges. Two fallbacks,
+in order of preference, keep the datapath tested:
+
+1. **vmtest/QEMU job.** Run the tests against a known-good kernel image in QEMU
+   (e.g. the `cilium/little-vm-helper` or `vmtest` pattern the cilium/ebpf project
+   itself uses). This pins the kernel version and removes the host-runner
+   dependency, at the cost of a heavier job.
+2. **Self-hosted runner.** Provision a Linux host (bare metal or a VM with nested
+   virt) with cgroup-v2 unified and a kernel ≥ 5.10, label it `ebpf`, and change
+   `runs-on:` to `[self-hosted, ebpf]`. The runner user needs root (or the three
+   caps) and write access to `/sys/fs/cgroup`. Nothing else in the job changes.
+
+### 12.5 Running the datapath tests locally
+
+`make test-ebpf` runs the same root-gated tests on a Linux box. It refuses to run
+on a non-Linux host or as a non-root user (with a clear message) rather than
+silently skipping. Invoke it as `sudo -E make test-ebpf` so the test binary keeps
+the caller's `GOPATH`/`GOCACHE`. The race detector is intentionally **off** for
+this target: the kernel datapath is the unit under test, and `-race` perturbs the
+sub-millisecond loopback timing the rate-limit assertions depend on.

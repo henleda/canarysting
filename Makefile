@@ -52,6 +52,33 @@ vet:
 test:
 	$(GO) test -race ./...
 
+# Packages whose behavioral tests are root-gated: they t.Skip() unless euid==0
+# because they load/attach real eBPF programs to a cgroup-v2 hierarchy and key on
+# the true kernel socket cookie. The committed *_bpfel.o objects are embedded, so
+# these run WITHOUT clang/vmlinux.h — they need only a BPF-capable Linux kernel
+# (cgroup-v2 unified) and CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON (i.e. root, or a
+# privileged container). See docs/TECHNICAL_ARCHITECTURE.md "Privileged eBPF CI".
+EBPF_PKGS := ./bpf/enforce/... ./bpf/observe/... ./bpf/sockops/...
+
+## test-ebpf: run the root-gated kernel-datapath tests (Linux + root only)
+# These are the jail-precision / fail-open / rate-limit / close-delete behavioral
+# proofs that t.Skip() off-root. Run as root, e.g.  sudo -E make test-ebpf
+# (race detector OFF: the kernel datapath is the unit under test, not Go races,
+# and -race inflates loopback timing the rate-limit assertions depend on).
+.PHONY: test-ebpf
+test-ebpf:
+ifneq ($(UNAME_S),Linux)
+	@echo "test-ebpf: kernel-datapath tests run on Linux only (this is $(UNAME_S))."
+	@echo "test-ebpf: use the privileged CI job or a Linux box; see docs/TECHNICAL_ARCHITECTURE.md."
+	@exit 1
+else
+	@if [ "$$(id -u)" != "0" ]; then \
+		echo "test-ebpf: must run as root (CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON + cgroup-v2 attach)."; \
+		echo "test-ebpf: re-run as  sudo -E make test-ebpf"; exit 1; \
+	fi
+	$(GO) test -v -count=1 $(EBPF_PKGS)
+endif
+
 ## fmt: format all Go source with gofmt
 .PHONY: fmt
 fmt:
