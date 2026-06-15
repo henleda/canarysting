@@ -15,18 +15,20 @@ export default function KernelContainment({ containment }: { containment: Kernel
   return (
     <section className="cell">
       <PanelHead title="Kernel containment" preTags={[{ label: 'eBPF' }]} />
-      {hasAny ? (
-        <div className="sockets">
-          {jailed.map((f) => (
-            <Sock key={`jail-${f.flow_id_hex}`} flow={f} jailed />
-          ))}
-          {ok.map((f) => (
-            <Sock key={`ok-${f.flow_id_hex}`} flow={f} jailed={false} />
-          ))}
-        </div>
-      ) : (
-        <div className="precis-note faint">no contained sockets in window — kernel enforcement idle, observing.</div>
-      )}
+      <div className="cell-scroll">
+        {hasAny ? (
+          <div className="sockets">
+            {jailed.map((f) => (
+              <Sock key={`jail-${f.flow_id_hex}`} flow={f} jailed />
+            ))}
+            {ok.map((f) => (
+              <Sock key={`ok-${f.flow_id_hex}`} flow={f} jailed={false} />
+            ))}
+          </div>
+        ) : (
+          <div className="precis-note faint">no contained sockets in window — kernel enforcement idle, observing.</div>
+        )}
+      </div>
       <Link href="/precision" className="precis-note-link">
         <div className="precis-note">
           the offending socket&apos;s egress is dropped in-kernel by its cookie.{' '}

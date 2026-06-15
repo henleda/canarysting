@@ -73,7 +73,7 @@ body::before {
 .navitem.active .navitem-label { color: var(--canary); }
 .navitem.active .navitem-hint { color: var(--ink-dim); }
 
-.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.3fr 1.4fr auto; }
+.app { height: 100%; min-height: 0; display: grid; grid-template-rows: 60px 1.3fr 0.9fr 1fr; }
 
 /* Tier-0 drill-down honest empty-state (no per-flow records by design). */
 .t0-empty { border: 1px solid rgba(47,227,154,0.28); border-radius: 8px; padding: 22px 24px;
@@ -456,21 +456,39 @@ body { min-height: 100%; }
 .fs-fraction b { color: var(--ink); }
 .fs-fraction:hover { color: var(--canary); }
 
-/* Row 4 — LiveSpotlight: the demoted single-flow strip. Compact, one row. */
-.live-strip { background: var(--panel); padding: 18px 32px; overflow: hidden; display: grid;
-  grid-template-columns: auto 1fr auto; align-items: center; gap: 26px; }
+/* Row 3 — KernelContainment + BystanderHealth: shorter, equal-height cells whose
+   middle list scrolls. The .cell already has overflow:hidden and the row has
+   min-height:0 via `.app > *`; making the cell a flex column lets the list flex to
+   fill and scroll while PanelHead (top) + note/precis footer (bottom) stay fixed. */
+.hero .cell { display: flex; flex-direction: column; }
+.cell-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* Row 4 — LiveSpotlight: the full-width live-attacker strip. A header line over a
+   horizontally scrollable track of fixed-width armed-flow cards. (REPLACES the old
+   3-col grid strip.) */
+.live-strip { background: var(--panel); padding: 14px 24px; display: flex; flex-direction: column;
+  gap: 10px; min-height: 0; overflow: hidden; }
 .live-strip.empty { display: flex; align-items: center; justify-content: center; }
 .live-strip .ls-empty { font-size: 11px; letter-spacing: 0.12em; }
-.ls-lead { min-width: 0; }
-.ls-eyebrow { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--sting); margin-bottom: 6px; }
-.ls-id { display: flex; align-items: baseline; gap: 12px; }
-.ls-id .ip { font-family: var(--expanded); font-weight: 800; font-size: 20px; letter-spacing: 0.01em; }
-.ls-id .role { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+.ls-head { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-faint); }
+.ls-track { display: flex; gap: 12px; overflow-x: auto; flex: 1; min-height: 0; align-items: stretch;
+  padding-bottom: 6px; }
+.ls-card { flex: 0 0 auto; width: 210px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-2); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  text-decoration: none; }
+.ls-card.live { border-color: rgba(255,77,96,0.5); background: rgba(255,77,96,0.06); }
+.ls-card .cookie { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.ls-card .meta { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; color: var(--ink-faint);
+  display: flex; align-items: center; gap: 8px; }
+.ls-card .meta b { color: var(--canary); }
+.ls-card .live-dot { color: var(--sting); letter-spacing: 0.12em; }
+.ls-card .role { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--sting); border: 1px solid rgba(255,77,96,0.5); border-radius: 2px; padding: 2px 7px;
   background: rgba(255,77,96,0.08); }
-.ls-spark { min-width: 0; }
-.ls-spark .spark { margin: 0; height: 28px; }
-.ls-score { text-align: right; flex-shrink: 0; }
-/* NEW compact score — the signed-off 104px .score is intentionally untouched. */
+.ls-card .tier-badge { font-size: 9px; letter-spacing: 0.06em; border: 1px solid; border-radius: 2px;
+  padding: 2px 6px; }
+.ls-card .spark { margin: 4px 0 0; height: 24px; }
+/* Compact score — the signed-off 104px .score is intentionally untouched. */
 .score-strip { font-family: var(--expanded); font-weight: 900; font-size: 28px; line-height: 0.9;
   color: var(--sting); text-shadow: 0 0 18px rgba(255,77,96,0.4); letter-spacing: -0.01em; }
