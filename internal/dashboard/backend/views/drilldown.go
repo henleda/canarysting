@@ -113,6 +113,11 @@ type FlowRow struct {
 	TotalCost    FlowCost  `json:"total_cost"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
+	// SparkSeries is this session's own normalized score progression (0..1, same
+	// shape escalation.flow uses). Set ONLY by AttackerFlowCards for the wall's
+	// live-attacker strip; omitted (omitempty) on the /flows table + /cost by-flow
+	// rows so those payloads don't carry per-row arrays they never render.
+	SparkSeries []float64 `json:"spark_series,omitempty"`
 }
 
 // FlowsList is the flows-table payload.
@@ -466,6 +471,40 @@ func flowsListFiltered(events []intelligence.AdversaryInteractionEvent, keep fun
 		return rows[i].LastSeen.After(rows[j].LastSeen)
 	})
 	return FlowsList{Flows: rows, TotalCount: len(sessions), Filtered: len(rows)}
+}
+
+// AttackerFlowCards builds the wall's live-attacker strip: one FlowRow per session,
+// RECENCY-ordered (LastSeen desc, most-recent first — a live feed), capped to cap.
+//
+// It is the deliberate counterpart to DeriveFlowsList (which sorts peak-tier desc
+// for the /flows table). A peak-tier sort makes the strip read as a wall of
+// identical top-tier jails; recency order surfaces the real Tag/Contain/Jail mix as
+// it actually arrives. Each row reuses buildFlowRow, so peak_tier/score/verdict/
+// touch_count/last_seen match DeriveFlowsList exactly — AND additionally sets
+// SparkSeries to THAT session's own normalized score progression (the same
+// normalizeSpark helper escalation.flow uses), so a short low Tag flow gets a short
+// low spark and a climbing Jail flow gets a rising one. Every returned row has a
+// non-empty spark.
+func AttackerFlowCards(events []intelligence.AdversaryInteractionEvent, cap int) []FlowRow {
+	sessions := groupByFlowSessions(events)
+	rows := make([]FlowRow, 0, len(sessions))
+	for _, s := range sessions {
+		row := buildFlowRow(s)
+		// s.Events is ascending by timestamp (groupByFlowSessions guarantees it), so the
+		// score slice is in timestamp order — exactly what normalizeSpark expects.
+		scores := make([]float64, 0, len(s.Events))
+		for _, e := range s.Events {
+			scores = append(scores, e.Score)
+		}
+		row.SparkSeries = normalizeSpark(scores, s.Events)
+		rows = append(rows, row)
+	}
+	// Live feed: most-recent first.
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].LastSeen.After(rows[j].LastSeen) })
+	if cap >= 0 && len(rows) > cap {
+		rows = rows[:cap]
+	}
+	return rows
 }
 
 // buildFlowRow does the forward pass for one session.

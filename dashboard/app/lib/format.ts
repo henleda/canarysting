@@ -54,6 +54,24 @@ export function fmtOffsetLabel(offsetSec: number): string {
   return `−${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+// fmtAgo: an RFC3339 timestamp -> a relative "Xs ago" / "Xm ago" / "Xh ago"
+// ("just now" under 5s). nowMs is the "now" reference in epoch ms (pass the
+// snapshot's `at` so the feed reads relative to the data, not the wall clock);
+// falls back to Date.now(). Invalid/empty dates -> "" (the caller renders nothing).
+export function fmtAgo(iso: string, nowMs?: number): string {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const now = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+  const sec = Math.max(0, Math.floor((now - t) / 1000));
+  if (sec < 5) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
+
 // utcClock: "HH:MM:SS UTC" for the live topbar clock (matches the prototype).
 export function utcClock(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');

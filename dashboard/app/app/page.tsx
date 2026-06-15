@@ -40,7 +40,7 @@ export default function OperationsPage() {
       {/* Row 4 — the demoted single-flow spotlight (1 of N active). Credibility
           moved to its own /credibility page so its baseline-multiplier feature
           bars get full height instead of being clipped in this short strip. */}
-      <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} status={effectiveStatus} />
+      <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} status={effectiveStatus} at={snapshot?.at} />
     </div>
   );
 }

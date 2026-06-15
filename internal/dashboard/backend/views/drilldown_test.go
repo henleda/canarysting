@@ -181,6 +181,100 @@ func TestDeriveFlowsListTierFilterAndSort(t *testing.T) {
 	}
 }
 
+// --- AttackerFlowCards (the wall's live-attacker strip) ---
+
+// TestAttackerFlowCards pins the live-feed contract: rows come back LastSeen desc
+// (most-recent first), every row carries a non-empty per-flow spark, the result is
+// capped, and — unlike DeriveFlowsList's peak-tier sort — the mixed Tag/Contain/Jail
+// tier mix is PRESERVED in arrival order rather than collapsed to only the top tier.
+func TestAttackerFlowCards(t *testing.T) {
+	// Mixed-tier fleet, distinct cookies, arriving oldest→newest as T3, T1, T2 so a
+	// peak-tier sort (T3,T2,T1) would REORDER them — recency must keep T2,T1,T3 desc.
+	evs := []intelligence.AdversaryInteractionEvent{
+		// 0x30: jails first (oldest)
+		evScore(0x30, 2, "contain", ".env", 0, 4),
+		evScore(0x30, 3, "jail", ".aws/credentials", 5, 9),
+		// 0x10: a lone Tag a bit later
+		evScore(0x10, 1, "tag", ".env", 20, 2),
+		// 0x20: contains last (most-recent)
+		evScore(0x20, 1, "tag", ".env", 30, 1),
+		evScore(0x20, 2, "contain", "backup/db.sql", 40, 5),
+	}
+	cards := AttackerFlowCards(evs, 24)
+	if len(cards) != 3 {
+		t.Fatalf("want 3 cards (one per session), got %d: %+v", len(cards), cards)
+	}
+	// Recency order: 0x20 (last_seen 40s) → 0x10 (20s) → 0x30 (5s).
+	wantOrder := []string{"0x20", "0x10", "0x30"}
+	for i, want := range wantOrder {
+		if cards[i].FlowIDHex != want {
+			t.Fatalf("card %d = %s, want %s (recency desc): %+v", i, cards[i].FlowIDHex, want, cards)
+		}
+	}
+	// LastSeen strictly descending.
+	for i := 1; i < len(cards); i++ {
+		if cards[i-1].LastSeen.Before(cards[i].LastSeen) {
+			t.Fatalf("cards not LastSeen-desc at %d: %+v", i, cards)
+		}
+	}
+	// Tier mix preserved (NOT only the top tier): T1 + T2 + T3 all present.
+	mix := map[int]bool{}
+	for _, c := range cards {
+		mix[c.PeakTier] = true
+		// Every card has its own non-empty spark.
+		if len(c.SparkSeries) == 0 {
+			t.Fatalf("card %s has empty spark series; every card must carry its own", c.FlowIDHex)
+		}
+	}
+	if !mix[1] || !mix[2] || !mix[3] {
+		t.Fatalf("tier mix not preserved (want T1,T2,T3 all present), got %+v", mix)
+	}
+	// Per-flow spark reflects THAT flow's climb: the lone Tag (0x10) has a single
+	// sample; the Jail (0x30) climbs over two events to its peak (1.0).
+	var tag, jail FlowRow
+	for _, c := range cards {
+		if c.FlowIDHex == "0x10" {
+			tag = c
+		}
+		if c.FlowIDHex == "0x30" {
+			jail = c
+		}
+	}
+	if len(tag.SparkSeries) != 1 {
+		t.Fatalf("Tag flow spark should have one sample (one event), got %+v", tag.SparkSeries)
+	}
+	if len(jail.SparkSeries) != 2 || jail.SparkSeries[len(jail.SparkSeries)-1] != 1.0 {
+		t.Fatalf("Jail flow spark should climb across 2 events to peak 1.0, got %+v", jail.SparkSeries)
+	}
+	// Row fields still match DeriveFlowsList semantics (same buildFlowRow path).
+	if jail.PeakTier != 3 || jail.Verdict != "jail" || jail.Score != 9 || jail.TouchCount != 2 {
+		t.Fatalf("jail row fields wrong: %+v", jail)
+	}
+}
+
+// TestAttackerFlowCardsCap pins the cap (keeps the most-recent `cap` rows).
+func TestAttackerFlowCardsCap(t *testing.T) {
+	var evs []intelligence.AdversaryInteractionEvent
+	for i := 0; i < 30; i++ {
+		// distinct cookies, increasing timestamps so cookie i is the i-th most recent
+		evs = append(evs, evScore(uint64(0x100+i), 1, "tag", ".env", i*5, 1))
+	}
+	cards := AttackerFlowCards(evs, 24)
+	if len(cards) != 24 {
+		t.Fatalf("want capped at 24, got %d", len(cards))
+	}
+	// Capped to the MOST-RECENT 24: the newest cookie (0x100+29) must be first.
+	if cards[0].FlowID != uint64(0x100+29) {
+		t.Fatalf("cap should keep the most-recent rows; first = 0x%x, want 0x%x", cards[0].FlowID, 0x100+29)
+	}
+}
+
+func TestAttackerFlowCardsEmpty(t *testing.T) {
+	if cards := AttackerFlowCards(nil, 24); len(cards) != 0 {
+		t.Fatalf("want no cards for no events, got %+v", cards)
+	}
+}
+
 // --- FlowFunnel (FleetWall windowed distinct-flow funnel) ---
 
 // TestDeriveFlowFunnelMatchesFlowsList is the CI gate: the funnel stages MUST equal
