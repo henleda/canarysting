@@ -40,6 +40,21 @@ type FlowIdentity struct {
 // it, and it is never persisted as a raw address (rule 9).
 const AttrSourceAddress = "canarysting.source_address"
 
+// AttrRequestPath and AttrRequestMethod are the well-known L7Attributes keys
+// under which an adapter MAY stamp the L7 request line of a canary-touching flow
+// (the HTTP :path — query included — and :method). Like AttrSourceAddress they
+// are SCORING-IRRELEVANT context, NEVER the cross-boundary join key (that is
+// always SocketCookie — rule 4): production scoring must not depend on them, and
+// they MUST NOT be persisted to the addressless cross-customer egress event
+// (intelligence.AdversaryInteractionEvent stays byte-for-byte addressless —
+// rule 9). They exist so the deployment-LOCAL enriched touch-record can capture
+// the L7 context the egress event discards; that store lives behind the egress
+// import guard and never crosses a deployment boundary.
+const (
+	AttrRequestPath   = "canarysting.request_path"
+	AttrRequestMethod = "canarysting.request_method"
+)
+
 // ScopeKey is the isolation boundary for all learned state. Every store of
 // learned state is partitioned by it. See docs/SCOPE.md. A flow belongs to
 // exactly one scope.

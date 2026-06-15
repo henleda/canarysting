@@ -40,6 +40,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/engine/tiers"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
+	"github.com/canarysting/canarysting/internal/intelligence/l7events"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
@@ -114,6 +115,7 @@ type Built struct {
 	Aggregator      *observebaseline.Aggregator   // nil if observe disabled
 	Malicious       *observebaseline.MaliciousSet // nil if observe disabled
 	Events          *boltevents.Store             // nil if no DB
+	L7Events        *l7events.Store               // slice-1 local-rich enriched touch-record; nil if no DB
 	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
 	Sharpen         *sharpen.Store                // D5-Phase-2 confirmed-malicious matcher; nil if no DB
 	Ledger          *network.Ledger               // D6 cross-scope SeenInScopes ledger; nil if no DB
@@ -186,6 +188,12 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		}
 		b.Persist = store
 		b.Events = boltevents.New(store)
+		// Slice-1 local-rich enriched touch-record: the SIBLING of the addressless
+		// EventStore. It captures the L7 + identity context (raw source addr / :method /
+		// :path / SPIFFE) that boltevents discards, kept deployment-LOCAL (rule 9) and
+		// scope-isolated (rule 5). Written from the same capturingEngine.Submit seam,
+		// gated to the same Tier>=Tag set; nothing here arms a response (rule 8).
+		b.L7Events = l7events.New(store)
 		// D5-Phase-2: the confirmed-malicious profile store reads flow events from the
 		// durable EventStore and structurally satisfies baseline.Matcher. Wired only
 		// with the DB present (it needs the event source); it is fed jail outcomes from
@@ -310,7 +318,7 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		ce := &capturingEngine{inner: eng, events: b.Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
+		ce := &capturingEngine{inner: eng, events: b.Events, l7events: b.L7Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
 		// D6-3: emit cross-scope confirmations to the central aggregator on each local
 		// jail, only when contributing + a token + a spool path are all configured.
 		if opts.Contribute && opts.ConfirmSpoolPath != "" && opts.ScopeToken != "" {
@@ -365,10 +373,11 @@ func (b *Built) closePartial() {
 // EventStore, attaching the derived feature vector. It is the production D1
 // capture seam and contains no staging logic.
 type capturingEngine struct {
-	inner   contract.Engine
-	events  *boltevents.Store
-	agg     *observebaseline.Aggregator
-	sharpen *sharpen.Store // D5-Phase-2: fed jail outcomes; nil if no DB
+	inner    contract.Engine
+	events   *boltevents.Store
+	l7events *l7events.Store // slice-1 local-rich enriched touch-record (sibling of events); nil if no DB
+	agg      *observebaseline.Aggregator
+	sharpen  *sharpen.Store // D5-Phase-2: fed jail outcomes; nil if no DB
 
 	// pendingJails bridges the two halves of a jail (D5-2): Submit knows the TIER
 	// (v.Tier==TierJail) but the flow's StingOutcome is still zero then (attrition
@@ -441,6 +450,18 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 		}
 	}
 	_ = e.events.CaptureVerdict(ev, v, feats)
+	// SLICE 1: beside the addressless egress event, write the LOCAL-RICH enriched
+	// touch-record — the SIBLING that keeps the L7 + identity context (raw source
+	// addr / :method / :path / SPIFFE from ev.Flow.L7Attributes + SPIFFEID) the
+	// egress event discards. Same Tier>=Tag gate, same RESOLVED scope (ev.Scope was
+	// corrected to v.Scope above — the B1 fix / rule 5), keyed on the socket cookie
+	// (rule 4). Capture-only: nothing here arms a response (rule 8); the rich record
+	// is structurally unreachable from the egress filter (rule 9). l7events is nil
+	// when no DB. The L7Attributes map may be nil (unattributed flow) — FromFlow
+	// nil-guards the read.
+	if e.l7events != nil {
+		e.l7events.Capture(v.Scope, ev.Flow.SocketCookie, ev.Canary, v, l7events.FromFlow(ev.Flow), feats, ev.Timestamp)
+	}
 	// D5-Phase-2: a Tier-3 (jail) verdict is confirmed-malicious ground truth. We do
 	// NOT record the profile here — at Submit time the flow's StingOutcome is still
 	// zero (attrition runs later, adapter-side), so the derived profile would lack the

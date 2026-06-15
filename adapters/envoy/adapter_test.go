@@ -224,6 +224,35 @@ func TestProcessUnattributableObservesOnly(t *testing.T) {
 	}
 }
 
+func TestProcessStampsL7PathMethodAndSource(t *testing.T) {
+	// SLICE 1: a canary touch must carry the L7 request line (:method + :path, query
+	// included) AND the source address into FlowIdentity.L7Attributes under the
+	// well-known contract keys, so the engine-side enriched touch-record can capture
+	// the context the addressless egress event discards. The adapter only STAMPS
+	// (rule 1); these are scoring-irrelevant context, never the join key (rule 4).
+	eng := &recEngine{out: contract.Verdict{Tier: contract.TierTag, Mode: contract.ModeAsync}, got: make(chan struct{}, 1)}
+	a, _ := fixture(t, false, eng, 0x55) // async so the engine still receives the signal
+	run(t, a, headersReq(canaryPath+"?token=abc", srcAddr, dstAddr))
+	select {
+	case <-eng.got:
+	case <-time.After(time.Second):
+		t.Fatal("signal never reached the engine")
+	}
+	attrs := eng.event().Flow.L7Attributes
+	if attrs == nil {
+		t.Fatal("L7Attributes must be stamped on a canary touch")
+	}
+	if got := attrs[contract.AttrRequestMethod]; got != "GET" {
+		t.Fatalf("AttrRequestMethod: got %q want GET", got)
+	}
+	if got := attrs[contract.AttrRequestPath]; got != canaryPath+"?token=abc" {
+		t.Fatalf("AttrRequestPath must keep the raw query: got %q", got)
+	}
+	if got := attrs[contract.AttrSourceAddress]; got == "" {
+		t.Fatalf("AttrSourceAddress must still be stamped, got empty")
+	}
+}
+
 func TestProcessAsyncModeFiresAndContinues(t *testing.T) {
 	eng := &recEngine{out: contract.Verdict{Tier: contract.TierJail, Mode: contract.ModeAsync}, got: make(chan struct{}, 1)}
 	a, _ := fixture(t, false, eng, 0x33) // async mode
