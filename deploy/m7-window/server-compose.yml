@@ -1,9 +1,31 @@
 # M7 window — server-box service mesh behind host-networked Envoy.
 #
-# Five mesh services form a real east-west graph: frontend -> api -> {auth, db,
-# cache}. Each call is a genuine service-to-service flow the observe path sees, so
-# the baseline learns real internal adjacencies (not one flat hop). Envoy fronts
-# them on :8080 and runs every request through the ext_proc adapter.
+# A ~13-service mesh forms a real, multi-tier east-west FABRIC — not a flat hop.
+# Each downstream call is a genuine service-to-service flow the observe path sees,
+# so the baseline learns real internal adjacencies. The graph has a few tiers, some
+# fan-out, and some shared dependencies (db, cache, db-replica, session-store), so
+# the learned topology reads as a believable east-west fabric:
+#
+#   edge tier:    frontend -> {cdn-edge, api}
+#                 cdn-edge -> api
+#   app tier:     api      -> {auth, db, cache, payments, search}
+#                 orders   -> {inventory, payments}
+#                 profile  -> {session-store, cache}
+#                 notifications -> session-store
+#   service tier: auth     -> session-store
+#                 payments -> ledger
+#                 search   -> db-replica
+#                 inventory-> db
+#                 analytics -> {db-replica, cache}
+#   data tier:    ledger     -> db
+#                 db-replica -> cache
+#                 auth, db, cache, session-store are shared leaves/deps
+#
+# Reuses ONE binary (deploy/m7-window/mesh) for every service — each entry only
+# differs by SVC_NAME / LISTEN port / DOWNSTREAMS. The mesh binary's
+# DisableKeepAlives makes every hop a distinct completing flow the observe path
+# folds, so these are GENUINE multi-hop adjacencies the baseline learns, not
+# painted-on. No engine/tap/adapter change — just more containers + the same image.
 #
 # ALL services use host networking (like m5-demo): it keeps the accepted sockets
 # in the host netns/cgroup the observe + sockops + enforce programs watch, and
@@ -11,9 +33,14 @@
 # footgun). The engine (cmd/staged-range) and the adapter run as host systemd
 # units (they need CAP_BPF + the host cgroup-v2), not in this compose.
 #
+# Resource note: ~13 tiny Go mesh containers + envoy + the host engine/adapter/sim
+# fit comfortably on an m7g.large (2 vCPU / 8 GiB) — each mesh process is a few MiB
+# RSS and mostly idle between the diurnal-paced simdriver beats.
+#
 # restart: unless-stopped + the docker service enabled on boot keeps the mesh up
 # across a server reboot, for the >=2-week window.
 services:
+  # ---- edge tier --------------------------------------------------------------
   frontend:
     build: { context: ../.., dockerfile: deploy/m7-window/mesh/Dockerfile }
     image: canarysting/mesh:latest
@@ -21,24 +48,137 @@ services:
     environment:
       SVC_NAME: frontend
       LISTEN: "127.0.0.1:8001"
+      DOWNSTREAMS: "http://127.0.0.1:8008,http://127.0.0.1:8002"
+    restart: unless-stopped
+    depends_on: [api, cdn-edge]
+
+  cdn-edge:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: cdn-edge
+      LISTEN: "127.0.0.1:8008"
       DOWNSTREAMS: "http://127.0.0.1:8002"
     restart: unless-stopped
     depends_on: [api]
 
+  # ---- app tier ---------------------------------------------------------------
   api:
     image: canarysting/mesh:latest
     network_mode: host
     environment:
       SVC_NAME: api
       LISTEN: "127.0.0.1:8002"
-      DOWNSTREAMS: "http://127.0.0.1:8003,http://127.0.0.1:8004,http://127.0.0.1:8005"
+      DOWNSTREAMS: "http://127.0.0.1:8003,http://127.0.0.1:8004,http://127.0.0.1:8005,http://127.0.0.1:8006,http://127.0.0.1:8007"
     restart: unless-stopped
-    depends_on: [auth, db, cache]
+    depends_on: [auth, db, cache, payments, search]
 
+  orders:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: orders
+      LISTEN: "127.0.0.1:8013"
+      DOWNSTREAMS: "http://127.0.0.1:8012,http://127.0.0.1:8006"
+    restart: unless-stopped
+    depends_on: [inventory, payments]
+
+  profile:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: profile
+      LISTEN: "127.0.0.1:8016"
+      DOWNSTREAMS: "http://127.0.0.1:8011,http://127.0.0.1:8005"
+    restart: unless-stopped
+    depends_on: [session-store, cache]
+
+  notifications:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: notifications
+      LISTEN: "127.0.0.1:8015"
+      DOWNSTREAMS: "http://127.0.0.1:8011"
+    restart: unless-stopped
+    depends_on: [session-store]
+
+  # ---- service tier -----------------------------------------------------------
   auth:
     image: canarysting/mesh:latest
     network_mode: host
-    environment: { SVC_NAME: auth, LISTEN: "127.0.0.1:8003" }
+    environment:
+      SVC_NAME: auth
+      LISTEN: "127.0.0.1:8003"
+      DOWNSTREAMS: "http://127.0.0.1:8011"
+    restart: unless-stopped
+    depends_on: [session-store]
+
+  payments:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: payments
+      LISTEN: "127.0.0.1:8006"
+      DOWNSTREAMS: "http://127.0.0.1:8009"
+    restart: unless-stopped
+    depends_on: [ledger]
+
+  search:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: search
+      LISTEN: "127.0.0.1:8007"
+      DOWNSTREAMS: "http://127.0.0.1:8010"
+    restart: unless-stopped
+    depends_on: [db-replica]
+
+  inventory:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: inventory
+      LISTEN: "127.0.0.1:8012"
+      DOWNSTREAMS: "http://127.0.0.1:8004"
+    restart: unless-stopped
+    depends_on: [db]
+
+  analytics:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: analytics
+      LISTEN: "127.0.0.1:8014"
+      DOWNSTREAMS: "http://127.0.0.1:8010,http://127.0.0.1:8005"
+    restart: unless-stopped
+    depends_on: [db-replica, cache]
+
+  # ---- data tier --------------------------------------------------------------
+  ledger:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: ledger
+      LISTEN: "127.0.0.1:8009"
+      DOWNSTREAMS: "http://127.0.0.1:8004"
+    restart: unless-stopped
+    depends_on: [db]
+
+  db-replica:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment:
+      SVC_NAME: db-replica
+      LISTEN: "127.0.0.1:8010"
+      DOWNSTREAMS: "http://127.0.0.1:8005"
+    restart: unless-stopped
+    depends_on: [cache]
+
+  session-store:
+    image: canarysting/mesh:latest
+    network_mode: host
+    environment: { SVC_NAME: session-store, LISTEN: "127.0.0.1:8011" }
     restart: unless-stopped
 
   db:

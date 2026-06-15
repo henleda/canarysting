@@ -128,9 +128,10 @@ func main() {
 	// DEVIANT — the canary-AVOIDING careful-mover (the on-screen answer to "a skilled
 	// attacker who avoids the decoys gets a free pass") plus two noisier archetypes so
 	// the deviants ranking does real work with the careful-mover #1. All walk NORMAL
-	// paths only; validate() guarantees they are disjoint from canaryPaths, so they
-	// DEVIATE from baseline (novel adjacency, off-cadence, new identity, volume) but
-	// can NEVER arm a response (Rule 8). 0 careful-mover-interval disables the class.
+	// paths only; validate() guarantees no careful-mover path equals a canary OR sits
+	// under a canary DIRECTORY prefix (the adapter matches directories by prefix), so
+	// they DEVIATE from baseline (novel adjacency, off-cadence, new identity, volume)
+	// but can NEVER arm a response (Rule 8). 0 careful-mover-interval disables the class.
 	if cfg.carefulMoverInterval > 0 {
 		start(func() {
 			runCarefulMover(ctx, cfg.carefulMoverIP, cfg.target, cfg.carefulMoverPaths, 0x6CA4E, cfg.carefulMoverInterval)
@@ -207,6 +208,29 @@ func disjoint(a, b []string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// underAnyCanary reports the first path in `paths` the Envoy adapter would treat
+// as a canary touch: an EXACT match against a seeded canary object path, OR a
+// path at-or-under a canary DIRECTORY prefix (the adapter matches directory
+// canaries by prefix — cmd/envoy-adapter/main.go). Plain disjoint() catches only
+// exact collisions and would MISS e.g. "/internal/inventory" sitting under the
+// "/internal/" canary directory — a deviant on such a path would arm a response,
+// defeating its whole purpose, so validate() refuses to start.
+func underAnyCanary(paths, canaryPaths, canaryPrefixes []string) (string, bool) {
+	for _, p := range paths {
+		for _, c := range canaryPaths {
+			if p == c {
+				return p, true
+			}
+		}
+		for _, pre := range canaryPrefixes {
+			if pre != "" && strings.HasPrefix(p, pre) {
+				return p, true
+			}
+		}
+	}
+	return "", false
 }
 
 // ---- traffic workers --------------------------------------------------------
@@ -749,6 +773,7 @@ type config struct {
 	normalPaths                []string
 	attackerIP                 string
 	canaryPaths                []string
+	canaryPrefixes             []string // adapter DIRECTORY canaries matched by PREFIX (mirror cmd/envoy-adapter demoCanaryPaths)
 	reconIP                    string
 	whitespacePaths            []string
 	carefulMoverIP             string        // FRESH identity for the canary-AVOIDING deviant (distinct from benign/attacker)
@@ -781,13 +806,15 @@ func (c config) validate() error {
 		return fmt.Errorf("need canary paths (malicious) and white-space paths (recon)")
 	}
 	// Rule 8 guard: neither the recon (white-space) nor the benign (normal) class
-	// may touch a decoy — only the declared-attacker canary class does. Refuse to
-	// start if a recon OR a benign path is also a canary path.
-	if bad, ok := disjoint(c.canaryPaths, c.whitespacePaths); !ok {
-		return fmt.Errorf("recon white-space path %q is also a canary path; recon must never touch a canary (Rule 8)", bad)
+	// may touch a decoy — only the declared-attacker canary class does. The adapter
+	// matches directory canaries by PREFIX, so check exact paths AND prefixes:
+	// refuse to start if a recon OR benign path is a canary path or sits under a
+	// canary directory.
+	if bad, ok := underAnyCanary(c.whitespacePaths, c.canaryPaths, c.canaryPrefixes); ok {
+		return fmt.Errorf("recon white-space path %q is (or is under) a canary; recon must never touch a canary (Rule 8)", bad)
 	}
-	if bad, ok := disjoint(c.canaryPaths, c.normalPaths); !ok {
-		return fmt.Errorf("benign normal path %q is also a canary path; benign workers must never touch a canary (Rule 8)", bad)
+	if bad, ok := underAnyCanary(c.normalPaths, c.canaryPaths, c.canaryPrefixes); ok {
+		return fmt.Errorf("benign normal path %q is (or is under) a canary; benign workers must never touch a canary (Rule 8)", bad)
 	}
 	// Rule 8 guard for the DEVIANT class: the careful-mover (and the noisier
 	// new-identity-burst / volume-spike archetypes that share its path set) walk
@@ -803,8 +830,8 @@ func (c config) validate() error {
 		if len(c.carefulMoverPaths) == 0 {
 			return fmt.Errorf("careful-mover enabled but no careful-mover paths configured")
 		}
-		if bad, ok := disjoint(c.canaryPaths, c.carefulMoverPaths); !ok {
-			return fmt.Errorf("careful-mover path %q is also a canary path; the deviant must never touch a canary (Rule 8)", bad)
+		if bad, ok := underAnyCanary(c.carefulMoverPaths, c.canaryPaths, c.canaryPrefixes); ok {
+			return fmt.Errorf("careful-mover path %q is (or is under) a canary; the deviant must never touch a canary (Rule 8)", bad)
 		}
 		if bad, ok := disjoint(c.whitespacePaths, c.carefulMoverPaths); !ok {
 			return fmt.Errorf("careful-mover path %q is also a white-space/recon path; keep the deviant on NORMAL application paths", bad)
@@ -827,41 +854,48 @@ func (c config) validate() error {
 
 func parseFlags() config {
 	var (
-		target       = flag.String("target", "http://127.0.0.1:8080", "Envoy base URL (one-box demo: loopback)")
-		tapAddr      = flag.String("tap-addr", "http://127.0.0.1:8088", "engine tap base URL for the LLM cost meter")
-		benignIPs    = flag.String("benign-ips", "10.20.1.101,10.20.1.102,10.20.1.103", "legit source IPs (one benign worker each)")
-		normalPaths  = flag.String("normal-paths", "/shop,/search,/products,/account,/cart,/checkout,/orders", "normal application paths (NEVER canaries)")
-		attackerIP   = flag.String("attacker-ip", "10.20.1.111", "declared-attacker source IP (touches canaries)")
-		canaryPaths  = flag.String("canary-paths", "/.env,/.aws/credentials,/backup/db.sql,/internal/buckets,/admin/metrics", "seeded canary paths the attacker touches")
-		reconIP      = flag.String("recon-ip", "10.20.1.112", "UNLABELED recon/scanner source IP (white-space probing; never a canary)")
-		wsPaths      = flag.String("whitespace-paths", "/wp-login.php,/phpmyadmin/,/.svn/entries,/server-status,/actuator/env,/api/v2/admin,/cgi-bin/status,/owa/auth.owa", "non-canary white-space paths (404s) the recon scanner probes")
-		cmIP         = flag.String("careful-mover-ip", "10.20.1.104", "FRESH source IP for the canary-AVOIDING careful-mover deviant (distinct from benign/attacker/recon; NEVER touches a canary)")
-		cmPaths      = flag.String("careful-mover-paths", "/reports/daily,/internal/inventory,/analytics/export,/billing/ledger,/hr/directory,/ops/health", "NORMAL (non-canary, non-whitespace) application paths the careful-mover walks — a novel east-west path against under-trafficked services")
-		cmInterval   = flag.Duration("careful-mover-interval", 25*time.Second, "SLOW, methodical careful-mover cadence (a longer, low-jitter interval than the benign/malicious workers so it reads as cadence-deviant; 0 disables the careful-mover + the noisier deviant archetypes)")
-		baseRPM      = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
-		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
-		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
-		reconLive    = flag.Int("recon-live", 6, "concurrent HELD recon scanner flows, phase-staggered (kept open ~recon-hold-sec; the backend's rolling-window retention smooths the displayed count; 0 disables)")
-		reconHoldSec = flag.Float64("recon-hold-sec", 4.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
-		malKeepalive = flag.Duration("malicious-keepalive-interval", 3*time.Second, "canary-touch cadence on ONE sustained attacker flow that climbs Tag->Contain->Jail and reconnects (the self-running escalation->jail beat; 0 disables)")
-		recompute    = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
-		keepalive    = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
-		dailyCap     = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
-		budgetFile   = flag.String("budget-file", "/var/lib/canarysting/sim-budget.json", "daily spend ledger path")
-		cassette     = flag.String("cassette", "/tmp/m9-demo3.cassette", "cassette for Tier-B $0 replays (\"\" disables)")
-		cassEvery    = flag.Duration("cassette-interval", 4*time.Minute, "Tier-B cassette replay cadence")
-		liveEvery    = flag.Duration("live-interval", 0, "Tier-C live-run attempt cadence (0 = OFF; opt-in)")
-		liveBudget   = flag.Float64("live-budget-usd", 0.5, "per-run hard cap for a Tier-C live run")
-		attackerBin  = flag.String("attacker-bin", "/opt/canarysting/bin/llm-attacker", "path to the llm-attacker binary")
-		keyFile      = flag.String("key-file", "/etc/canarysting/anthropic.key", "Anthropic key for Tier-C live runs (live OFF if absent)")
-		costOut      = flag.String("cost-out", "/tmp/sim-llm-cost.json", "where the llm-attacker writes its run ledger")
+		target      = flag.String("target", "http://127.0.0.1:8080", "Envoy base URL (one-box demo: loopback)")
+		tapAddr     = flag.String("tap-addr", "http://127.0.0.1:8088", "engine tap base URL for the LLM cost meter")
+		benignIPs   = flag.String("benign-ips", "10.20.1.101,10.20.1.102,10.20.1.103", "legit source IPs (one benign worker each)")
+		normalPaths = flag.String("normal-paths", "/,/index.html,/api/health,/api/status", "normal application paths (NEVER canaries). MUST include fanout-triggering paths (/, /index.html, /api/*) so the mesh frontend actually drives its east-west downstreams (deploy/m7-window/mesh/main.go serve(): only /, /index.html, and /api/* fan out) — otherwise the multi-hop fabric edges are never generated and the baseline never learns them.")
+		attackerIP  = flag.String("attacker-ip", "10.20.1.111", "declared-attacker source IP (touches canaries)")
+		canaryPaths = flag.String("canary-paths", "/.env,/.aws/credentials,/backup/db.sql,/internal/buckets,/admin/metrics", "seeded canary paths the attacker touches")
+		// The adapter recognizes DIRECTORY canaries by PREFIX (cmd/envoy-adapter/main.go:
+		// a directory canary matches any path at or below it), so a deviant/benign/recon
+		// path at-or-under any of these would be treated as a canary touch and ARM —
+		// silently defeating the deviant. validate() refuses to start if that happens.
+		// Keep in sync with the adapter's demoCanaryPaths directory entries.
+		canaryPrefixes = flag.String("canary-prefixes", "/secrets/,/config/,/backup/,/internal/,/admin/", "adapter directory-canary prefixes; NO benign/recon/careful-mover path may fall at or under one (Rule 8)")
+		reconIP        = flag.String("recon-ip", "10.20.1.112", "UNLABELED recon/scanner source IP (white-space probing; never a canary)")
+		wsPaths        = flag.String("whitespace-paths", "/wp-login.php,/phpmyadmin/,/.svn/entries,/server-status,/actuator/env,/api/v2/admin,/cgi-bin/status,/owa/auth.owa", "non-canary white-space paths (404s) the recon scanner probes")
+		cmIP           = flag.String("careful-mover-ip", "10.20.1.104", "FRESH source IP for the canary-AVOIDING careful-mover deviant (distinct from benign/attacker/recon; NEVER touches a canary)")
+		cmPaths        = flag.String("careful-mover-paths", "/api/reports/daily,/api/inventory,/api/analytics/export,/api/billing/ledger,/api/hr/directory,/api/ops/health", "NORMAL (non-canary, non-whitespace) application paths the careful-mover walks. Under /api/ so they DRIVE the mesh east-west fan-out (mesh serve() fans out on /, /index.html, /api/*) — a fresh identity reaching deep into the fabric on novel paths — yet are disjoint from the benign set and from every canary prefix, so the deviant is structurally unable to arm (Rule 8). Earlier defaults used /internal/inventory, which sits under the adapter's /internal/ directory canary and WOULD have armed.")
+		cmInterval     = flag.Duration("careful-mover-interval", 25*time.Second, "SLOW, methodical careful-mover cadence (a longer, low-jitter interval than the benign/malicious workers so it reads as cadence-deviant; 0 disables the careful-mover + the noisier deviant archetypes)")
+		baseRPM        = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
+		malPct         = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
+		reconPct       = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
+		reconLive      = flag.Int("recon-live", 6, "concurrent HELD recon scanner flows, phase-staggered (kept open ~recon-hold-sec; the backend's rolling-window retention smooths the displayed count; 0 disables)")
+		reconHoldSec   = flag.Float64("recon-hold-sec", 4.0, "lifetime of each held recon flow in seconds (must stay under the dashboard bystander threshold)")
+		malKeepalive   = flag.Duration("malicious-keepalive-interval", 3*time.Second, "canary-touch cadence on ONE sustained attacker flow that climbs Tag->Contain->Jail and reconnects (the self-running escalation->jail beat; 0 disables)")
+		recompute      = flag.Duration("recompute", 30*time.Second, "how often the adversary cadence is re-derived from the benign rate")
+		keepalive      = flag.Duration("keepalive-interval", 2*time.Second, "request cadence on each legit identity's PERSISTENT keepalive connection (the bystander panel's serving flow); keep it under the server idle timeout")
+		dailyCap       = flag.Float64("daily-cap-usd", 20, "HARD fail-closed daily ceiling on live LLM spend")
+		budgetFile     = flag.String("budget-file", "/var/lib/canarysting/sim-budget.json", "daily spend ledger path")
+		cassette       = flag.String("cassette", "/tmp/m9-demo3.cassette", "cassette for Tier-B $0 replays (\"\" disables)")
+		cassEvery      = flag.Duration("cassette-interval", 4*time.Minute, "Tier-B cassette replay cadence")
+		liveEvery      = flag.Duration("live-interval", 0, "Tier-C live-run attempt cadence (0 = OFF; opt-in)")
+		liveBudget     = flag.Float64("live-budget-usd", 0.5, "per-run hard cap for a Tier-C live run")
+		attackerBin    = flag.String("attacker-bin", "/opt/canarysting/bin/llm-attacker", "path to the llm-attacker binary")
+		keyFile        = flag.String("key-file", "/etc/canarysting/anthropic.key", "Anthropic key for Tier-C live runs (live OFF if absent)")
+		costOut        = flag.String("cost-out", "/tmp/sim-llm-cost.json", "where the llm-attacker writes its run ledger")
 	)
 	flag.Parse()
 	return config{
 		target: *target, tapAddr: *tapAddr,
 		benignIPs: splitCSV(*benignIPs), normalPaths: splitCSV(*normalPaths),
 		attackerIP: *attackerIP, canaryPaths: splitCSV(*canaryPaths),
-		reconIP: *reconIP, whitespacePaths: splitCSV(*wsPaths),
+		canaryPrefixes: splitCSV(*canaryPrefixes),
+		reconIP:        *reconIP, whitespacePaths: splitCSV(*wsPaths),
 		carefulMoverIP: *cmIP, carefulMoverPaths: splitCSV(*cmPaths), carefulMoverInterval: *cmInterval,
 		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, reconLive: *reconLive, reconHoldSec: *reconHoldSec,
 		maliciousKeepaliveInterval: *malKeepalive, recompute: *recompute, keepaliveInterval: *keepalive,

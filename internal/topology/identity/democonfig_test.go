@@ -25,6 +25,7 @@ func TestDemoConfigLoadsAndResolves(t *testing.T) {
 	loopback := netip.MustParseAddr("127.0.0.1")
 
 	// Mesh services by listen port (verified against deploy/m7-window/server-compose.yml).
+	// The original 5-service core plus the expanded east-west fabric (8006-8016).
 	services := []struct {
 		port uint16
 		name string
@@ -34,6 +35,17 @@ func TestDemoConfigLoadsAndResolves(t *testing.T) {
 		{8003, "auth"},
 		{8004, "db"},
 		{8005, "cache"},
+		{8006, "payments"},
+		{8007, "search"},
+		{8008, "cdn-edge"},
+		{8009, "ledger"},
+		{8010, "db-replica"},
+		{8011, "session-store"},
+		{8012, "inventory"},
+		{8013, "orders"},
+		{8014, "analytics"},
+		{8015, "notifications"},
+		{8016, "profile"},
 	}
 	for _, s := range services {
 		got := r.Resolve(loopback, s.port, "", "")
@@ -42,9 +54,10 @@ func TestDemoConfigLoadsAndResolves(t *testing.T) {
 		}
 	}
 
-	// Caller IPs by role (the .101/.102/.103 legit generators + .111 prober; the
-	// names are operator-declared staging metadata, the .111 "caller" kind is NOT
-	// an engine verdict).
+	// Caller IPs by role (the .101/.102/.103 legit generators + the expanded
+	// .105-.110 benign callers + .111 prober; the names are operator-declared
+	// staging metadata, the .111 "caller" kind is NOT an engine verdict). Note
+	// .104 is the careful-mover deviant identity, intentionally NOT declared here.
 	callers := []struct {
 		ip   string
 		name string
@@ -52,6 +65,12 @@ func TestDemoConfigLoadsAndResolves(t *testing.T) {
 		{"10.20.1.101", "reporting-worker"},
 		{"10.20.1.102", "batch-client"},
 		{"10.20.1.103", "web-client"},
+		{"10.20.1.105", "mobile-gateway"},
+		{"10.20.1.106", "partner-api"},
+		{"10.20.1.107", "ci-runner"},
+		{"10.20.1.108", "etl-scheduler"},
+		{"10.20.1.109", "support-console"},
+		{"10.20.1.110", "ops-dashboard"},
 		{"10.20.1.111", "prober"},
 	}
 	for _, c := range callers {
