@@ -410,6 +410,7 @@ export interface FlowRow {
   total_cost: FlowCost;
   first_seen: string;
   last_seen: string;
+  spark_series?: number[]; // only populated for escalation.attacker_flows cards (per-flow climb); the /flows table omits it (Go omitempty)
 }
 
 export interface FlowsList {

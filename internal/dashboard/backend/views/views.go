@@ -248,8 +248,9 @@ type EscalationView struct {
 	// (never summed); the funnel stages are distinct flows within the window.
 	FunnelCaption string `json:"funnel_caption"`
 
-	// AttackerFlows is the capped, ranked list of armed (decoy-touched) flows for
-	// the wall's live-attacker strip — distinct sessions, peak-tier desc then recency.
+	// AttackerFlows is the capped, RECENCY-ordered list of armed (decoy-touched)
+	// flows for the wall's live-attacker strip — distinct sessions, LastSeen desc
+	// (most-recent first, a live feed), each with its own normalized SparkSeries.
 	AttackerFlows []FlowRow `json:"attacker_flows"`
 }
 
@@ -452,13 +453,12 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 	// events, so the per-event count overclaims the number of jailed flows.
 	funnel := DeriveFlowFunnel(events)
 
-	// AttackerFlows: the capped, ranked armed-flow cards for the wall's live-attacker
-	// strip. DeriveFlowsList(-1) already returns FlowRow sorted peak-tier desc, then
-	// last_seen desc; cap to the first 24 so the strip stays bounded.
-	af := DeriveFlowsList(events, -1).Flows
-	if len(af) > 24 {
-		af = af[:24]
-	}
+	// AttackerFlows: the capped armed-flow cards for the wall's live-attacker strip.
+	// RECENCY-ordered (LastSeen desc) with a per-card spark — a believable LIVE FEED
+	// of the real Tag/Contain/Jail mix, NOT the peak-tier-desc /flows ordering (which
+	// buries the mix under the top tier and leaves every card sparkless). The /flows
+	// table still uses DeriveFlowsList (peak-tier desc).
+	af := AttackerFlowCards(events, 24)
 
 	ov := Overview{
 		Scope:        state.Scope,
