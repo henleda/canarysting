@@ -16,6 +16,10 @@ import (
 //     persist.bktTopology): raw src->dst:port adjacency.
 //   - F2 rich deviant log (observebaseline.DeviantFlowRecord + persist.bktDeviants):
 //     the raw 4-tuple of anomalous, non-canary-touching flows — the hunting record.
+//   - Slice-1 enriched touch-record (l7events.EnrichedTouchRecord +
+//     persist.bktL7Touches): the raw source address / :method / :path / SPIFFE of a
+//     canary TOUCHER — the L7 context the addressless egress event discards. It is
+//     a SIBLING to intelligence.AdversaryInteractionEvent (does NOT widen it).
 //
 // Those raw addresses must be STRUCTURALLY unreachable from the egress path, not
 // merely kept apart by convention: if anyone ever wires a reader of EITHER rich
@@ -38,6 +42,12 @@ func TestEgressFilterCannotReachRichLocalStores(t *testing.T) {
 	forbidden := []string{
 		"github.com/canarysting/canarysting/internal/engine/observebaseline",
 		"github.com/canarysting/canarysting/internal/engine/persist",
+		// Slice-1 enriched touch-record: a NEW package whose EnrichedTouchRecord type
+		// holds the RAW source address / :method / :path / SPIFFE of a canary toucher.
+		// (persist above already covers the raw bytes via bktL7Touches, but the rich
+		// TYPE lives here, so it needs its own forbidden entry.) If the egress filter
+		// ever imports it, raw L7 context could cross a deployment boundary (Rule 9).
+		"github.com/canarysting/canarysting/internal/intelligence/l7events",
 	}
 	deps := egressDeps(t, networkPkg)
 	for _, f := range forbidden {

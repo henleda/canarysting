@@ -24,6 +24,7 @@ var (
 	bktEvents    = []byte("events")    // scope -> {8-byte seq -> event gob blob}
 	bktTopology  = []byte("topology")  // scope -> {edgeKey|nodeKey -> gob record blob} (F1 learned east-west topology, local-rich)
 	bktDeviants  = []byte("deviants")  // scope -> {deviantKey -> gob record blob} (F2 rich non-tripwire deviant log, local-rich)
+	bktL7Touches = []byte("l7touches") // scope -> {touchKey -> gob record blob} (slice-1 enriched canary-touch record, local-rich)
 	bktMeta      = []byte("meta")      // global -> {metaKey -> blob} (heartbeat, schema)
 )
 
@@ -59,7 +60,11 @@ func Open(path string) (*Store, int, error) {
 		// bucket must keep opening (the create is a no-op when present and a fresh
 		// empty bucket when absent — never a re-decode of stale blobs). See
 		// docs/TOPOLOGY_AND_DEVIANTS.md §3 (topology) and §4 (deviants).
-		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktMeta} {
+		// bktL7Touches (the slice-1 enriched canary-touch record, local-rich) is added
+		// the SAME tolerant way and for the same reason: a live M7 baseline.db that
+		// predates it must keep opening (no SchemaVersion bump — the create is a no-op
+		// when present, a fresh empty bucket when absent).
+		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktL7Touches, bktMeta} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -451,6 +456,91 @@ func (s *Store) RangeDeviants(scope contract.ScopeKey, fn func(key, blob []byte)
 func (s *Store) RangeDeviantScopes(fn func(scope contract.ScopeKey) error) error {
 	return s.db.View(func(tx *bolt.Tx) error {
 		root := tx.Bucket(bktDeviants)
+		if root == nil {
+			return nil
+		}
+		return root.ForEachBucket(func(k []byte) error {
+			return fn(contract.ScopeKey(append([]byte(nil), k...)))
+		})
+	})
+}
+
+// --- per-scope slice-1 enriched touch records -------------------------------
+//
+// The l7touches bucket holds the LOCAL-RICH enriched canary-touch record: one
+// record per canary touch (Tier>=Tag) capturing the L7 + identity context the
+// addressless cross-customer egress event (intelligence.AdversaryInteractionEvent)
+// discards — the raw source address, :method, :path, and SPIFFE id, kept
+// un-hashed and deployment-LOCAL. It is scope-isolated by layout (scopeSub) like
+// every other store, and is LOCAL-ONLY: nothing here ever feeds
+// internal/intelligence/network (the cross-customer egress path stays
+// coarse/hashed/addressless; rule 9). The egress import guard
+// (internal/intelligence/network/egress_importguard_test.go) forbids the egress
+// filter from transitively importing persist, so the raw record is structurally
+// unreachable from a deployment boundary.
+//
+// Writes happen at engine Submit time (the capture seam, internal/boot), NOT on
+// the observe fold tick, so PutL7Touch is a single small keyed put — bbolt
+// commits it in its own transaction. A Delete entry (Blob == nil) removes a key
+// (a cap/TTL reaper eviction). These accessors are otherwise read-only
+// rehydrate/inspection helpers for the future slice-2 SIEM emitter / tap.
+
+// L7TouchWrite is one (scope, key) enriched-touch record to persist. A Delete
+// entry (Blob == nil) removes the key — that is how a cap/TTL reaper eviction is
+// persisted alongside the inserting put in one transaction. Mirrors DeviantWrite.
+type L7TouchWrite struct {
+	Scope  contract.ScopeKey
+	Key    []byte
+	Blob   []byte // nil => delete this key (a reaper eviction)
+	Delete bool   // explicit delete flag
+}
+
+// PutL7Touches writes a batch of enriched-touch puts/deletes in ONE transaction
+// (one fsync). The capture seam uses it to commit the inserted record together
+// with any record evicted by the per-scope cap in the same touch, so the on-disk
+// set never exceeds the in-memory cap.
+func (s *Store) PutL7Touches(writes []L7TouchWrite) error {
+	if s.readOnly {
+		return ErrReadOnly
+	}
+	if len(writes) == 0 {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		root := tx.Bucket(bktL7Touches)
+		for _, w := range writes {
+			if w.Scope == "" {
+				return errors.New("persist: empty scope in l7touch write")
+			}
+			sb, err := root.CreateBucketIfNotExists([]byte(w.Scope))
+			if err != nil {
+				return err
+			}
+			if w.Delete || w.Blob == nil {
+				if err := sb.Delete(append([]byte(nil), w.Key...)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := sb.Put(append([]byte(nil), w.Key...), append([]byte(nil), w.Blob...)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// RangeL7Touches calls fn for every (key, blob) under scope in key order. blob
+// must not be retained past the call (it points into the read transaction).
+func (s *Store) RangeL7Touches(scope contract.ScopeKey, fn func(key, blob []byte) error) error {
+	return s.rangeNested(bktL7Touches, scope, fn)
+}
+
+// RangeL7TouchScopes calls fn for every scope that has any persisted enriched
+// touch record, independently of baseline-bucket presence.
+func (s *Store) RangeL7TouchScopes(fn func(scope contract.ScopeKey) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		root := tx.Bucket(bktL7Touches)
 		if root == nil {
 			return nil
 		}

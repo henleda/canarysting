@@ -236,13 +236,28 @@ func (a *Adapter) onRequestHeaders(ctx context.Context, req *extprocv3.Processin
 	}
 
 	flow := contract.FlowIdentity{SPIFFEID: spiffeFromAttributes(req.GetAttributes())}
+	// Stamp the L7 request line (method + full :path, query included) as scoring-
+	// irrelevant context for the deployment-LOCAL enriched touch-record (slice 1).
+	// These come from the HTTP headers, NOT the source tuple, so the map is
+	// allocated independently of whether the source 4-tuple resolves below — an
+	// unattributable flow still carries its method/path here. They are NEVER the
+	// join key (rule 4 — that stays the socket cookie) and are NEVER persisted to
+	// the addressless egress event (rule 9). The adapter only STAMPS; no logic
+	// reads them here (rule 1).
+	flow.L7Attributes = map[string]string{}
+	if obs.Method != "" {
+		flow.L7Attributes[contract.AttrRequestMethod] = obs.Method
+	}
+	if obs.Path != "" {
+		flow.L7Attributes[contract.AttrRequestPath] = obs.Path
+	}
 	if ft, ok := tupleFromAttributes(req.GetAttributes()); ok {
 		// Stamp the observed source address as scoring context (never the join
 		// key — that stays the socket cookie, rule 4). The M7 staged labeler reads
 		// it to attribute a canary touch to a declared identity; production scoring
 		// ignores it. It is context, not a second join.
 		if src, ok := ft.SourceAddr(); ok {
-			flow.L7Attributes = map[string]string{contract.AttrSourceAddress: src.String()}
+			flow.L7Attributes[contract.AttrSourceAddress] = src.String()
 		}
 		if res, hit := a.resolveCookie(ft); hit {
 			flow.SocketCookie = res.Cookie
