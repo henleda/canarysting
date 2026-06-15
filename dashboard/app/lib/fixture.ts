@@ -347,6 +347,74 @@ export const fixtureCostBreakdown: CostBreakdown = {
   reactions: { exploits_observed: 6, exposure_signals: 11, poison_reached: 3, poison_class: 'success' },
 };
 
+// ---- F1 learned topology fixture (NEXT_PUBLIC_FIXTURE=1) ----
+// A representative slice of the M7 5-service loopback mesh: 4 named callers + the
+// 5 services (frontend 8001, api 8002, auth 8003, db 8004, cache 8005 — the demo
+// is all-loopback 127.0.0.1, so the LISTEN port disambiguates each service), the
+// 5 canary decoys in the negative-space ring, ~10 learned edges, one FAINT live
+// deviant edge inside the legit subgraph (the "careful-mover" pivot that never
+// reaches the ring), and one BRIGHT source->decoy touch edge (the money shot).
+// Node ids mirror the backend contract: svc:<ip>:<port> / caller:<ip> /
+// decoy:<canary_type> / touch-src:0x<cookie>. Names come from the staging
+// operator registry (deploy/m7-window/topology-identities.json) — staged_labels.
+import type { TopologyView } from './types';
+
+const TOPO_FIRST = '2026-06-09T13:30:00Z';
+const TOPO_LAST = '2026-06-09T13:58:12Z';
+
+export const fixtureTopology: TopologyView = {
+  scope: 'm7-window',
+  staged_labels: true,
+  caption:
+    'Staged-range view: node NAMES come from the operator registry; the engine baseline is hashed. The graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours.',
+  nodes: [
+    // Callers (left column) — named external initiators from the staging registry.
+    { id: 'caller:10.20.1.101', label: 'reporting-worker', kind: 'caller' },
+    { id: 'caller:10.20.1.102', label: 'batch-client', kind: 'caller' },
+    { id: 'caller:10.20.1.103', label: 'web-client', kind: 'caller' },
+    { id: 'caller:10.20.1.111', label: 'prober', kind: 'caller' },
+    // Services (middle column) — port disambiguates on the loopback mesh.
+    { id: 'svc:10.20.1.24:8001', label: 'frontend', kind: 'service' },
+    { id: 'svc:10.20.1.24:8002', label: 'api', kind: 'service' },
+    { id: 'svc:10.20.1.24:8003', label: 'auth', kind: 'service' },
+    { id: 'svc:10.20.1.24:8004', label: 'db', kind: 'service' },
+    { id: 'svc:10.20.1.24:8005', label: 'cache', kind: 'service' },
+    // Canary decoys (right ring) — the 5 catalog types, zero learned in-edges.
+    { id: 'decoy:planted_credential', label: 'planted_credential', kind: 'decoy' },
+    { id: 'decoy:fake_secret', label: 'fake_secret', kind: 'decoy' },
+    { id: 'decoy:decoy_file', label: 'decoy_file', kind: 'decoy' },
+    { id: 'decoy:fake_bucket', label: 'fake_bucket', kind: 'decoy' },
+    { id: 'decoy:fake_endpoint', label: 'fake_endpoint', kind: 'decoy' },
+    // The touch source — a flow that reached into the negative space (cookie 0x118).
+    { id: 'touch-src:0x118', label: '0x118', kind: 'unknown' },
+  ],
+  edges: [
+    // Learned baseline edges (solid; thickness ~ flow_count). The legit east-west
+    // mesh: web/clients -> frontend/api -> auth/db/cache.
+    { src_id: 'caller:10.20.1.103', dst_id: 'svc:10.20.1.24:8001', port: 8001, proto: 'tcp', flow_count: 1840, bytes: 24_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8001', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 1620, bytes: 19_200_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'caller:10.20.1.102', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 940, bytes: 11_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8003', port: 8003, proto: 'tcp', flow_count: 880, bytes: 3_100_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 1320, bytes: 16_800_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8005', port: 8005, proto: 'tcp', flow_count: 1510, bytes: 8_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8003', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 420, bytes: 2_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'caller:10.20.1.101', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 260, bytes: 1_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'svc:10.20.1.24:8004', dst_id: 'svc:10.20.1.24:8005', port: 8005, proto: 'tcp', flow_count: 380, bytes: 2_050_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // FAINT live/deviant edge — the careful-mover's NOVEL pivot (reporting-worker
+    // reaching db direct, an adjacency it never normally walks). It stays INSIDE
+    // the legit subgraph and NEVER reaches the decoy ring — observe-only, Rule 8.
+    // FIXTURE-ONLY until F2: the slice-3 live /api/topology emits only 'learned'
+    // and 'decoy_touch' classes (the deviant overlay lands with the F2 deviants
+    // store). Do NOT narrate this edge as live engine output in a slice-3 demo —
+    // and once real deviant edges flow, the F2 page must carry the ⚠ simulated
+    // badge wherever careful-mover (simdriver) traffic is shown (docs §5 fence 2).
+    { src_id: 'caller:10.20.1.101', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 4, bytes: 11_200, first_seen: '2026-06-09T13:52:00Z', last_seen: TOPO_LAST, class: 'live' },
+    // BRIGHT source->decoy touch edge — the only edge that ever crosses into the
+    // ring. A real adapter-recognized canary touch (Tier>=1) by cookie 0x118.
+    { src_id: 'touch-src:0x118', dst_id: 'decoy:planted_credential', port: 0, proto: 'decoy', flow_count: 1, bytes: 0, first_seen: TOPO_LAST, last_seen: TOPO_LAST, class: 'decoy_touch' },
+  ],
+};
+
 export const fixtureReconTimeline: ReconTimeline = {
   total_recon: 3,
   rows: [

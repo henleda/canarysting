@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/canarysting/canarysting/bpf/observe"
+	"github.com/canarysting/canarysting/internal/contract"
 )
 
 // F1 — learned east-west topology (engine-side capture). This is the LOCAL-RICH
@@ -367,4 +368,101 @@ func (t *topology) blobForKey(key string) (blob []byte, ok bool, err error) {
 	default:
 		return nil, false, nil
 	}
+}
+
+// --- read-side snapshot (slice 3 — the /raw/topology data path) -------------
+//
+// TopologySnapshot exposes a DECODED, copied view of the live in-memory topology
+// map for one scope, so the dashboard tap can resolve node labels + inject decoy
+// nodes and emit the TopologyView (docs/TOPOLOGY_AND_DEVIANTS.md §3, §6). It
+// mirrors the LiveFlows accessor pattern: snapshot under a.mu (read lock), then
+// hand back plain value structs the caller owns — the raw *topoEdge/*topoNode
+// pointers and the gob types NEVER escape this package.
+//
+// This is READ-SIDE ONLY (Rule 8 — nothing here arms a response) and LOCAL-ONLY
+// (Rule 9 — the raw addresses stay in the deployment; this accessor lives in
+// observebaseline, which the egress filter is structurally forbidden to import —
+// see internal/intelligence/network/egress_importguard_test.go). The addresses it
+// returns are the un-hashed local-rich edge; coarsening happens only at the egress
+// boundary, never here.
+
+// TopoEdgeView is one directed east-west edge, decoded for the read side. SrcIP/
+// DstIP are the canonical 4- or 16-byte address slices (length follows Family).
+// FirstSeen/LastSeen are wall-clock (a.clock()). It is a plain value the caller
+// owns; no package-private pointer escapes.
+type TopoEdgeView struct {
+	SrcIP      []byte
+	DstIP      []byte
+	DstPort    uint16
+	Family     uint16
+	FlowCount  uint64
+	TotalBytes uint64
+	TotalPkts  uint64
+	FirstSeen  time.Time
+	LastSeen   time.Time
+}
+
+// TopoNodeView is one node-catalog identity, decoded for the read side. Addr is
+// the canonical address slice (length follows Family); Port is 0 for an initiator
+// node and the listen port for a service node. Initiator reports Role=="initiator",
+// service Role=="service".
+type TopoNodeView struct {
+	Addr      []byte
+	Port      uint16
+	Family    uint16
+	Role      string
+	FlowCount uint64
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
+// TopologySnap is the decoded edges + nodes for one scope.
+type TopologySnap struct {
+	Edges []TopoEdgeView
+	Nodes []TopoNodeView
+}
+
+// TopologySnapshot returns a decoded, copied snapshot of the live in-memory
+// learned topology for sc (the CURRENT map — not bbolt; the map is the source of
+// truth, rehydrated on boot and folded each tick). Empty (zero-value) for a scope
+// with no accrued topology. Safe for concurrent reads; takes only the read lock
+// and copies every field out, so the caller never touches package-private state.
+func (a *Aggregator) TopologySnapshot(sc contract.ScopeKey) TopologySnap {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	topo := a.topology[sc]
+	if topo == nil {
+		return TopologySnap{}
+	}
+	snap := TopologySnap{
+		Edges: make([]TopoEdgeView, 0, len(topo.edges)),
+		Nodes: make([]TopoNodeView, 0, len(topo.nodes)),
+	}
+	for _, e := range topo.edges {
+		n := addrLen(e.Family)
+		snap.Edges = append(snap.Edges, TopoEdgeView{
+			SrcIP:      append([]byte(nil), e.SrcIP[:n]...),
+			DstIP:      append([]byte(nil), e.DstIP[:n]...),
+			DstPort:    e.DstPort,
+			Family:     e.Family,
+			FlowCount:  e.FlowCount,
+			TotalBytes: e.TotalBytes,
+			TotalPkts:  e.TotalPkts,
+			FirstSeen:  e.FirstSeen,
+			LastSeen:   e.LastSeen,
+		})
+	}
+	for _, nd := range topo.nodes {
+		n := addrLen(nd.Family)
+		snap.Nodes = append(snap.Nodes, TopoNodeView{
+			Addr:      append([]byte(nil), nd.Addr[:n]...),
+			Port:      nd.Port,
+			Family:    nd.Family,
+			Role:      nd.Role.String(),
+			FlowCount: nd.FlowCount,
+			FirstSeen: nd.FirstSeen,
+			LastSeen:  nd.LastSeen,
+		})
+	}
+	return snap
 }

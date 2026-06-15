@@ -492,3 +492,60 @@ body { min-height: 100%; }
 /* Compact score — the signed-off 104px .score is intentionally untouched. */
 .score-strip { font-family: var(--expanded); font-weight: 900; font-size: 28px; line-height: 0.9;
   color: var(--sting); text-shadow: 0 0 18px rgba(255,77,96,0.4); letter-spacing: -0.01em; }
+
+/* ========================================================================== *
+ * F1 LEARNED TOPOLOGY (/topology) — additive only; no signed-off class above  *
+ * is restyled. The hand-rolled SVG attack-surface graph: callers -> services  *
+ * -> canary decoy ring. See components/TopologyGraph.tsx.                      *
+ * ========================================================================== */
+
+/* The persistent honesty fence. Always visible above the graph. */
+.topo-caption { font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--ink-dim);
+  background: rgba(255,206,58,0.05); border: 1px solid rgba(255,206,58,0.22); border-left: 2px solid var(--canary);
+  border-radius: 4px; padding: 10px 14px; margin-bottom: 16px; }
+.topo-caption-badge { display: inline-block; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--canary); border: 1px solid rgba(255,206,58,0.4); border-radius: 2px; padding: 1px 6px;
+  margin-right: 10px; vertical-align: 1px; }
+
+.topo-wrap { width: 100%; overflow-x: auto; }
+.topo-svg { width: 100%; min-width: 760px; height: auto; display: block; }
+
+/* Column headers + the dashed negative-space boundary. */
+.topo-col-h { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+  fill: var(--ink-faint); }
+.topo-col-h-decoy { fill: var(--canary-deep); }
+.topo-negspace-line { stroke: var(--canary-deep); stroke-width: 1; stroke-dasharray: 3 7; opacity: 0.35; }
+
+/* Edges. Learned = solid observe blue; live/deviant = faint dashed; touch = bright red. */
+.topo-edge { stroke-linecap: round; }
+.topo-edge-learned { stroke: var(--observe); opacity: 0.55; }
+.topo-edge-live { stroke: var(--contain); opacity: 0.5; stroke-dasharray: 5 5; }
+.topo-edge-touch { stroke: var(--sting); opacity: 0.95; filter: drop-shadow(0 0 6px rgba(255,77,96,0.65));
+  animation: topo-touch-pulse 1.8s ease-in-out infinite; }
+@keyframes topo-touch-pulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.55; } }
+
+/* Nodes. */
+.topo-node-c { stroke-width: 1.5; }
+.topo-node-c-service { fill: rgba(95,129,153,0.18); stroke: var(--observe); }
+.topo-node-c-caller { fill: rgba(234,240,245,0.06); stroke: var(--ink-dim); }
+.topo-node-c-external, .topo-node-c-unknown { fill: rgba(255,77,96,0.08); stroke: var(--sting); }
+.topo-node-c-decoy { fill: rgba(255,206,58,0.06); stroke: var(--canary); stroke-dasharray: 3 4; }
+.topo-node-label { font-family: var(--mono); font-size: 11px; fill: var(--ink); dominant-baseline: middle; }
+.topo-node-sub { font-family: var(--mono); font-size: 8.5px; fill: var(--ink-faint); dominant-baseline: middle; }
+.topo-node-decoy .topo-node-label { fill: var(--canary); }
+.topo-node-unknown .topo-node-label, .topo-node-external .topo-node-label { fill: var(--sting); }
+
+/* Legend below the graph. */
+.topo-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--line); font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+.topo-legend-item { display: inline-flex; align-items: center; gap: 7px; }
+.topo-swatch { width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; display: inline-block; }
+.topo-swatch-learned { border-top-color: var(--observe); }
+.topo-swatch-live { border-top-style: dashed; border-top-color: var(--contain); }
+.topo-swatch-touch { border-top-color: var(--sting); box-shadow: 0 0 6px rgba(255,77,96,0.6); }
+.topo-swatch-decoy { width: 12px; height: 12px; border-top: 0; border: 1.5px dashed var(--canary);
+  border-radius: 50%; background: rgba(255,206,58,0.06); }
+
+.topo-empty { font-family: var(--mono); font-size: 12px; padding: 40px 0; text-align: center; }
+.topo-rule8 { font-family: var(--mono); font-size: 9.5px; line-height: 1.5; color: var(--ink-faint);
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }

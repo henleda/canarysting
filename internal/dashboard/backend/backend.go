@@ -302,6 +302,21 @@ func (b *Backend) fetchLedger() views.RealAttackCostView {
 	}
 }
 
+// fetchTopology fetches the tap's /raw/topology and decodes it into the raw view.
+// It mirrors fetchState's plumbing (a plain GET + JSON decode); the backend talks
+// to the engine only over HTTP and never imports the tap package.
+func (b *Backend) fetchTopology() (views.TopologyTapView, error) {
+	var tv views.TopologyTapView
+	body, err := b.get(b.cfg.TapBaseURL + "/raw/topology")
+	if err != nil {
+		return tv, err
+	}
+	if err := json.Unmarshal(body, &tv); err != nil {
+		return tv, fmt.Errorf("decode topology: %w", err)
+	}
+	return tv, nil
+}
+
 func (b *Backend) get(rawURL string) ([]byte, error) {
 	if _, err := url.Parse(rawURL); err != nil {
 		return nil, fmt.Errorf("bad url %q: %w", rawURL, err)
@@ -342,6 +357,7 @@ func (b *Backend) Handler() http.Handler {
 	mux.HandleFunc("GET /api/flows", b.serveFlowsList)
 	mux.HandleFunc("GET /api/cost", b.serveCostBreakdown)
 	mux.HandleFunc("GET /api/recon", b.serveReconTimeline)
+	mux.HandleFunc("GET /api/topology", b.serveTopology)
 	return mux
 }
 
@@ -474,6 +490,21 @@ func (b *Backend) serveReconTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	setWindowHeader(w, sinceSec, effSec)
 	writeJSON(w, views.DeriveReconTimeline(events, time.Now()))
+}
+
+// serveTopology serves GET /api/topology: the F1 learned east-west topology. It
+// fetches the tap's /raw/topology per request (the graph is cheap and changes on
+// its own cadence — not part of the polled Overview snapshot), validates/shapes it
+// via views.DeriveTopology, and serves the result. On tap failure it returns 503
+// (no last-good cache for topology — an empty/stale graph would mislead; an honest
+// error is better). Read-side only (Rule 8) and local-only (Rule 9).
+func (b *Backend) serveTopology(w http.ResponseWriter, _ *http.Request) {
+	raw, err := b.fetchTopology()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "tap unreachable")
+		return
+	}
+	writeJSON(w, views.DeriveTopology(raw))
 }
 
 // maxSinceSec is the cookie-reuse-safe upper bound on the drill-down window

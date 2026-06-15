@@ -30,11 +30,13 @@ import (
 	"github.com/canarysting/canarysting/api/enginegrpc"
 	"github.com/canarysting/canarysting/bpf/observe"
 	"github.com/canarysting/canarysting/internal/boot"
+	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/dashboard/tap"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/intelligence/stagedlabel"
+	"github.com/canarysting/canarysting/internal/topology/identity"
 	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
@@ -74,6 +76,7 @@ func main() {
 
 		tapAddr      = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
 		simPeersDemo = flag.Bool("sim-peers-demo", false, "DEMO ONLY: mark the consumed cross-customer patterns as SIMULATED (cmd/sim-peers) so the dashboard discloses they came from synthetic peers we operate, not real customers. Auto-detected too if a <shared-spool>.simulated marker is present, so a forgotten flag can't silently present simulated data as real.")
+		topoIdents   = flag.String("topology-identities", "", "F1 learned-topology: JSON operator-declared node-identity map (IP/CIDR/port -> name) used to LABEL the topology nodes on /raw/topology (internal/topology/identity). Operator metadata, NOT an engine verdict; the engine knows only hashed adjacency. Nil-tolerant: with no file the topology nodes fall back to IP labels and staged_labels=false. Demo: deploy/m7-window/topology-identities.json.")
 
 		registryPath = flag.String("ground-truth-registry", "", "REQUIRED: JSON file declaring legit vs attacker source IPs per scope")
 		iAmStaged    = flag.Bool("i-am-running-a-staged-range", false, "REQUIRED acknowledgement: this binary auto-labels from declared ground truth and must NEVER run in production")
@@ -173,10 +176,30 @@ func main() {
 	// state + the locked EventStore). It serves raw JSON only; all presentation is
 	// in the separate dashboard-backend.
 	if *tapAddr != "" {
+		// F1 topology node labeler (internal/topology/identity). NIL-TOLERANT: with
+		// no -topology-identities file the resolver is left nil and the tap degrades
+		// every node to its IP label (staged_labels=false). A present-but-unparseable
+		// file is a fatal misconfig — an operator map with a typo must not silently
+		// mis-name (or drop) a node.
+		var topoResolver *identity.Resolver
+		if *topoIdents != "" {
+			cfg, err := identity.LoadConfigFile(*topoIdents)
+			if err != nil {
+				log.Fatalf("staged-range: -topology-identities: %v", err)
+			}
+			topoResolver = identity.NewResolver(cfg)
+			log.Printf("staged-range: topology node labeler loaded from %q (%d entries)", *topoIdents, len(cfg.Entries))
+		}
 		src := &tap.Source{
 			Scope: contract.ScopeKey(*boundary), Calib: built.Calib,
 			Baseline: built.Baseline, Events: built.Events, Aggregator: built.Aggregator,
 			SharedSet: built.SharedSet, SimulatedPeers: *simPeersDemo || simulatedSpoolMarker(*sharedSpool),
+			Resolver: topoResolver,
+			// Drive the decoy ring from the authoritative catalog (same source the
+			// seeder plants from) instead of the tap's hardcoded nil-tolerance
+			// fallback, so the rendered decoys can never silently diverge from the
+			// canary types actually in play. cmd/envoy-adapter wires this too.
+			Catalog: catalog.Default(),
 		}
 		go func() {
 			log.Printf("staged-range: dashboard tap on %s", *tapAddr)
