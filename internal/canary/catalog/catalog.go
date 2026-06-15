@@ -198,11 +198,13 @@ func (c *Catalog) SeedWeights() map[contract.CanaryType]float64 {
 }
 
 // defaultEntries builds the five canary entries, ordered by intent strength.
-// Seed magnitudes are clamp-aware: with calibration's prior math (a0=seed,
-// b0=1.0, w0=2·a0/(a0+1)), the strongest seed (1.8 -> w0≈1.29) stays well inside
-// calibration's [0.1, 2.0] clamp, so the prior never dominates and the engine
-// overrides it once the evidence floor is met. Ordering follows docs/CANARY.md
-// ("planted credentials > a fake bucket listing").
+// Seed magnitudes set the RELATIVE intent of each decoy type: the engine's live
+// weight is intentNorm(type) × learned-maliciousness, where intentNorm = seed /
+// mean(seeds) is centered on 1.0 (so the strongest seed 1.8 -> intentNorm ≈ 1.36
+// and the weakest 1.0 -> ≈ 0.76). Only the ratios matter, not the absolute values;
+// the engine clamps the final weight to [0.1, 3.0]. See docs/DECOY_WEIGHTS.md and
+// internal/engine/calibration. Ordering follows docs/CANARY.md ("planted
+// credentials > a fake bucket listing").
 func defaultEntries(r rng) []Entry {
 	return []Entry{
 		{Type: TypePlantedCredential, SeedWeight: 1.8, Generate: func() (Instance, error) { return genPlantedCredential(r) }, Harmless: plantedCredentialHarmless},
