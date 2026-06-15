@@ -27,7 +27,7 @@ export default function FlowsPage() {
   // FIXTURE path: filter the static list to the reached-cohort when min_tier is set.
   const fixtureData =
     minTier > 0
-      ? { ...fixtureFlowsList, flows: fixtureFlowsList.flows.filter((f) => f.peak_tier >= minTier) }
+      ? { ...fixtureFlowsList, flows: (fixtureFlowsList.flows ?? []).filter((f) => f.peak_tier >= minTier) }
       : fixtureFlowsList;
   const data = useFixture ? fixtureData : live.data;
 

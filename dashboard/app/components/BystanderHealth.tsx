@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import PanelHead from './PanelHead';
-import { WALL_LINK } from './LiveEscalation';
+import { WALL_LINK } from '@/lib/links';
 import { fmtBytes, fmtTimeLong } from '@/lib/format';
 import type { BystanderView, BystanderFlow } from '@/lib/types';
 
@@ -49,7 +49,7 @@ function BystanderRow({ f }: { f: BystanderFlow }) {
   return (
     <div className="ev">
       <span className="ts">
-        <Link href={`/flow/${f.flow_id_hex}?since=1h`} style={WALL_LINK}>{f.flow_id_hex}</Link>
+        <Link href={`/flow/${f.flow_id_hex}?since=1h`} style={WALL_LINK} aria-label={`view flow ${f.flow_id_hex}`}>{f.flow_id_hex}</Link>
       </span>
       <span className="what">
         {fmtBytes(f.bytes)} served · {fmtTimeLong(f.duration_sec)}

@@ -78,7 +78,7 @@ export default function FlowDetail({ detail, loading, cookie }: { detail: FlowDe
           // features (e.g. recorded before observe re-tracked it) gets M=1.0 neutral.
           <div className="flow-sub">
             No per-touch baseline features recorded for this flow in the window — M defaults to 1.0 (neutral).
-            The wall’s baseline multiplier reflects the current live calibrated state.
+            The Credibility page’s baseline multiplier reflects the current live calibrated state.
           </div>
         )}
       </section>

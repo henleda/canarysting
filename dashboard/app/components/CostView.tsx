@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { fmtBytes, fmtInt, fmtK, fmtPct, fmtTime } from '@/lib/format';
 import { useSince } from './SinceProvider';
-import type { CostBreakdown } from '@/lib/types';
+import type { AxisReactionView, CostBreakdown, EngagementView } from '@/lib/types';
 
 // CostView: total hero + by-mechanism + by-flow (session rows) + zero-filled
-// time series. Real attacker cost; defender cost is structurally flat.
+// time series. Imposed attacker cost (proxy/estimate); defender cost is structurally flat.
+// The attacker's ground-truth Anthropic spend lives in real_attack_cost.
 export default function CostView({ data, loading }: { data: CostBreakdown | null; loading: boolean }) {
   const { since } = useSince();
   if (!data) return <div className="faint mono">{loading ? 'WARMING UP…' : 'no cost data'}</div>;
@@ -15,6 +16,9 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
   const timeSeries = data.time_series ?? [];
   const byMechanism = data.by_mechanism ?? [];
   const byFlow = data.by_flow ?? [];
+  // Nested objects can also arrive null/missing; guard so the reads never crash.
+  const eng = data.engagement ?? ({} as EngagementView);
+  const rx = data.reactions ?? ({} as AxisReactionView);
   const peakHeld = Math.max(1, ...timeSeries.map((b) => b.time_held_sec));
 
   return (
@@ -22,10 +26,10 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
       <section className="detail-section">
         <h3>imposed cost · total (window)</h3>
         <div className="cost-metrics">
-          <div className="cm"><div className="v">{fmtTime(data.total.time_held_sec)}</div><div className="k">time imposed</div></div>
-          <div className="cm"><div className="v">{fmtK(data.total.token_cost)}</div><div className="k">tokens (proxy)</div></div>
-          <div className="cm"><div className="v">{fmtInt(data.total.requests)}</div><div className="k">reqs absorbed</div></div>
-          <div className="cm"><div className="v">{fmtBytes(data.total.bytes_served)}</div><div className="k">bytes served</div></div>
+          <div className="cm"><div className="v">{fmtTime(data.total?.time_held_sec ?? 0)}</div><div className="k">time imposed</div></div>
+          <div className="cm"><div className="v">{fmtK(data.total?.token_cost ?? 0)}</div><div className="k">tokens (proxy)</div></div>
+          <div className="cm"><div className="v">{fmtInt(data.total?.requests ?? 0)}</div><div className="k">reqs absorbed</div></div>
+          <div className="cm"><div className="v">{fmtBytes(data.total?.bytes_served ?? 0)}</div><div className="k">bytes served</div></div>
         </div>
       </section>
 
@@ -72,13 +76,13 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
       <section className="detail-section">
         <h3>engagement contest</h3>
         <div className="cost-metrics">
-          <div className="cm"><div className="v">{fmtTime(data.engagement.median_sec)}</div><div className="k">median held</div></div>
-          <div className="cm"><div className="v">{fmtTime(data.engagement.p90_sec)}</div><div className="k">p90 held</div></div>
-          <div className="cm"><div className="v">{fmtTime(data.engagement.longest_sec)}</div><div className="k">longest held</div></div>
+          <div className="cm"><div className="v">{fmtTime(eng.median_sec)}</div><div className="k">median held</div></div>
+          <div className="cm"><div className="v">{fmtTime(eng.p90_sec)}</div><div className="k">p90 held</div></div>
+          <div className="cm"><div className="v">{fmtTime(eng.longest_sec)}</div><div className="k">longest held</div></div>
         </div>
         <div className="faint" style={{ marginTop: 8, fontSize: 12 }}>
-          <span style={{ color: 'var(--sting)' }}>{fmtPct(data.engagement.disengaged_early_fraction)} disengaged early</span>
-          {' '}— {data.engagement.disengaged_early} gave up · {data.engagement.defender_capped} capped · {data.engagement.generator_exhausted} exhausted
+          <span style={{ color: 'var(--sting)' }}>{fmtPct(eng.disengaged_early_fraction)} disengaged early</span>
+          {' '}— {eng.disengaged_early ?? 0} gave up · {eng.defender_capped ?? 0} capped · {eng.generator_exhausted ?? 0} exhausted
         </div>
       </section>
 
@@ -86,13 +90,13 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
         <h3>deception reactions</h3>
         <div className="cost-metrics">
           <div className="cm">
-            <div className="v" style={data.reactions.poison_reached > 0 ? { color: 'var(--sting)' } : undefined}>
-              {data.reactions.poison_reached > 0 ? data.reactions.poison_class || `stage ${data.reactions.poison_reached}` : '—'}
+            <div className="v" style={(rx.poison_reached ?? 0) > 0 ? { color: 'var(--sting)' } : undefined}>
+              {(rx.poison_reached ?? 0) > 0 ? rx.poison_class || `stage ${rx.poison_reached}` : '—'}
             </div>
             <div className="k">poison reached</div>
           </div>
-          <div className="cm"><div className="v">{fmtInt(data.reactions.exploits_observed)}</div><div className="k">exploits fired</div></div>
-          <div className="cm"><div className="v">{fmtInt(data.reactions.exposure_signals)}</div><div className="k">tooling exposed</div></div>
+          <div className="cm"><div className="v">{fmtInt(rx.exploits_observed)}</div><div className="k">exploits fired</div></div>
+          <div className="cm"><div className="v">{fmtInt(rx.exposure_signals)}</div><div className="k">tooling exposed</div></div>
         </div>
       </section>
 
@@ -105,11 +109,16 @@ export default function CostView({ data, loading }: { data: CostBreakdown | null
             <thead><tr><th>cookie</th><th>tier</th><th>time imposed</th><th>tokens</th></tr></thead>
             <tbody>
               {byFlow.map((f, i) => {
-                const start = Math.floor(new Date(f.session_start).getTime() / 1000);
+                const t = new Date(f.session_start).getTime();
+                const start = Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+                const href =
+                  start > 0
+                    ? `/flow/${f.flow_id_hex}?since=${since}&session=${start}`
+                    : `/flow/${f.flow_id_hex}?since=${since}`;
                 return (
                   <tr key={`${f.flow_id_hex}-${f.session_index}`} className={f.peak_tier >= 3 ? 't3' : f.peak_tier === 2 ? 't2' : ''}>
                     <td className="cookie">
-                      <Link href={`/flow/${f.flow_id_hex}?since=${since}&session=${start}`}>{f.flow_id_hex}</Link>
+                      <Link href={href}>{f.flow_id_hex}</Link>
                       {f.session_count > 1 && <span className="session-badge">{f.session_index}/{f.session_count}</span>}
                     </td>
                     <td className="tiercell">T{f.peak_tier}</td>
