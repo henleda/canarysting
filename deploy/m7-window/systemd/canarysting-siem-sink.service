@@ -1,0 +1,19 @@
+[Unit]
+Description=CanarySting M7 demo MOCK SIEM receiver (one-way webhook ingest -> NDJSON file)
+Documentation=https://github.com/henleda/canarysting
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# A demo stand-in for the customer's OWN SIEM/SOAR: it receives the engine's one-way
+# SIEM webhook POSTs and appends each rich, ATT&CK-tagged event as NDJSON. NOT product
+# code; loopback-only. StateDirectory gives a durable /var/lib/canarysting for the file.
+StateDirectory=canarysting
+Environment=SIEM_SINK_ADDR=127.0.0.1:9600
+Environment=SIEM_SINK_FILE=/var/lib/canarysting/siem-sink.ndjson
+ExecStart=/opt/canarysting/bin/siem-sink
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
