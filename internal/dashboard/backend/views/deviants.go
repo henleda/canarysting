@@ -18,7 +18,7 @@ package views
 // It is verbatim the fence the panel will test. It states the hunting-only,
 // never-armed posture (Rule 8) without ever implying these are confirmed
 // adversaries or that the page took any action.
-const deviantsCaption = "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9)."
+const deviantsCaption = "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9)."
 
 // deviantsSimulatedNote is appended-as-a-separate-badge note when Simulated is true:
 // the synthetic-peer demo posture is running. The deviant flows are still real
@@ -38,6 +38,10 @@ type DeviantEndpointView struct {
 type DeviantRowView struct {
 	Src DeviantEndpointView `json:"src"`
 	Dst DeviantEndpointView `json:"dst"`
+
+	// SrcFamiliarity mirrors the tap's src_familiarity ("unfamiliar" | "known"): the
+	// hunting headline keyed on the SRC identity. Passed through unchanged.
+	SrcFamiliarity string `json:"src_familiarity"`
 
 	IdentityNovelty  float64 `json:"identity_novelty"`
 	AdjacencyNovelty float64 `json:"adjacency_novelty"`

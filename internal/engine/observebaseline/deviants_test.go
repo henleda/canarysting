@@ -75,6 +75,88 @@ func TestDeviantCaptureGatesToDeviantNonArmed(t *testing.T) {
 	}
 }
 
+// notLiveFloor is testFloor but with MinCalendarDays raised above what a single-day
+// accrual can satisfy. A single-tick benign accrual then makes the bucket SUFFICIENT
+// (MinDaysPerBucket=1) yet leaves the scope NOT-LIVE (it spans only 1 calendar day,
+// below MinCalendarDays=3) — isolating the maturity (live) gate ABOVE the
+// bucket-sufficient gate so the not-live test cannot be explained by sufficiency.
+func notLiveFloor() DataFloor {
+	f := testFloor()
+	f.MinCalendarDays = 3
+	return f
+}
+
+// MATURITY GATE — a DEVIANT, NON-ARMED flow in a NOT-LIVE scope is NOT captured: the
+// cold-re-learn/warm-up suppression. The baseline fold STILL ran (CompletedFolds
+// counts it) and the skip is observable (DeviantsSkippedNotLive); only the deviant
+// dossier is withheld until the scope matures.
+func TestDeviantNotLiveScopeNotCaptured(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	gates := newRecordGates()
+	agg := New(Config{
+		Reader: r, Gates: gates, Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: notLiveFloor(), Now: func() time.Time { return now },
+	})
+	accrueBenign(t, agg, r, now) // bucket becomes sufficient, but scope spans 1 day < MinCalendarDays=3
+
+	bucket := baseline.WindowBucketer(now)
+	if !gates.suff[string(testScope)+"|"+bucket] {
+		t.Fatalf("precondition: bucket %q must be sufficient (isolates the live gate)", bucket)
+	}
+	if gates.isLive(testScope) {
+		t.Fatal("precondition: scope must NOT be live (single calendar day < MinCalendarDays)")
+	}
+
+	before := agg.Stats()
+	// A never-seen identity (.199) — maximal novelty, well above deviantFloor, not
+	// armed, bucket sufficient — yet the scope is NOT live, so it must NOT be captured.
+	completeFlow(agg, r, 3000, flowFromIPs(199, 1, 1400, 12, 2_000_000), now)
+
+	if dv := agg.deviantsFor(testScope); dv != nil && len(dv.records) != 0 {
+		t.Fatalf("deviant captured in a NOT-live scope: %d records (maturity gate failed)", len(dv.records))
+	}
+	after := agg.Stats()
+	// The baseline fold still ran — the maturity gate is on the deviant path ONLY.
+	if after.CompletedFolds <= before.CompletedFolds {
+		t.Fatalf("CompletedFolds did not advance (baseline fold must run regardless): %d -> %d", before.CompletedFolds, after.CompletedFolds)
+	}
+	if after.DeviantsSkippedNotLive <= before.DeviantsSkippedNotLive {
+		t.Fatalf("DeviantsSkippedNotLive did not advance: %d -> %d", before.DeviantsSkippedNotLive, after.DeviantsSkippedNotLive)
+	}
+}
+
+// MATURITY GATE — the SAME deviant flow IS captured once the scope is LIVE (the
+// bucket sufficient + novelty>=floor + non-armed gates all hold and now the scope is
+// mature). Pairs with TestDeviantNotLiveScopeNotCaptured to prove the live gate is
+// the only difference.
+func TestDeviantLiveScopeCaptured(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	gates := newRecordGates()
+	agg := New(Config{
+		Reader: r, Gates: gates, Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
+	})
+	accrueBenign(t, agg, r, now) // testFloor: MinCalendarDays=1, so a single-day accrual lives the scope
+
+	if !gates.isLive(testScope) {
+		t.Fatal("precondition: scope must be live after benign accrual under testFloor")
+	}
+
+	before := agg.Stats()
+	completeFlow(agg, r, 3000, flowFromIPs(199, 1, 1400, 12, 2_000_000), now)
+
+	dv := agg.deviantsFor(testScope)
+	if dv == nil || len(dv.records) != 1 {
+		t.Fatalf("want exactly 1 deviant record once live, got %v", dv)
+	}
+	after := agg.Stats()
+	if after.DeviantsSkippedNotLive != before.DeviantsSkippedNotLive {
+		t.Fatalf("DeviantsSkippedNotLive advanced while live: %d -> %d (capture should not be skipped)", before.DeviantsSkippedNotLive, after.DeviantsSkippedNotLive)
+	}
+}
+
 // A NORMAL (low-novelty) flow produces NO deviant record: we keep no dossier on
 // normal traffic.
 func TestDeviantNormalFlowNotCaptured(t *testing.T) {
@@ -204,6 +286,15 @@ func TestDeviantWallClockStamping(t *testing.T) {
 	// time would land in a fresh, insufficient bucket and skip capture.
 	later := first.Add(2 * time.Hour)
 	clk = later
+	// Re-accrue benign at `later` to keep the scope FRESH/LIVE: the 2h gap exceeds the
+	// testFloor FreshnessTTL (1h), so without a fresh fold the scope would go stale
+	// (not-live) and the maturity gate would skip the recurrence. Use FRESH cookies
+	// (the 1000-range are already folded and would be skipped), folding at `later` so
+	// the gate loop re-lives the scope; by the recurrence's closing tick scopeLive is
+	// true (prior-tick).
+	for i := 0; i < 30; i++ {
+		completeFlow(agg, r, uint64(2000+i), flowFromIPs(byte(5+i%3), 1, 1400, 12, 2_000_000), later)
+	}
 	completeFlow(agg, r, 7001, flowFromIPs(199, 1, 1400, 12, 2_000_000), later)
 	for _, v := range dv.records {
 		rec = v

@@ -26,7 +26,7 @@ import type { DeviantsView, DeviantRow, DeviantEndpoint } from '@/lib/types';
 // Byte-identical fallback if the backend ever omits the pre-rendered caption (it
 // should not) — kept in lockstep with views/deviants.go deviantsCaption.
 const FALLBACK_CAPTION =
-  'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).';
+  'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).';
 
 export default function DeviantsPage() {
   const { snapshot, status } = useOverview();
@@ -110,10 +110,20 @@ export default function DeviantsPage() {
 // mini-bar set, the recurrence count, and last-seen. Vocabulary is "anomalous" /
 // "logged" — never "detected" / "blocked" (we are not acting on it).
 function DeviantRowCard({ r }: { r: DeviantRow }) {
+  // The hunting headline: an UNFAMILIAR source (an identity the operator never
+  // registered — the careful-mover / recon lead) is ranked first and flagged. A
+  // KNOWN source that deviates is a lower-priority, honest lead.
+  const unfamiliar = r.src_familiarity === 'unfamiliar';
   return (
-    <div className="deviant-card">
+    <div className={`deviant-card${unfamiliar ? ' deviant-card-unfamiliar' : ''}`}>
       <div className="deviant-head">
         <span className="deviant-fp">
+          <span
+            className={`deviant-fam ${unfamiliar ? 'deviant-fam-unfamiliar' : 'deviant-fam-known'}`}
+            title={unfamiliar ? 'unfamiliar source — unregistered identity (hunting lead)' : 'known source — declared identity'}
+          >
+            {unfamiliar ? 'unfamiliar' : 'known'}
+          </span>
           <Endpoint e={r.src} role="from" />
           <span className="deviant-arrow">→</span>
           <Endpoint e={r.dst} role="to" />

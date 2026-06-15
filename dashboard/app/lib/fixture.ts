@@ -473,7 +473,7 @@ export const fixtureDeviants: DeviantsView = {
   staged_labels: true,
   simulated: true,
   caption:
-    'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).',
+    'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).',
   simulated_note:
     'Demo posture: synthetic-peer cross-customer context is simulated. The deviant flows shown are real local observations.',
   rows: [
@@ -481,6 +481,7 @@ export const fixtureDeviants: DeviantsView = {
       // The careful-mover: fresh, unregistered identity -> resolves UNKNOWN/raw-IP.
       src: { label: '10.20.1.104', kind: 'unknown', addr: '10.20.1.104', port: 0 },
       dst: { label: 'api', kind: 'service', addr: '127.0.1.2', port: 8002 },
+      src_familiarity: 'unfamiliar',
       identity_novelty: 0.93,
       adjacency_novelty: 0.81,
       port_novelty: 0.12,
@@ -497,6 +498,7 @@ export const fixtureDeviants: DeviantsView = {
       // New-identity burst: another unregistered identity probing auth.
       src: { label: '10.20.1.207', kind: 'unknown', addr: '10.20.1.207', port: 0 },
       dst: { label: 'auth', kind: 'service', addr: '127.0.1.3', port: 8003 },
+      src_familiarity: 'unfamiliar',
       identity_novelty: 0.88,
       adjacency_novelty: 0.74,
       port_novelty: 0.34,
@@ -513,6 +515,7 @@ export const fixtureDeviants: DeviantsView = {
       // Volume-spike: a KNOWN caller moving far more data than baseline.
       src: { label: 'etl-scheduler', kind: 'caller', addr: '10.20.1.108', port: 0 },
       dst: { label: 'db-replica', kind: 'service', addr: '127.0.1.10', port: 8010 },
+      src_familiarity: 'known',
       identity_novelty: 0.08,
       adjacency_novelty: 0.12,
       port_novelty: 0.05,
