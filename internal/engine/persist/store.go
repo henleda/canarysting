@@ -19,13 +19,25 @@ const SchemaVersion = 1
 // Top-level bbolt buckets. Each (except meta) nests one sub-bucket per scope key,
 // so scope isolation (CLAUDE.md rule 5) is enforced by the storage layout itself.
 var (
-	bktBaseline  = []byte("baseline")  // scope -> {windowBucketKey -> aggregate gob blob}
-	bktMalicious = []byte("malicious") // scope -> {8-byte idHash -> 1} (confirmed-malicious identities)
-	bktEvents    = []byte("events")    // scope -> {8-byte seq -> event gob blob}
-	bktTopology  = []byte("topology")  // scope -> {edgeKey|nodeKey -> gob record blob} (F1 learned east-west topology, local-rich)
-	bktDeviants  = []byte("deviants")  // scope -> {deviantKey -> gob record blob} (F2 rich non-tripwire deviant log, local-rich)
-	bktL7Touches = []byte("l7touches") // scope -> {touchKey -> gob record blob} (slice-1 enriched canary-touch record, local-rich)
-	bktMeta      = []byte("meta")      // global -> {metaKey -> blob} (heartbeat, schema)
+	bktBaseline   = []byte("baseline")   // scope -> {windowBucketKey -> aggregate gob blob}
+	bktMalicious  = []byte("malicious")  // scope -> {8-byte idHash -> 1} (confirmed-malicious identities)
+	bktEvents     = []byte("events")     // scope -> {8-byte seq -> event gob blob}
+	bktTopology   = []byte("topology")   // scope -> {edgeKey|nodeKey -> gob record blob} (F1 learned east-west topology, local-rich)
+	bktDeviants   = []byte("deviants")   // scope -> {deviantKey -> gob record blob} (F2 rich non-tripwire deviant log, local-rich)
+	bktL7Touches  = []byte("l7touches")  // scope -> {touchKey -> gob record blob} (slice-1 enriched canary-touch record, local-rich)
+	bktAuditChain = []byte("auditchain") // scope -> { "records" sub-bucket: 8-byte seq -> audit record blob ; "head" key -> 32-byte chain head } (SLICE-A tamper-evident hash-chained audit log, local-rich)
+	bktMeta       = []byte("meta")       // global -> {metaKey -> blob} (heartbeat, schema)
+)
+
+// Keys WITHIN a per-scope audit-chain bucket (bktAuditChain/<scope>). The chain
+// records ride a nested "records" sub-bucket so they own a private monotonic
+// sequence (NextSequence) independent of any other store; the per-scope chain
+// head is a single fixed value key alongside it. Head and the appended record
+// commit in ONE transaction (AppendAuditAndHead) so a crash can never leave the
+// head ahead of (or behind) the record it attests.
+var (
+	auditRecordsSub = []byte("records") // sub-bucket under bktAuditChain/<scope>: 8-byte seq -> record blob
+	auditHeadKey    = []byte("head")    // value key under bktAuditChain/<scope>: the 32-byte chain head
 )
 
 // Meta keys under bktMeta (global, not scope-partitioned — these are about the
@@ -64,7 +76,13 @@ func Open(path string) (*Store, int, error) {
 		// the SAME tolerant way and for the same reason: a live M7 baseline.db that
 		// predates it must keep opening (no SchemaVersion bump — the create is a no-op
 		// when present, a fresh empty bucket when absent).
-		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktL7Touches, bktMeta} {
+		// bktAuditChain (the SLICE-A tamper-evident hash-chained audit log, local-rich)
+		// is added the SAME tolerant way and for the same reason: a multi-week live
+		// baseline.db that predates it must keep opening (NO SchemaVersion bump; the
+		// create is a no-op when present, a fresh empty bucket when absent). An absent
+		// per-scope head then seeds from genesis on the first audit append for that
+		// scope after upgrade.
+		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktL7Touches, bktAuditChain, bktMeta} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -541,6 +559,125 @@ func (s *Store) RangeL7Touches(scope contract.ScopeKey, fn func(key, blob []byte
 func (s *Store) RangeL7TouchScopes(fn func(scope contract.ScopeKey) error) error {
 	return s.db.View(func(tx *bolt.Tx) error {
 		root := tx.Bucket(bktL7Touches)
+		if root == nil {
+			return nil
+		}
+		return root.ForEachBucket(func(k []byte) error {
+			return fn(contract.ScopeKey(append([]byte(nil), k...)))
+		})
+	})
+}
+
+// --- per-scope tamper-evident audit chain (SLICE A) -------------------------
+//
+// The auditchain bucket holds the LOCAL-RICH, tamper-evident hash-chained audit
+// log: one record per Tier>=Tag decision (and, via the slice-B Append API, per
+// operator action) capturing the action facts AND the raw L7 + identity context
+// at decision time. Each per-scope chain is independent (rule 5); records ride a
+// private monotonic sequence in a nested "records" sub-bucket and the per-scope
+// chain head sits beside them at auditHeadKey. It is scope-isolated by layout
+// (the scope sub-bucket) like every other store, and is LOCAL-ONLY: nothing here
+// ever feeds internal/intelligence/network (the cross-customer egress path stays
+// coarse/hashed/addressless; rule 9). The egress import guard forbids the egress
+// filter from transitively importing persist, so the raw record is structurally
+// unreachable from a deployment boundary.
+
+// AppendAuditAndHead atomically advances one scope's hash chain: it reads the
+// CURRENT per-scope head, reserves the next monotonic seq, calls mk(prevHead, seq)
+// to build the record blob (the caller embeds seq in the record and computes
+// newHead = H(prevHead || record-without-hash), so seq is part of the hashed
+// preimage), appends the blob under that seq, and writes newHead as the new
+// per-scope head — ALL in ONE bbolt transaction (one fsync). bbolt serializes
+// writers, and the read-of-prev-head + the seq reservation happen INSIDE that same
+// write transaction, so two concurrent Submits in the same scope cannot read the
+// same prev head / seq and fork the chain (the second sees the first's committed
+// head). An absent head (a fresh scope, or a baseline.db that predates this bucket)
+// is reported to mk as the empty genesis (nil), which the caller seeds from a fixed
+// genesis constant. Returns the assigned seq. Refused on a read-only store.
+func (s *Store) AppendAuditAndHead(scope contract.ScopeKey, mk func(prevHead []byte, seq uint64) (recordBlob, newHead []byte, err error)) (uint64, error) {
+	if s.readOnly {
+		return 0, ErrReadOnly
+	}
+	if scope == "" {
+		return 0, errors.New("persist: empty scope in audit append")
+	}
+	var seq uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		sb, err := scopeSub(tx, bktAuditChain, scope, true)
+		if err != nil {
+			return err
+		}
+		var prevHead []byte
+		if h := sb.Get(auditHeadKey); h != nil {
+			prevHead = append([]byte(nil), h...) // copy out of the tx-owned slice
+		}
+		recs, err := sb.CreateBucketIfNotExists(auditRecordsSub)
+		if err != nil {
+			return err
+		}
+		seq, err = recs.NextSequence()
+		if err != nil {
+			return err
+		}
+		recordBlob, newHead, err := mk(prevHead, seq)
+		if err != nil {
+			return err
+		}
+		var key [8]byte
+		binary.BigEndian.PutUint64(key[:], seq)
+		if err := recs.Put(key[:], append([]byte(nil), recordBlob...)); err != nil {
+			return err
+		}
+		return sb.Put(auditHeadKey, append([]byte(nil), newHead...))
+	})
+	return seq, err
+}
+
+// GetAuditHead returns one scope's current chain head, ok=false if the scope has
+// no chain yet (genesis). It is the rehydrate read mirrored on boot.
+func (s *Store) GetAuditHead(scope contract.ScopeKey) (head []byte, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		sb, err := scopeSub(tx, bktAuditChain, scope, false)
+		if err != nil || sb == nil {
+			return err
+		}
+		if h := sb.Get(auditHeadKey); h != nil {
+			head = append([]byte(nil), h...)
+			ok = true
+		}
+		return nil
+	})
+	return head, ok, err
+}
+
+// RangeAuditChain calls fn for every (seq, blob) in scope's chain in ascending
+// seq order (chain order, oldest first) — the order Verify/Export walk. blob must
+// not be retained past the call (it points into the read transaction).
+func (s *Store) RangeAuditChain(scope contract.ScopeKey, fn func(seq uint64, blob []byte) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		sb, err := scopeSub(tx, bktAuditChain, scope, false)
+		if err != nil || sb == nil {
+			return err
+		}
+		recs := sb.Bucket(auditRecordsSub)
+		if recs == nil {
+			return nil
+		}
+		return recs.ForEach(func(k, v []byte) error {
+			if v == nil || len(k) != 8 {
+				return nil
+			}
+			return fn(binary.BigEndian.Uint64(k), v)
+		})
+	})
+}
+
+// RangeAuditChainScopes calls fn for every scope that has an audit chain,
+// independently of baseline-bucket presence — the rehydrate enumerator (mirror of
+// RangeL7TouchScopes).
+func (s *Store) RangeAuditChainScopes(fn func(scope contract.ScopeKey) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		root := tx.Bucket(bktAuditChain)
 		if root == nil {
 			return nil
 		}

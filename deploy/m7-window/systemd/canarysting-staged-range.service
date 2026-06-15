@@ -27,6 +27,15 @@ StateDirectory=canarysting
 # is LOCAL-RICH (raw src/path/SPIFFE) and goes to the OPERATOR'S OWN SIEM — it is NOT the
 # cross-customer feed; never point a webhook at a shared/third-party endpoint expecting
 # anonymization.
+# $AUDIT_HMAC_FLAG keys the SLICE-A tamper-evident audit chain with HMAC-SHA256. Empty
+# (the default) -> the chain is UNKEYED (sha256): it detects accidental corruption +
+# naive edits, but NOT a knowledgeable baseline.db-write adversary, and whole-scope
+# erasure is undetected (needs an external witness; roadmap). To KEY it, place a secret
+# key file OUTSIDE the DB (e.g. /etc/canarysting/audit-hmac.key, mode 0600, NOT committed
+# and NOT on the same trust boundary as baseline.db) and set
+#   AUDIT_HMAC_FLAG=-audit-hmac-key /etc/canarysting/audit-hmac.key
+# Then a file-only attacker who edits/removes/reorders/truncates records without the key
+# cannot produce a chain Verify accepts. Left OFF here so the default window is unkeyed.
 ExecStart=/opt/canarysting/bin/staged-range \
   -scope-boundary ${SCOPE} \
   -grpc-addr 127.0.0.1:50052 \
@@ -43,6 +52,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   $CONSUME_FLAG \
   $SHARED_SPOOL_FLAG \
   $SIEM_FLAG \
+  $AUDIT_HMAC_FLAG \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3
