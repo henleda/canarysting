@@ -1,6 +1,7 @@
 package boot_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/canarysting/canarysting/bpf/observe"
 	"github.com/canarysting/canarysting/internal/boot"
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/intelligence/audit"
 )
 
 // Refuse-to-start: with no resolvable scope, Build fails (never a global scope).
@@ -75,6 +77,83 @@ func TestCaptureWiringRecordsInteractions(t *testing.T) {
 	}
 	if got[0].Tier < int(contract.TierTag) {
 		t.Errorf("captured an Observe-tier event: tier=%d", got[0].Tier)
+	}
+}
+
+// SLICE A: with a durable DB the engine appends a TAMPER-EVIDENT audit record for a
+// Tier>=Tag verdict at the Submit seam, threading the RAW L7/identity context — while
+// the addressless cross-customer egress event stays byte-for-byte addressless. The
+// chain validates end-to-end. Mirrors TestCaptureWiringRecordsInteractions' scoring.
+func TestAuditChainCapturedAtSubmitSeam(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "baseline.db")
+	built, err := boot.Build(boot.Options{Boundary: "scopeA", Window: time.Minute, BaselineDBPath: db}, observe.NoopObserver{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.Close()
+	if built.Audit == nil {
+		t.Fatal("audit store not wired with a DB path")
+	}
+
+	now := time.Now()
+	// A flow carrying the raw L7 + identity context the adapter stamps.
+	flow := contract.FlowIdentity{
+		SocketCookie: 0xBEEF,
+		SPIFFEID:     "spiffe://cluster/sa/scanner",
+		L7Attributes: map[string]string{
+			contract.AttrRequestMethod: "GET",
+			contract.AttrRequestPath:   "/.env?token=abc",
+			contract.AttrSourceAddress: "203.0.113.7:54321",
+		},
+	}
+	// First touch: Observe tier → not chained. Second distinct touch: Tag → chained.
+	if _, err := built.Engine.Submit(contract.SignalEvent{Flow: flow, Scope: "scopeA", Canary: "aws.key", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := built.Engine.Submit(contract.SignalEvent{Flow: flow, Scope: "scopeA", Canary: "ssh.key", Timestamp: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) Exactly one tamper-evident record, threaded with the raw L7/identity context.
+	blob, err := built.Audit.Export("scopeA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report audit.CaseReport
+	if err := json.Unmarshal(blob, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Records) != 1 {
+		t.Fatalf("audit chain has %d records, want 1 (Observe dropped, Tag chained)", len(report.Records))
+	}
+	r := report.Records[0]
+	if r.Path != "/.env?token=abc" || r.SourceAddress != "203.0.113.7:54321" || r.SPIFFEID != "spiffe://cluster/sa/scanner" {
+		t.Fatalf("audit record did not thread the raw L7/identity context: %+v", r)
+	}
+	if r.SocketCookie != 0xBEEF || r.Tier < int(contract.TierTag) {
+		t.Fatalf("audit record action facts wrong: cookie=%x tier=%d", r.SocketCookie, r.Tier)
+	}
+	if r.BytesRealDataCrossed != 0 {
+		t.Fatalf("bytes_real_data_crossed must be the structural 0, got %d", r.BytesRealDataCrossed)
+	}
+	// (b) The chain validates.
+	if !report.Verify.Intact {
+		t.Fatalf("freshly captured chain must verify intact: %+v", report.Verify)
+	}
+
+	// (c) Rule 9: the addressless cross-customer egress event carries NO raw address —
+	// the rich context lives ONLY in the local audit record above. The egress event
+	// type has no address/path field by construction; assert the join-id is the cookie
+	// (an internal id) and nothing more leaked.
+	ev, err := built.Events.Query("scopeA", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ev) != 1 {
+		t.Fatalf("egress events = %d, want 1", len(ev))
+	}
+	if ev[0].FlowID != 0xBEEF {
+		t.Fatalf("egress event join id must be the socket cookie, got %x", ev[0].FlowID)
 	}
 }
 

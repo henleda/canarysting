@@ -48,6 +48,14 @@ func TestEgressFilterCannotReachRichLocalStores(t *testing.T) {
 		// TYPE lives here, so it needs its own forbidden entry.) If the egress filter
 		// ever imports it, raw L7 context could cross a deployment boundary (Rule 9).
 		"github.com/canarysting/canarysting/internal/intelligence/l7events",
+		// Slice-A tamper-evident audit log: a NEW package whose AuditRecord type holds
+		// the RAW source address / :method / :path / SPIFFE of a Tier>=Tag decision (the
+		// examiner's case file). Like l7events it is LOCAL-RICH and a SIBLING to the
+		// addressless egress event (it does NOT widen it). (persist above already covers
+		// the raw bytes via bktAuditChain, but the rich TYPE lives here, so it needs its
+		// own forbidden entry — the same reasoning as the l7events entry.) If the egress
+		// filter ever imports it, raw L7 context could cross a deployment boundary (Rule 9).
+		"github.com/canarysting/canarysting/internal/intelligence/audit",
 	}
 	deps := egressDeps(t, networkPkg)
 	for _, f := range forbidden {

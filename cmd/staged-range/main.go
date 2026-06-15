@@ -72,6 +72,7 @@ func main() {
 		windowBucketer  = flag.Bool("window-bucketer", true, "use the coarse M7 learning-window bucketer (8 buckets)")
 		maxGap          = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot")
 		resetSchema     = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build")
+		auditHMACKey    = flag.String("audit-hmac-key", "", "SLICE-A audit chain: path to an HMAC key FILE (read at boot, held OUTSIDE baseline.db, like /etc/canarysting/anthropic.key) that KEYS the tamper-evident audit chain with HMAC-SHA256 — a file-only attacker with DB write access but WITHOUT this key cannot forge a chain Verify accepts (edit/removal/reorder/tail-truncate-then-rewrite-head all detected). EMPTY (default) => the UNKEYED sha256 chain, which catches accidental corruption + naive edits ONLY, not a knowledgeable DB-write adversary; whole-scope erasure is undetected in either mode (needs an external witness; roadmap). Do not commit a key.")
 		demoFloor       = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
 
 		tapAddr      = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
@@ -144,6 +145,7 @@ func main() {
 		CoarseBucketer:        *windowBucketer,
 		Floor:                 floor,
 		ResetOnSchemaMismatch: *resetSchema,
+		AuditHMACKeyPath:      *auditHMACKey,
 		Contribute:            *contribute,
 		ScopeToken:            *scopeToken,
 		ConfirmSpoolPath:      *confirmSpool,

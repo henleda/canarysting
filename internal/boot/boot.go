@@ -20,10 +20,12 @@
 package boot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -39,6 +41,7 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/scope"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/engine/tiers"
+	"github.com/canarysting/canarysting/internal/intelligence/audit"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
 	"github.com/canarysting/canarysting/internal/intelligence/l7events"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
@@ -83,6 +86,17 @@ type Options struct {
 	// version differs from this build (logged loudly) instead of refusing to start.
 	// Default false: refuse, so a learning window is never silently lost.
 	ResetOnSchemaMismatch bool
+
+	// AuditHMACKeyPath, when non-empty, is a path to a KEY FILE read at boot to key
+	// the SLICE-A tamper-evident audit chain with HMAC-SHA256 (FIX 1 — the keyed
+	// anchor). The key is held OUTSIDE baseline.db, so a file-only attacker with DB
+	// write access but WITHOUT this key cannot forge a chain Verify accepts (edit /
+	// removal / reorder / tail-truncate-then-rewrite-head are all detected). EMPTY
+	// (the default) => the unkeyed, back-compat sha256 chain, which only catches
+	// accidental corruption + naive edits, NOT a knowledgeable DB-write adversary
+	// (see internal/intelligence/audit THREAT MODEL). Mirror /etc/canarysting/
+	// anthropic.key: a path read at boot, never the DB; OFF in the m7.env template.
+	AuditHMACKeyPath string
 
 	// --- D6 cross-customer network (independent opt-in toggles; default false) ---
 	// Contribute opts this deployment in to CONTRIBUTE anonymized patterns: a local
@@ -134,6 +148,7 @@ type Built struct {
 	Malicious       *observebaseline.MaliciousSet // nil if observe disabled
 	Events          *boltevents.Store             // nil if no DB
 	L7Events        *l7events.Store               // slice-1 local-rich enriched touch-record; nil if no DB
+	Audit           *audit.Store                  // slice-A tamper-evident hash-chained audit log; nil if no DB
 	SIEM            *siem.Drainer                 // slice-2 one-way LOCAL SIEM/SOAR emitter; nil if no DB or disabled
 	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
 	Sharpen         *sharpen.Store                // D5-Phase-2 confirmed-malicious matcher; nil if no DB
@@ -213,6 +228,45 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		// scope-isolated (rule 5). Written from the same capturingEngine.Submit seam,
 		// gated to the same Tier>=Tag set; nothing here arms a response (rule 8).
 		b.L7Events = l7events.New(store)
+		// SLICE A: the tamper-evident, hash-chained audit-log substrate. Beside the
+		// addressless EventStore and the slice-1 local-rich l7events record, it appends a
+		// per-scope hash-chained AuditRecord for every Tier>=Tag decision (the SAME gate),
+		// capturing the action facts + the raw L7/identity context at decision time and
+		// linking each record into a per-scope chain so any later edit/removal/reorder is
+		// detectable (Verify/Export). It is LOCAL-RICH and scope-isolated (rule 5),
+		// structurally unreachable from the egress filter (rule 9 — the egress import guard
+		// forbids it), and record-only (rule 8 — nothing here arms). The chain rides a
+		// tolerant new bbolt bucket (SchemaVersion unchanged). nil when no DB.
+		//
+		// THREAT MODEL (FIX 1/4): with -audit-hmac-key the chain is KEYED with
+		// HMAC-SHA256 (key read from a FILE at boot, held OUTSIDE baseline.db), so a
+		// file-only attacker lacking the key cannot forge a chain Verify accepts — an
+		// edit/removal/reorder/re-forge is detected, as is a tail truncation while the
+		// head still attests the count. WITHOUT it the chain is the UNKEYED sha256 chain:
+		// it detects accidental corruption + naive edits ONLY, NOT a knowledgeable DB-
+		// write adversary (who can recompute the public chain). In BOTH modes WHOLE-SCOPE
+		// erasure (and the truncate-AND-rewrite-head-to-a-valid-prefix residual) is
+		// undetected — that needs an external high-water-mark/witness (periodic head
+		// publication to the SIEM/WORM); roadmap, not claimed here. See the audit package
+		// doc. NewWithConfig surfaces a rehydrate read error (FIX 2 — integrity-bearing,
+		// so a failure to read the persisted heads is boot-fatal, never swallowed).
+		var auditKey []byte
+		if opts.AuditHMACKeyPath != "" {
+			auditKey, err = readAuditKey(opts.AuditHMACKeyPath)
+			if err != nil {
+				_ = store.Close()
+				return nil, fmt.Errorf("boot: read audit HMAC key %q: %w", opts.AuditHMACKeyPath, err)
+			}
+			log.Printf("boot: slice-A audit chain KEYED with HMAC-SHA256 (key file %q, %d bytes) — tamper-evident against a file-only attacker lacking the key", opts.AuditHMACKeyPath, len(auditKey))
+		} else {
+			log.Printf("boot: slice-A audit chain UNKEYED (sha256) — detects accidental corruption + naive edits ONLY, NOT a knowledgeable baseline.db-write adversary; set -audit-hmac-key to key it")
+		}
+		auditStore, err := audit.NewWithConfig(store, audit.Config{HMACKey: auditKey})
+		if err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("boot: open audit chain (integrity-bearing): %w", err)
+		}
+		b.Audit = auditStore
 		// SLICE 2: the one-way SIEM/SOAR emitter — an operator-facing LOCAL alert stream
 		// over the l7events store. Built only when the operator opts in (SIEMFormat is a
 		// network/output format) AND the local-rich store exists. OFF by default
@@ -356,7 +410,7 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		ce := &capturingEngine{inner: eng, events: b.Events, l7events: b.L7Events, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
+		ce := &capturingEngine{inner: eng, events: b.Events, l7events: b.L7Events, audit: b.Audit, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
 		// D6-3: emit cross-scope confirmations to the central aggregator on each local
 		// jail, only when contributing + a token + a spool path are all configured.
 		if opts.Contribute && opts.ConfirmSpoolPath != "" && opts.ScopeToken != "" {
@@ -424,6 +478,7 @@ type capturingEngine struct {
 	inner    contract.Engine
 	events   *boltevents.Store
 	l7events *l7events.Store // slice-1 local-rich enriched touch-record (sibling of events); nil if no DB
+	audit    *audit.Store    // slice-A tamper-evident hash-chained audit log (sibling of events/l7events); nil if no DB
 	agg      *observebaseline.Aggregator
 	sharpen  *sharpen.Store // D5-Phase-2: fed jail outcomes; nil if no DB
 
@@ -510,6 +565,36 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 	if e.l7events != nil {
 		e.l7events.Capture(v.Scope, ev.Flow.SocketCookie, ev.Canary, v, l7events.FromFlow(ev.Flow), feats, ev.Timestamp)
 	}
+	// SLICE A: beside the addressless egress event and the slice-1 local-rich record,
+	// append a TAMPER-EVIDENT, hash-chained AuditRecord for every Tier>=Tag DECISION
+	// (the SAME gate; audit.Capture re-checks it). It captures the action facts (tier/
+	// verdict/score), the rule-4 join cookie, the raw L7/identity context (the SAME
+	// FromFlow read l7events uses — no second store read on the hot path), and the
+	// verdict-level posture the seam CAN honestly attest (Mode, Calibrated). It keys on
+	// the RESOLVED scope (ev.Scope was corrected to v.Scope above — the B1 fix / rule 5)
+	// so a forged wire scope cannot land a cross-scope chain entry. It does NOT attest
+	// the five-axis StingOutcome (still zero here; the real outcome lands at
+	// ReportOutcome) nor the operator StingFloor (never reaches the engine — rules 1/2).
+	// Record-only (rule 8); structurally unreachable from the egress filter (rule 9).
+	// audit is nil when no DB. The chain is integrity-bearing, so a write error is
+	// surfaced (logged), NOT silently swallowed like the best-effort siblings.
+	if e.audit != nil {
+		l7 := l7events.FromFlow(ev.Flow)
+		if aerr := e.audit.Capture(audit.DecisionInput{
+			Scope:         v.Scope,
+			Canary:        ev.Canary,
+			SocketCookie:  ev.Flow.SocketCookie,
+			Verdict:       v,
+			SourceAddress: l7.SourceAddress,
+			Method:        l7.Method,
+			Path:          l7.Path,
+			SPIFFEID:      l7.SPIFFEID,
+			Features:      feats,
+			Now:           ev.Timestamp,
+		}); aerr != nil {
+			log.Printf("boot: WARNING audit chain append failed for scope %q (tamper-evidence gap): %v", v.Scope, aerr)
+		}
+	}
 	// D5-Phase-2: a Tier-3 (jail) verdict is confirmed-malicious ground truth. We do
 	// NOT record the profile here — at Submit time the flow's StingOutcome is still
 	// zero (attrition runs later, adapter-side), so the derived profile would lack the
@@ -568,4 +653,34 @@ func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
 		}
 	}
 	return err
+}
+
+// readAuditKey reads the SLICE-A audit-chain HMAC key from a file (FIX 1). The key
+// lives OUTSIDE baseline.db (the whole point of the keyed anchor: an attacker with
+// DB write access must not also have the key), mirroring /etc/canarysting/
+// anthropic.key. An EMPTY (or whitespace-only) file is refused rather than silently
+// degrading to the unkeyed chain — an operator who set -audit-hmac-key meant to key
+// the chain, so an empty key is a misconfig, not an opt-out (omit the flag to run
+// unkeyed).
+//
+// FIX C (key-whitespace consistency): the key bytes used to HMAC the chain are
+// bytes.TrimSpace(file) — the SAME normalization the emptiness guard applies, so the
+// "is it empty?" check and the "what key do we actually use?" decision can never
+// disagree. This means ALL leading/trailing whitespace (spaces, tabs, CR, LF) is
+// stripped consistently: two key files that differ only in surrounding whitespace
+// (e.g. one created with `printf %s` and one with `echo`, or one with a stray
+// trailing space) key the chain IDENTICALLY rather than producing two silently
+// different deployments. Interior bytes are preserved verbatim. No security impact
+// (an HMAC key's strength is its interior entropy, not its whitespace); this just
+// removes a footgun where a copy-paste artifact would have forked the keyspace.
+func readAuditKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key := bytes.TrimSpace(raw)
+	if len(key) == 0 {
+		return nil, fmt.Errorf("audit HMAC key file is empty; omit -audit-hmac-key to run the chain unkeyed")
+	}
+	return key, nil
 }

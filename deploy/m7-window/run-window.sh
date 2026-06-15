@@ -47,6 +47,14 @@ TOPOLOGY_FLAG=-topology-identities $ETC/topology-identities.json
 # or "-siem-format cef" / "-siem-format stdout". The event is LOCAL-RICH (raw
 # src/path/SPIFFE) and goes to the operator's OWN SIEM — never the cross-customer feed.
 SIEM_FLAG=
+# SLICE-A audit chain keyed anchor — OFF by default (empty => UNKEYED sha256 chain:
+# detects accidental corruption + naive edits, NOT a knowledgeable baseline.db-write
+# attacker; whole-scope erasure undetected — needs an external witness, roadmap). To
+# KEY it with HMAC-SHA256, drop a secret key file OUTSIDE the DB and set e.g.
+#   AUDIT_HMAC_FLAG=-audit-hmac-key /etc/canarysting/audit-hmac.key
+# (mode 0600, never committed). Then a file-only attacker lacking the key cannot forge
+# a chain Verify accepts. Do NOT generate or commit a key from this script.
+AUDIT_HMAC_FLAG=
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="
