@@ -31,6 +31,27 @@ import (
 // kernel map, folds completed flows, and re-evaluates the gates.
 const DefaultInterval = 10 * time.Second
 
+// ephemeralPortFloor is the start of the Linux ephemeral port range
+// (ip_local_port_range default 32768). It is used ONLY to pick the forward
+// direction of an east-west flow for the F1 topology fold (NOT the baseline
+// hash). On an all-ends-observed (e.g. loopback) connection the observer
+// captures BOTH socket halves, and the eBPF records DstPort = the LOCAL
+// socket's port (bpf/observe/observe.bpf.c). So the half whose DstPort is
+// ephemeral is the CLIENT/INITIATOR socket — its tuple yields the REVERSED
+// edge (service -> caller:ephemeral) and explodes the store by ephemeral
+// port. The half whose DstPort is the service LISTEN port is the
+// SERVER-ACCEPT socket — its tuple is the correct FORWARD edge
+// (caller -> service:listen_port). So we KEEP DstPort < ephemeralPortFloor
+// (the forward fabric) and SKIP the ephemeral half.
+//
+// This is a heuristic for the all-ends-observed (loopback) artifact; the
+// cleaner long-term fix is a real initiator flag stamped by the observer
+// (follow-up). It NEVER touches the baseline hash path — only the topology
+// fold direction. NOTE: a real service that LISTENS on a port >= 32768 would
+// have its forward edge dropped by this heuristic (see docs/TOPOLOGY_AND_DEVIANTS.md);
+// the observer initiator flag removes that caveat.
+const ephemeralPortFloor uint16 = 32768
+
 // gateSink is the slice of baseline.Store the aggregator drives. *baseline.Store
 // satisfies it.
 type gateSink interface {
@@ -91,6 +112,15 @@ type AggStats struct {
 	// DeviantsRehydrateSkipped is the count of persisted deviant blobs that failed
 	// to decode on rehydrate (lost local-rich detail; the baseline is unaffected).
 	DeviantsRehydrateSkipped uint64
+	// TopologyEphemeralSkipped is the count of completed flows whose F1 topology
+	// fold was SKIPPED because the DstPort was ephemeral (>= ephemeralPortFloor):
+	// the CLIENT/INITIATOR half of an all-ends-observed connection (its local port
+	// is ephemeral), whose reversed edge would point service->caller. The correct
+	// forward edge is folded from the SERVER-ACCEPT half (DstPort = the service
+	// listen port). The baseline fold for these flows still ran (this counter does
+	// not affect scoring) — it only records how many reverse-direction topology
+	// edges were avoided.
+	TopologyEphemeralSkipped uint64
 }
 
 // Aggregator implements baseline.FeatureSource.
@@ -536,18 +566,34 @@ func (a *Aggregator) foldCompleted(lf *liveFlow, cookie uint64, fs observe.FlowS
 	// (those are bpf_ktime monotonic). Inherits fold-once from a.live/a.folded; the
 	// hashed baseline counts above are unchanged. Cap evictions on insert and the
 	// keys touched are marked dirty for the batched write.
-	topo := a.topology[lf.scope]
-	if topo == nil {
-		topo = newTopology()
-		a.topology[lf.scope] = topo
-	}
-	touched, evicted := topo.fold(fs, now)
-	for _, k := range touched {
-		a.markTopoDirty(lf.scope, k)
-	}
-	for _, k := range evicted {
-		a.markTopoDirty(lf.scope, k)
-		a.stats.TopologyEvicted++
+	// FOLD DIRECTION (FIX-1): only fold the FORWARD edge. The eBPF records
+	// DstPort = the LOCAL socket's port, so a completed flow whose DstPort is
+	// ephemeral (>= ephemeralPortFloor) is the CLIENT/INITIATOR socket of an
+	// all-ends-observed (loopback) connection — its tuple is the reversed edge
+	// (service -> caller:ephemeral). The SERVER-ACCEPT socket of the same
+	// connection has DstPort = the service listen port and is folded as the
+	// correct forward edge (caller -> service:listen_port). Skipping the ephemeral
+	// half keeps the topology graph directed correctly. This guards ONLY the topology
+	// fold; the baseline hash above and the deviant capture below are unchanged so
+	// the baseline-of-normal is byte-for-byte identical and the hunt log still sees
+	// the flow. (Heuristic for the loopback artifact; a real observer initiator
+	// flag is the follow-up.)
+	if fs.DstPort < ephemeralPortFloor {
+		topo := a.topology[lf.scope]
+		if topo == nil {
+			topo = newTopology()
+			a.topology[lf.scope] = topo
+		}
+		touched, evicted := topo.fold(fs, now)
+		for _, k := range touched {
+			a.markTopoDirty(lf.scope, k)
+		}
+		for _, k := range evicted {
+			a.markTopoDirty(lf.scope, k)
+			a.stats.TopologyEvicted++
+		}
+	} else {
+		a.stats.TopologyEphemeralSkipped++
 	}
 
 	// F2 rich deviant capture: gated to DEVIANT + NON-ARMED flows. We keep NO

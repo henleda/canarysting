@@ -190,6 +190,20 @@ raw IP / IP:port / cookie->SPIFFE into a **service-name** label.
   (`deploy/m7-window/server-compose.yml`: frontend 8001, api 8002, auth 8003, db 8004,
   cache 8005), so the **LISTEN port disambiguates the service, not the IP** — the
   port->name table is what labels internal nodes.
+- **Fold direction (all-ends-observed artifact).** When the observer sees BOTH socket
+  halves of a connection (any single-host/loopback case, and on a real mesh both the
+  client host and the server host report into the same scope), the eBPF records
+  `DstPort = the LOCAL socket's port`. The SERVER-ACCEPT half carries the service
+  **listen** port (the correct forward edge `caller -> service:listen_port`); the
+  CLIENT/INITIATOR half carries an **ephemeral** local port (a reversed edge
+  `service -> caller:ephemeral`, which also explodes the store by ephemeral port). The
+  topology fold therefore **skips any flow whose `DstPort >= 32768`** (`ephemeralPortFloor`,
+  the Linux `ip_local_port_range` default) — a heuristic that keeps the forward fabric and
+  drops the reverse half, touching ONLY the topology fold (the baseline hash is unchanged).
+  **Known limitation:** a real service that LISTENS on a port `>= 32768` has its forward
+  edge dropped by this heuristic and is omitted from the fabric. The clean fix is a real
+  initiator flag stamped by the observer (so direction is chosen by an explicit bit, not a
+  port-range heuristic) — a tracked follow-up.
 
 **(5) Canaries render as decoy nodes in the negative space.** Canaries are their own
 decoy nodes, not nodes behind a real service. `seeder.Registry.List(scope)`

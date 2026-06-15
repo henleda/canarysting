@@ -505,3 +505,54 @@ export interface TopologyView {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
 }
+
+// ============================================================================
+// F2 — deviant hunting log (GET /api/deviants). Flows that DEVIATED from the
+// learned baseline but touched NO canary, captured for threat-hunting.
+//
+// HONESTY (load-bearing — render the caption persistently): these flows are
+// logged for hunting, NEVER actioned and NEVER "confirmed adversaries" (Rule 8 —
+// only a canary touch arms a response). The identities are operator-registry
+// metadata where named; an UNKNOWN/raw-IP end is the unfamiliar-identity signal.
+// The raw addresses are local to the deployment and never cross a boundary
+// (Rule 9). The ⚠ simulated note reflects the synthetic-peer demo posture; the
+// deviant flows themselves are real local observations.
+// ============================================================================
+
+// DeviantEndpoint is one resolved end of a deviant flow.
+export interface DeviantEndpoint {
+  label: string; // operator-declared name, SPIFFE-derived name, or (on a miss) the IP
+  kind: 'service' | 'caller' | 'decoy' | 'external' | 'unknown' | string;
+  addr: string; // raw IP string (local-rich; never crosses a boundary)
+  port: number; // 0 on the src (initiator), the reached service port on the dst
+}
+
+// DeviantRow is one ranked deviant flow: the fingerprint (src -> dst with identity),
+// the 5 baseline novelty dims, the peak dim that made it look anomalous, the
+// recurrence count, and the wall-clock window. NOTHING here is a verdict.
+export interface DeviantRow {
+  src: DeviantEndpoint;
+  dst: DeviantEndpoint;
+  identity_novelty: number; // [0,1]
+  adjacency_novelty: number;
+  port_novelty: number;
+  volume_deviation: number;
+  cadence_deviation: number;
+  peak_dim: string; // the headline "why it looked anomalous" ("new identity" / …)
+  peak_value: number; // magnitude of the peak dim [0,1]
+  hit_count: number; // approximate recurrence ("seen ~N times")
+  first_seen: string; // RFC3339
+  last_seen: string; // RFC3339
+  score: number; // engine suspicion score at capture (0 on the fold seam)
+}
+
+// DeviantsView is the GET /api/deviants payload. caption is the persistent honesty
+// fence; simulated_note is set only when simulated is true.
+export interface DeviantsView {
+  scope: string;
+  staged_labels: boolean;
+  simulated: boolean;
+  caption: string; // the persistent honesty fence to render verbatim
+  simulated_note: string; // ⚠ note when simulated; "" otherwise
+  rows: DeviantRow[];
+}

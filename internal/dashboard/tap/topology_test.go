@@ -336,8 +336,10 @@ func TestTopologyInjectsDecoyNodes(t *testing.T) {
 }
 
 // A recent real canary-touch event (Tier>=1) lights a source->decoy edge; the
-// touch is filter-EXEMPT even though the touch-src is an unknown-kind cookie node.
-// Repeat touches of the same decoy by the same flow are deduped (FlowCount bumps).
+// touch is filter-EXEMPT even though the touch-src is an unknown-kind node. FIX-2:
+// all touching flows AGGREGATE into ONE shared synthesized source node, with one
+// edge per touched CanaryType (FlowCount = total touches of that type). Two
+// distinct cookies touching planted_credential collapse to one edge of FlowCount=2.
 func TestTopologyTouchEdgeFromRealEvent(t *testing.T) {
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "events.db")
@@ -348,7 +350,10 @@ func TestTopologyTouchEdgeFromRealEvent(t *testing.T) {
 	defer pstore.Close()
 	events := boltevents.New(pstore)
 
-	// Two touches of the SAME decoy by the SAME flow + one OTHER decoy touch.
+	// Two touches of the SAME decoy by the SAME flow + one OTHER decoy touch by a
+	// DIFFERENT flow. Under the aggregate shape: planted_credential edge FlowCount=2
+	// (summed), fake_bucket edge FlowCount=1, and BOTH originate from one shared
+	// synthesized source node representing the 2 distinct touching flows.
 	mustAppend(t, events, intelligence.AdversaryInteractionEvent{
 		ScopeKey: string(topoTestScope), FlowID: 0x118, CanaryType: string(catalog.TypePlantedCredential),
 		Tier: 2, Timestamp: now.Add(-2 * time.Minute),
@@ -372,26 +377,39 @@ func TestTopologyTouchEdgeFromRealEvent(t *testing.T) {
 
 	touches := edgesOfClass(view, edgeClassDecoyTouch)
 	if len(touches) != 2 {
-		t.Fatalf("decoy_touch edges = %d, want 2 (deduped by (cookie,decoy))", len(touches))
+		t.Fatalf("decoy_touch edges = %d, want 2 (one per touched CanaryType)", len(touches))
 	}
 	byID := nodesByID(view)
+	// All touch edges must originate from the SINGLE aggregated source node.
+	sharedSrc := touchSourceNodeID()
 	for _, e := range touches {
+		if e.SrcID != sharedSrc {
+			t.Fatalf("touch edge src = %q, want the single aggregated node %q", e.SrcID, sharedSrc)
+		}
 		// Each touch edge must terminate on a decoy node.
 		if byID[e.DstID].Kind != "decoy" {
 			t.Fatalf("touch edge dst %q is not a decoy node: %+v", e.DstID, byID[e.DstID])
 		}
-		// And its source node must exist (the touching identity — an unknown-kind
-		// cookie node that SURVIVES the filter because touch edges are exempt).
-		srcNode, ok := byID[e.SrcID]
-		if !ok {
-			t.Fatalf("touch edge source node %q not injected", e.SrcID)
-		}
-		if srcNode.Kind != "unknown" {
-			t.Fatalf("touch-src node kind = %q, want unknown", srcNode.Kind)
-		}
 		if e.DstID == decoyNodeID(catalog.TypePlantedCredential) && e.FlowCount != 2 {
-			t.Fatalf("planted_credential touch FlowCount = %d, want 2 (two touches deduped)", e.FlowCount)
+			t.Fatalf("planted_credential touch FlowCount = %d, want 2 (two touches summed)", e.FlowCount)
 		}
+		if e.DstID == decoyNodeID(catalog.TypeFakeBucket) && e.FlowCount != 1 {
+			t.Fatalf("fake_bucket touch FlowCount = %d, want 1", e.FlowCount)
+		}
+	}
+	// The single aggregated source node exists, is unknown-kind, and SURVIVES the
+	// clean-fabric filter (touch edges are exempt).
+	srcNode, ok := byID[sharedSrc]
+	if !ok {
+		t.Fatalf("aggregated touch-src node %q not injected", sharedSrc)
+	}
+	if srcNode.Kind != "unknown" {
+		t.Fatalf("touch-src node kind = %q, want unknown", srcNode.Kind)
+	}
+	// Its label reports the distinct-flow count (2 distinct cookies: 0x118, 0x222),
+	// honest about WHAT was observed — never "confirmed adversaries".
+	if !strings.Contains(srcNode.Label, "2") {
+		t.Fatalf("touch-src label = %q, want it to report 2 distinct flows", srcNode.Label)
 	}
 }
 

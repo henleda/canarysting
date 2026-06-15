@@ -19,7 +19,7 @@ export async function fetchOverview(): Promise<Overview> {
 }
 
 // ---- Interactive console drill-down endpoints ----
-import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline, TopologyView } from './types';
+import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline, TopologyView, DeviantsView } from './types';
 
 // `since` is the Go-duration string the time pills produce ("1h","6h","24h").
 // `session` (optional, Unix seconds of the session start) disambiguates a reused
@@ -50,6 +50,13 @@ export function reconURL(since: string): string {
 export function topologyURL(): string {
   return `/api/topology`;
 }
+// deviantsURL is the F2 deviant hunting log. Like topology it is a CURRENT-state
+// view (the aggregator's live in-memory deviant log + resolved identities, ranked),
+// not windowed — so there is no `since`. The backend serves the tap's /raw/deviants
+// shape PLUS the pre-rendered honesty `caption` (and a ⚠ simulated note).
+export function deviantsURL(): string {
+  return `/api/deviants`;
+}
 
 async function fetchJSON<T>(url: string, label: string): Promise<T> {
   const res = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' } });
@@ -63,3 +70,4 @@ export const fetchFlows = (tier: number, since: string, minTier?: number) =>
 export const fetchCost = (since: string) => fetchJSON<CostBreakdown>(costURL(since), 'cost');
 export const fetchRecon = (since: string) => fetchJSON<ReconTimeline>(reconURL(since), 'recon');
 export const fetchTopology = () => fetchJSON<TopologyView>(topologyURL(), 'topology');
+export const fetchDeviants = () => fetchJSON<DeviantsView>(deviantsURL(), 'deviants');

@@ -437,3 +437,77 @@ func TestDeviantBackCompatPreDeviantsDB(t *testing.T) {
 		t.Fatalf("deviant capture after reopen failed: %v", dv)
 	}
 }
+
+// DeviantSnapshot decodes the live in-memory deviant log into copied value views:
+// the captured raw identity + the 5 novelty dims + peak label + hit-count, with the
+// address bytes deep-copied. It is the FEATURE-3 read-side accessor (mirrors
+// TopologySnapshot).
+func TestDeviantSnapshotReturnsCapturedRecords(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := New(Config{
+		Reader: r, Gates: newRecordGates(), Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
+	})
+	accrueBenign(t, agg, r, now)
+	// A never-seen source identity (.199) -> maximal identity/adjacency novelty,
+	// non-armed -> captured as one deviant record.
+	completeFlow(agg, r, 3000, flowFromIPs(199, 1, 1400, 12, 2_000_000), now)
+
+	snap := agg.DeviantSnapshot(testScope)
+	if len(snap.Records) != 1 {
+		t.Fatalf("snapshot records = %d, want 1", len(snap.Records))
+	}
+	rec := snap.Records[0]
+	// Raw identity captured (local-rich), copied to length-of-family slices.
+	if len(rec.SrcIP) != 4 || rec.SrcIP[3] != 199 {
+		t.Fatalf("snapshot SrcIP = %v, want 10.0.1.199", rec.SrcIP)
+	}
+	if len(rec.DstIP) != 4 || rec.DstIP[3] != 1 || rec.DstPort != 8080 {
+		t.Fatalf("snapshot dst = %v:%d, want 10.0.2.1:8080", rec.DstIP, rec.DstPort)
+	}
+	if rec.PeakNovelty <= deviantFloor {
+		t.Fatalf("snapshot PeakNovelty = %v, want > deviantFloor", rec.PeakNovelty)
+	}
+	if rec.PeakLabel == "" {
+		t.Fatalf("snapshot PeakLabel empty, want the strongest-dim label")
+	}
+	if rec.HitCount != 1 {
+		t.Fatalf("snapshot HitCount = %d, want 1", rec.HitCount)
+	}
+	if !rec.FirstSeen.Equal(now) || !rec.LastSeen.Equal(now) {
+		t.Fatalf("snapshot wall stamps = %v/%v, want %v", rec.FirstSeen, rec.LastSeen, now)
+	}
+
+	// An unknown scope returns an empty snapshot (never panics).
+	if empty := agg.DeviantSnapshot(contract.ScopeKey("nope")); len(empty.Records) != 0 {
+		t.Fatalf("unknown-scope deviant snapshot not empty: %+v", empty)
+	}
+}
+
+// The snapshot is a COPY: stomping the returned address bytes must not corrupt the
+// aggregator's live deviant map (the raw [16]byte buffers never escape).
+func TestDeviantSnapshotIsCopy(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := New(Config{
+		Reader: r, Gates: newRecordGates(), Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
+	})
+	accrueBenign(t, agg, r, now)
+	completeFlow(agg, r, 3000, flowFromIPs(199, 1, 1400, 12, 2_000_000), now)
+
+	snap := agg.DeviantSnapshot(testScope)
+	if len(snap.Records) != 1 {
+		t.Fatalf("precondition: records = %d", len(snap.Records))
+	}
+	for i := range snap.Records[0].SrcIP {
+		snap.Records[0].SrcIP[i] = 0xFF
+	}
+	dv := agg.deviantsFor(testScope)
+	for _, rec := range dv.records {
+		if rec.SrcIP[3] != 199 {
+			t.Fatalf("live deviant SrcIP mutated through the snapshot copy: %v", rec.SrcIP[:4])
+		}
+	}
+}

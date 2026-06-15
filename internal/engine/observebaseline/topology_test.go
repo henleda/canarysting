@@ -403,3 +403,52 @@ func TestTopologyPersistAndRehydrate(t *testing.T) {
 		t.Fatalf("rehydrated nodes = %d, want 2", len(topo.nodes))
 	}
 }
+
+// FIX-1: the eBPF records DstPort = the LOCAL socket's port, so a completed flow
+// whose DstPort is ephemeral (>= ephemeralPortFloor) is the CLIENT/INITIATOR half of
+// an all-ends-observed connection — its tuple is the reversed edge (service ->
+// caller:ephemeral), so the topology fold for the ephemeral half is SKIPPED. The
+// SERVER-ACCEPT half (DstPort = the service listen port) IS folded as the correct
+// forward edge. Crucially the BASELINE fold still happens for BOTH (the baseline hash
+// is byte-for-byte unchanged by this fix): CompletedFolds bumps regardless, and only
+// the ephemeral half is counted in the new TopologyEphemeralSkipped stat.
+func TestTopologyFoldSkipsEphemeralDstPort(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := newTopoAgg(t, r, now, nil)
+
+	// A normal forward edge: DstPort = a service listen port (8080) -> FOLDED.
+	svc := flowFromIPs(5, 1, 1400, 12, 2_000_000)
+	svc.DstPort = 8080
+	completeFlow(agg, r, 100, svc, now)
+
+	// The reversed responder half of a loopback connection: the LOCAL socket carries
+	// the ephemeral port, so DstPort lands in the ephemeral range (40000) -> SKIPPED.
+	eph := flowFromIPs(6, 2, 1400, 12, 2_000_000)
+	eph.DstPort = 40000
+	completeFlow(agg, r, 101, eph, now)
+
+	snap := agg.TopologySnapshot(testScope)
+	// Only the service-port edge folded into the topology.
+	if len(snap.Edges) != 1 {
+		t.Fatalf("topology edges = %d, want 1 (ephemeral-DstPort half skipped)", len(snap.Edges))
+	}
+	if snap.Edges[0].DstPort != 8080 {
+		t.Fatalf("folded edge DstPort = %d, want 8080 (the forward/service edge)", snap.Edges[0].DstPort)
+	}
+	for _, e := range snap.Edges {
+		if e.DstPort >= ephemeralPortFloor {
+			t.Fatalf("an ephemeral-DstPort edge (%d) leaked into the topology", e.DstPort)
+		}
+	}
+
+	// The BASELINE fold ran for BOTH flows (the fix never touches the baseline hash):
+	// two completed folds, and exactly one topology-skip recorded.
+	st := agg.Stats()
+	if st.CompletedFolds != 2 {
+		t.Fatalf("CompletedFolds = %d, want 2 (baseline folds both, ephemeral included)", st.CompletedFolds)
+	}
+	if st.TopologyEphemeralSkipped != 1 {
+		t.Fatalf("TopologyEphemeralSkipped = %d, want 1", st.TopologyEphemeralSkipped)
+	}
+}
