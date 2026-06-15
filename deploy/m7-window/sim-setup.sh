@@ -35,7 +35,7 @@ SIM_ATTACKER_IP="${SIM_ATTACKER_IP:-10.20.1.111}"
 SIM_RECON_IP="${SIM_RECON_IP:-10.20.1.112}"
 # FRESH identity for the canary-AVOIDING careful-mover deviant (never touches a canary).
 SIM_CAREFUL_MOVER_IP="${SIM_CAREFUL_MOVER_IP:-10.20.1.104}"
-SIM_CAREFUL_MOVER_PATHS="${SIM_CAREFUL_MOVER_PATHS:-/reports/daily,/internal/inventory,/analytics/export,/billing/ledger,/hr/directory,/ops/health}"
+SIM_CAREFUL_MOVER_PATHS="${SIM_CAREFUL_MOVER_PATHS:-/api/reports/daily,/api/inventory,/api/analytics/export,/api/billing/ledger,/api/hr/directory,/api/ops/health}"
 SIM_CAREFUL_MOVER_INTERVAL="${SIM_CAREFUL_MOVER_INTERVAL:-25s}"
 SIM_BASE_RPM="${SIM_BASE_RPM:-30}"
 SIM_MALICIOUS_PCT="${SIM_MALICIOUS_PCT:-3}"

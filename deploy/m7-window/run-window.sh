@@ -23,6 +23,7 @@ sudo mkdir -p "$BIN" "$ETC"
 sudo install -m0755 /tmp/staged-range "$BIN/staged-range"
 sudo install -m0755 /tmp/envoy-adapter "$BIN/envoy-adapter"
 sudo install -m0644 deploy/m7-window/ground-truth-registry.json "$ETC/ground-truth-registry.json"
+sudo install -m0644 deploy/m7-window/topology-identities.json "$ETC/topology-identities.json"
 
 echo "=== write /etc/canarysting/m7.env ==="
 # The dashboard tap must bind the host's PRIVATE VPC IP (not loopback) so the CLIENT box
@@ -39,6 +40,7 @@ GROUND_TRUTH=$ETC/ground-truth-registry.json
 DASHBOARD_TAP_ADDR=${PRIVATE_IP}:8088
 STING_FLOOR=1
 DEMO_FLOOR_FLAG=
+TOPOLOGY_FLAG=-topology-identities $ETC/topology-identities.json
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="
