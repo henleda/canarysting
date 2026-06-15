@@ -53,6 +53,14 @@ type Config struct {
 	// => topoTTLDefault, 30d). Edges/nodes whose wall-clock LastSeen is older than
 	// this age out on the fold tick.
 	TopologyTTL time.Duration
+	// DeviantTTL is the wall-clock TTL for the F2 deviant-log reaper (zero =>
+	// deviantTTLDefault, 30d). Deviant records whose wall-clock LastSeen is older
+	// than this age out on the fold tick.
+	DeviantTTL time.Duration
+	// Armed is the canary-touch (Tier>=1) predicate the F2 deviant capture consults
+	// to keep canary-touchers OUT of the deviant log (a deviant touched NO canary,
+	// Rule 8). nil => nothing is armed (capture gated by the deviant floor alone).
+	Armed armedSet
 }
 
 // liveFlow records the attribution of one tracked cookie (the scope/bucket/day
@@ -77,20 +85,28 @@ type AggStats struct {
 	// TopologyRehydrateSkipped is the count of persisted topology blobs that failed
 	// to decode on rehydrate (lost local-rich detail; the baseline is unaffected).
 	TopologyRehydrateSkipped uint64
+	// DeviantsEvicted is the count of F2 deviant-log records dropped by the cap or
+	// TTL reaper — observable lost-detail, mirroring TopologyEvicted.
+	DeviantsEvicted uint64
+	// DeviantsRehydrateSkipped is the count of persisted deviant blobs that failed
+	// to decode on rehydrate (lost local-rich detail; the baseline is unaffected).
+	DeviantsRehydrateSkipped uint64
 }
 
 // Aggregator implements baseline.FeatureSource.
 type Aggregator struct {
-	reader   observe.Reader
-	gates    gateSink
-	resolver scope.Resolver
-	store    *persist.Store
-	excluder excluder
-	bucketer baseline.Bucketer
-	floor    DataFloor
-	interval time.Duration
-	clock    func() time.Time
-	topoTTL  time.Duration
+	reader     observe.Reader
+	gates      gateSink
+	resolver   scope.Resolver
+	store      *persist.Store
+	excluder   excluder
+	bucketer   baseline.Bucketer
+	floor      DataFloor
+	interval   time.Duration
+	clock      func() time.Time
+	topoTTL    time.Duration
+	deviantTTL time.Duration
+	armedSet   armedSet
 
 	mu             sync.RWMutex
 	aggregates     map[contract.ScopeKey]map[string]*bucketAggregate
@@ -106,7 +122,13 @@ type Aggregator struct {
 	// persist; both are touched ONLY under a.mu and never on the request hot path.
 	topology  map[contract.ScopeKey]*topology
 	dirtyTopo map[contract.ScopeKey]map[string]bool
-	stats     AggStats
+	// F2 rich non-tripwire deviant log (local-rich). Per-scope deviant accumulator,
+	// folded beside the topology capture for DEVIANT + NON-ARMED flows only.
+	// dirtyDeviants tracks the keys touched-or-evicted since the last persist; both
+	// are touched ONLY under a.mu and never on the request hot path.
+	deviants      map[contract.ScopeKey]*deviants
+	dirtyDeviants map[contract.ScopeKey]map[string]bool
+	stats         AggStats
 }
 
 var _ baseline.FeatureSource = (*Aggregator)(nil)
@@ -125,6 +147,9 @@ func New(cfg Config) *Aggregator {
 	if cfg.TopologyTTL <= 0 {
 		cfg.TopologyTTL = topoTTLDefault
 	}
+	if cfg.DeviantTTL <= 0 {
+		cfg.DeviantTTL = deviantTTLDefault
+	}
 	return &Aggregator{
 		reader:         cfg.Reader,
 		gates:          cfg.Gates,
@@ -136,6 +161,8 @@ func New(cfg Config) *Aggregator {
 		interval:       cfg.Interval,
 		clock:          cfg.Now,
 		topoTTL:        cfg.TopologyTTL,
+		deviantTTL:     cfg.DeviantTTL,
+		armedSet:       cfg.Armed,
 		aggregates:     map[contract.ScopeKey]map[string]*bucketAggregate{},
 		live:           map[uint64]*liveFlow{},
 		folded:         map[uint64]bool{},
@@ -145,6 +172,8 @@ func New(cfg Config) *Aggregator {
 		dirty:          map[contract.ScopeKey]map[string]bool{},
 		topology:       map[contract.ScopeKey]*topology{},
 		dirtyTopo:      map[contract.ScopeKey]map[string]bool{},
+		deviants:       map[contract.ScopeKey]*deviants{},
+		dirtyDeviants:  map[contract.ScopeKey]map[string]bool{},
 	}
 }
 
@@ -272,6 +301,28 @@ func (a *Aggregator) Rehydrate() {
 		a.topology[sc] = topo
 		return nil
 	})
+
+	// Rehydrate the F2 deviant log so the local-rich hunting record survives a
+	// reboot (mirrors the topology rehydrate; carries no gate state, so nothing is
+	// forced STALE). An undecodable blob is skipped and counted (lost local detail),
+	// never failing the whole window.
+	_ = a.store.RangeDeviantScopes(func(sc contract.ScopeKey) error {
+		dv := newDeviants()
+		_ = a.store.RangeDeviants(sc, func(key, blob []byte) error {
+			if len(key) == 0 {
+				return nil
+			}
+			r, err := decodeDeviant(blob)
+			if err != nil {
+				a.stats.DeviantsRehydrateSkipped++
+				return nil
+			}
+			dv.records[string(key)] = r
+			return nil
+		})
+		a.deviants[sc] = dv
+		return nil
+	})
 }
 
 // foldOnce reads the kernel map, folds completed flows into the baseline-of-
@@ -279,13 +330,14 @@ func (a *Aggregator) Rehydrate() {
 // runs under the lock; the durable write runs AFTER the lock is released, so the
 // hot-path Features/Multiplier is never blocked on disk I/O.
 func (a *Aggregator) foldOnce(now time.Time) {
-	writes, topoWrites := a.foldLocked(now)
+	writes, topoWrites, deviantWrites := a.foldLocked(now)
 	if a.store != nil {
 		// One transaction (one fsync) for all dirtied baseline buckets, the F1
-		// topology records touched/evicted this tick, plus the heartbeat. The
-		// topology write rides the existing fsync (Rule 6) and is built AFTER the
-		// in-memory lock is released, exactly like the baseline write.
-		_ = a.store.PutBucketsAndHeartbeat(writes, topoWrites, now)
+		// topology + F2 deviant records touched/evicted this tick, plus the
+		// heartbeat. The topology and deviant writes ride the existing fsync
+		// (Rule 6) and are built AFTER the in-memory lock is released, exactly like
+		// the baseline write.
+		_ = a.store.PutBucketsAndHeartbeat(writes, topoWrites, deviantWrites, now)
 	}
 }
 
@@ -299,7 +351,7 @@ func (a *Aggregator) foldOnce(now time.Time) {
 // ticks. `live` holds open cookies' attribution; `folded` remembers folded
 // cookies so a closed entry that lingers (until the LRU evicts it) is not
 // double-counted. Both are pruned when a cookie leaves the map.
-func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist.TopologyWrite) {
+func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist.TopologyWrite, []persist.DeviantWrite) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -329,7 +381,7 @@ func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist
 			a.live[cookie] = lf
 		}
 		if fs.Closed != 0 {
-			a.foldCompleted(lf, fs, now)
+			a.foldCompleted(lf, cookie, fs, now)
 			a.folded[cookie] = true
 			delete(a.live, cookie)
 		}
@@ -379,6 +431,20 @@ func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist
 		}
 	}
 
+	// F2 deviant-log reaper: age out stale deviant records (wall-clock TTL) on the
+	// fold tick, off the hot path. Reaped keys are marked dirty so the batched write
+	// deletes them in the same fsync; the lost count is observable (mirrors
+	// TopologyEvicted) so eviction is never silent.
+	for sc, dv := range a.deviants {
+		if dv == nil {
+			continue
+		}
+		for _, k := range dv.reap(now, a.deviantTTL) {
+			a.markDeviantDirty(sc, k)
+			a.stats.DeviantsEvicted++
+		}
+	}
+
 	// Encode only the buckets dirtied since the last persist.
 	var writes []persist.BucketWrite
 	for sc, keys := range a.dirty {
@@ -419,10 +485,34 @@ func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist
 	}
 	a.dirtyTopo = map[contract.ScopeKey]map[string]bool{}
 
-	return writes, topoWrites
+	// Encode only the deviant records touched-or-evicted since the last persist. A
+	// key whose in-memory record is gone (evicted by cap or reaper) is persisted as
+	// a delete (Blob nil) so the on-disk store mirrors memory — exactly like topology.
+	var deviantWrites []persist.DeviantWrite
+	for sc, keys := range a.dirtyDeviants {
+		dv := a.deviants[sc]
+		for key := range keys {
+			if dv == nil {
+				deviantWrites = append(deviantWrites, persist.DeviantWrite{Scope: sc, Key: []byte(key), Delete: true})
+				continue
+			}
+			blob, ok, err := dv.blobForKey(key)
+			if err != nil {
+				continue // encode failure: leave the prior on-disk value; do not delete
+			}
+			if !ok {
+				deviantWrites = append(deviantWrites, persist.DeviantWrite{Scope: sc, Key: []byte(key), Delete: true})
+				continue
+			}
+			deviantWrites = append(deviantWrites, persist.DeviantWrite{Scope: sc, Key: []byte(key), Blob: blob})
+		}
+	}
+	a.dirtyDeviants = map[contract.ScopeKey]map[string]bool{}
+
+	return writes, topoWrites, deviantWrites
 }
 
-func (a *Aggregator) foldCompleted(lf *liveFlow, fs observe.FlowStats, now time.Time) {
+func (a *Aggregator) foldCompleted(lf *liveFlow, cookie uint64, fs observe.FlowStats, now time.Time) {
 	if a.excluder != nil && a.excluder.excludedFlow(lf.scope, fs) {
 		a.stats.ExcludedFolds++
 		return // confirmed-malicious: keep out of the baseline-of-normal
@@ -460,9 +550,64 @@ func (a *Aggregator) foldCompleted(lf *liveFlow, fs observe.FlowStats, now time.
 		a.stats.TopologyEvicted++
 	}
 
+	// F2 rich deviant capture: gated to DEVIANT + NON-ARMED flows. We keep NO
+	// dossier on normal (low-novelty) traffic — only anomalies — and a canary-toucher
+	// belongs to escalation/containment, not the hunt log (Rule 8). The novelty dims
+	// are derived from the SAME raw fs against this scope/bucket's baseline; capture
+	// only when the peak dim is >= deviantFloor AND the flow is non-armed.
+	a.captureDeviant(lf, cookie, fs, now)
+
 	a.lastFold[lf.scope] = now
 	a.freshFolds[lf.scope]++
 	a.stats.CompletedFolds++
+}
+
+// captureDeviant records a completed flow into the per-scope deviant log iff it is
+// DEVIANT (peak novelty >= deviantFloor) AND NON-ARMED (touched no canary). It is
+// called from foldCompleted under a.mu (the deviant map, like the topology map, is
+// only ever touched under the lock and never on the request hot path). The
+// derived features come from the same baseline aggregate the hashed fold just
+// updated, so the recorded novelty is exactly what the scorer would have seen.
+func (a *Aggregator) captureDeviant(lf *liveFlow, cookie uint64, fs observe.FlowStats, now time.Time) {
+	// Non-armed gate: a flow that touched a canary entered the response pipeline and
+	// is NOT a deviant-log entry (Rule 8). Keyed on the socket cookie (Rule 4).
+	if a.armedSet != nil && a.armedSet.armed(lf.scope, cookie) {
+		return
+	}
+	// Derive the novelty dims against the scope/bucket baseline this flow folded
+	// into (the aggregate was just updated above; deriveFeatures reads, never
+	// mutates). Capture only against a SUFFICIENT bucket — the same gate the
+	// multiplier uses before it trusts the baseline. During warm-up every flow
+	// (including the benign population still being learned) reads as novel, so
+	// capturing then would log the baseline-of-normal itself as deviants; once the
+	// bucket is sufficient, "novel" genuinely means anomalous-from-an-established-
+	// baseline. (Rule 8 unaffected: this is still observe-only, never a trigger.)
+	buckets := a.aggregates[lf.scope]
+	if buckets == nil {
+		return
+	}
+	agg := buckets[lf.bucket]
+	if agg == nil || !a.floor.bucketSufficient(agg) {
+		return
+	}
+	feat := deriveFeatures(agg, fs, a.floor.MinP2Samples)
+	if _, peakNov, _ := peakNoveltyDim(feat); peakNov < deviantFloor {
+		return // normal-looking flow: keep no dossier (the load-bearing gate)
+	}
+
+	dv := a.deviants[lf.scope]
+	if dv == nil {
+		dv = newDeviants()
+		a.deviants[lf.scope] = dv
+	}
+	// Score is 0 at the fold seam (no canary touch => no base score); the field is
+	// recorded for the hunting surface and threaded by the later L7/scoring slice.
+	touched, evicted := dv.fold(fs, cookie, feat, 0, now)
+	a.markDeviantDirty(lf.scope, touched)
+	for _, k := range evicted {
+		a.markDeviantDirty(lf.scope, k)
+		a.stats.DeviantsEvicted++
+	}
 }
 
 func (a *Aggregator) markDirty(sc contract.ScopeKey, bucket string) {
@@ -479,6 +624,15 @@ func (a *Aggregator) markTopoDirty(sc contract.ScopeKey, key string) {
 	if d == nil {
 		d = map[string]bool{}
 		a.dirtyTopo[sc] = d
+	}
+	d[key] = true
+}
+
+func (a *Aggregator) markDeviantDirty(sc contract.ScopeKey, key string) {
+	d := a.dirtyDeviants[sc]
+	if d == nil {
+		d = map[string]bool{}
+		a.dirtyDeviants[sc] = d
 	}
 	d[key] = true
 }
