@@ -125,11 +125,34 @@ func main() {
 		})
 	}
 
+	// DEVIANT — the canary-AVOIDING careful-mover (the on-screen answer to "a skilled
+	// attacker who avoids the decoys gets a free pass") plus two noisier archetypes so
+	// the deviants ranking does real work with the careful-mover #1. All walk NORMAL
+	// paths only; validate() guarantees they are disjoint from canaryPaths, so they
+	// DEVIATE from baseline (novel adjacency, off-cadence, new identity, volume) but
+	// can NEVER arm a response (Rule 8). 0 careful-mover-interval disables the class.
+	if cfg.carefulMoverInterval > 0 {
+		start(func() {
+			runCarefulMover(ctx, cfg.carefulMoverIP, cfg.target, cfg.carefulMoverPaths, 0x6CA4E, cfg.carefulMoverInterval)
+		})
+		// new-identity burst: a fresh identity reappearing with immediate volume (high
+		// IdentityNovelty), lull ~= the careful-mover cadence so it's a believable peer.
+		start(func() {
+			runNewIdentityBurst(ctx, cfg.carefulMoverIP, cfg.target, cfg.carefulMoverPaths, 0x0B0451, cfg.carefulMoverInterval)
+		})
+		// volume-spike batch job: a fresh identity hammering a few normal endpoints far
+		// above the learned per-identity rate (VolumeDeviation), idling between batches.
+		start(func() {
+			runVolumeSpike(ctx, cfg.carefulMoverIP, cfg.target, cfg.carefulMoverPaths, 0x5217E, cfg.carefulMoverInterval)
+		})
+	}
+
 	// LLM dispatch — Tier-B cassette ($0) + opt-in Tier-C live ($, ledger-gated).
 	start(func() { runLLMDispatch(ctx, cfg, ledger, &gate) })
 
-	log.Printf("simdriver: target=%s benign=%d@%.0frpm malicious=%.1f%% recon=%.1f%% reconLive=%d@%.1fs dailyCap=$%.2f live=%s",
-		cfg.target, len(cfg.benignIPs), cfg.baseRPM, cfg.maliciousPct, cfg.reconPct, cfg.reconLive, cfg.reconHoldSec, cfg.dailyCapUSD, cfg.liveInterval)
+	log.Printf("simdriver: target=%s benign=%d@%.0frpm malicious=%.1f%% recon=%.1f%% reconLive=%d@%.1fs carefulMover=%v@%s dailyCap=$%.2f live=%s",
+		cfg.target, len(cfg.benignIPs), cfg.baseRPM, cfg.maliciousPct, cfg.reconPct, cfg.reconLive, cfg.reconHoldSec,
+		cfg.carefulMoverInterval > 0, cfg.carefulMoverInterval, cfg.dailyCapUSD, cfg.liveInterval)
 	<-ctx.Done()
 	log.Printf("simdriver: shutting down")
 	wg.Wait()
@@ -507,6 +530,144 @@ func maliciousSession(ctx context.Context, srcIP, target string, paths []string,
 	}
 }
 
+// ---- DEVIANT workers (Rule 8: deviate from baseline, NEVER touch a canary) --
+//
+// These are the on-screen answer to the #1 CISO objection — "a skilled attacker
+// who avoids the decoys gets a free pass." They generate flows that DEVIATE from
+// the learned baseline (novel adjacency, off-cadence, new identity, volume spikes)
+// so they surface on the deviants page / as a faint anomalous edge on the
+// topology map — but they walk ONLY normal (non-canary) application paths, so the
+// engine takes NO action (Rule 8: the canary touch is the only trigger; deviation
+// alone never arms). validate() asserts every deviant path set is disjoint from
+// canaryPaths, so a deviant is STRUCTURALLY unable to arm a response.
+
+// carefulMoverReqTimeout bounds each careful-mover request. Unlike the malicious
+// session (which must outlast the Contain tarpit), the careful-mover never touches
+// a canary and so is never contained — a short, ordinary client timeout is right.
+const carefulMoverReqTimeout = 5 * time.Second
+
+// runCarefulMover drives the demo's hero deviant: a methodical, canary-AVOIDING
+// lateral-mover from a FRESH identity (a new secondary IP distinct from the benign
+// and attacker IPs). It walks a NOVEL east-west path — NORMAL (non-canary,
+// non-whitespace) application paths against under-trafficked services it has no
+// baseline history for — at a SLOW, low-jitter cadence (a longer interval than the
+// benign/malicious workers), so the real observe baseline scores it high on
+// AdjacencyNovelty + CadenceDeviation. It opens real connections (a live flow the
+// eBPF observe path sees with new adjacency/identity), reads responses, and loops.
+// It touches ZERO canaries — validate() guarantees cfg.carefulMoverPaths is
+// disjoint from cfg.canaryPaths, so this worker is structurally unable to arm a
+// response (Rule 8). It surfaces ONLY for a human on the deviants page / as a
+// faint anomalous edge inside the legit subgraph that never reaches the decoy ring.
+func runCarefulMover(ctx context.Context, srcIP, target string, paths []string, seed int64, interval time.Duration) {
+	rng := rand.New(rand.NewSource(seed))
+	// A small randomized start so the methodical walk doesn't begin in lockstep
+	// with any other worker, but the cadence itself stays deliberate.
+	if sleepCtx(ctx, time.Duration(rng.Int63n(int64(2*time.Second)))) {
+		return
+	}
+	idx := rng.Intn(len(paths)) // a random entry point, then walk the path IN ORDER
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		carefulMoverHit(ctx, srcIP, target, paths[idx%len(paths)])
+		idx++
+		// LOW jitter (+/-10%) around a SLOW interval: methodical, not a metronome,
+		// but clearly off the benign diurnal cadence — that is the CadenceDeviation.
+		gap := float64(interval) * (0.9 + 0.2*rng.Float64())
+		if sleepCtx(ctx, time.Duration(gap)) {
+			return
+		}
+	}
+}
+
+// carefulMoverHit opens ONE real connection from srcIP and GETs a single normal
+// path, reading the response so the observe path sees a complete live flow with a
+// new adjacency/identity. A fresh connection per touch (DisableKeepAlives) makes
+// each hop a distinct completing flow — the novel east-west edge the topology map
+// can draw. Best-effort: a transient miss is fine for background staging traffic.
+func carefulMoverHit(ctx context.Context, srcIP, target, path string) {
+	local, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(srcIP, "0"))
+	if err != nil {
+		return
+	}
+	dialer := &net.Dialer{LocalAddr: local, Timeout: 3 * time.Second}
+	tr := &http.Transport{DialContext: dialer.DialContext, DisableKeepAlives: true}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Timeout: carefulMoverReqTimeout, Transport: tr}
+	reqCtx, cancel := context.WithTimeout(ctx, carefulMoverReqTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target+path, nil)
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// runNewIdentityBurst is a noisier deviant archetype than the careful-mover: a
+// FRESH identity that fires a short BURST of normal-path requests in quick
+// succession (high IdentityNovelty — a never-before-seen source appearing with
+// immediate volume), then goes quiet for a long lull before bursting again. It
+// reads as a new-identity sweep, distinct from the careful-mover's slow pivot, so
+// the deviants ranking visibly does real work with the careful-mover ABOVE it. It
+// touches ONLY normal paths (validate() guarantees disjoint from canaries), so it
+// too is structurally unable to arm.
+func runNewIdentityBurst(ctx context.Context, srcIP, target string, paths []string, seed int64, lull time.Duration) {
+	rng := rand.New(rand.NewSource(seed))
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		burst := 5 + rng.Intn(6) // 5-10 quick requests
+		idx := rng.Intn(len(paths))
+		for i := 0; i < burst; i++ {
+			carefulMoverHit(ctx, srcIP, target, paths[idx%len(paths)])
+			idx++
+			if sleepCtx(ctx, 150*time.Millisecond) {
+				return
+			}
+		}
+		// long quiet before the identity reappears.
+		gap := float64(lull) * (0.8 + 0.4*rng.Float64())
+		if sleepCtx(ctx, time.Duration(gap)) {
+			return
+		}
+	}
+}
+
+// runVolumeSpike is a batch-job deviant archetype scoring VolumeDeviation: a fresh
+// identity that periodically hammers a SMALL set of normal paths far above the
+// learned per-identity rate (a "nightly report" pulling the same few endpoints in
+// a tight loop), then idles. High volume, low adjacency-novelty — distinct again
+// from the careful-mover. Normal paths only; structurally unable to arm.
+func runVolumeSpike(ctx context.Context, srcIP, target string, paths []string, seed int64, idle time.Duration) {
+	rng := rand.New(rand.NewSource(seed))
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// a tight batch: many requests against a couple of endpoints, fast.
+		batch := 25 + rng.Intn(26) // 25-50 requests
+		idx := rng.Intn(len(paths))
+		for i := 0; i < batch; i++ {
+			carefulMoverHit(ctx, srcIP, target, paths[idx%len(paths)])
+			idx++
+			if sleepCtx(ctx, 40*time.Millisecond) {
+				return
+			}
+		}
+		gap := float64(idle) * (0.8 + 0.4*rng.Float64())
+		if sleepCtx(ctx, time.Duration(gap)) {
+			return
+		}
+	}
+}
+
 // ---- LLM dispatch (Tier-B cassette $0, Tier-C live $ ledger-gated) -----------
 
 func runLLMDispatch(ctx context.Context, cfg config, ledger *spendledger.Ledger, gate *sync.RWMutex) {
@@ -590,6 +751,9 @@ type config struct {
 	canaryPaths                []string
 	reconIP                    string
 	whitespacePaths            []string
+	carefulMoverIP             string        // FRESH identity for the canary-AVOIDING deviant (distinct from benign/attacker)
+	carefulMoverPaths          []string      // NORMAL (non-canary) paths the careful-mover walks
+	carefulMoverInterval       time.Duration // SLOW, methodical cadence (0 disables the careful-mover + the noisier archetypes)
 	baseRPM                    float64
 	maliciousPct               float64
 	reconPct                   float64
@@ -625,6 +789,27 @@ func (c config) validate() error {
 	if bad, ok := disjoint(c.canaryPaths, c.normalPaths); !ok {
 		return fmt.Errorf("benign normal path %q is also a canary path; benign workers must never touch a canary (Rule 8)", bad)
 	}
+	// Rule 8 guard for the DEVIANT class: the careful-mover (and the noisier
+	// new-identity-burst / volume-spike archetypes that share its path set) walk
+	// ONLY normal application paths. Their entire point is to DEVIATE from baseline
+	// without ever touching a decoy, so the engine takes no action and they surface
+	// only for a human on the deviants page. This is the load-bearing safety
+	// guarantee: refuse to start if a careful-mover path is also a canary path (it
+	// would let the deviant arm a response, defeating the demo's whole purpose), or
+	// a white-space path (it would blur the deviant into the recon scanner). When
+	// the careful-mover is enabled it MUST have at least one path. These mirror the
+	// disjoint() checks above; the deviant is then STRUCTURALLY unable to arm.
+	if c.carefulMoverInterval > 0 {
+		if len(c.carefulMoverPaths) == 0 {
+			return fmt.Errorf("careful-mover enabled but no careful-mover paths configured")
+		}
+		if bad, ok := disjoint(c.canaryPaths, c.carefulMoverPaths); !ok {
+			return fmt.Errorf("careful-mover path %q is also a canary path; the deviant must never touch a canary (Rule 8)", bad)
+		}
+		if bad, ok := disjoint(c.whitespacePaths, c.carefulMoverPaths); !ok {
+			return fmt.Errorf("careful-mover path %q is also a white-space/recon path; keep the deviant on NORMAL application paths", bad)
+		}
+	}
 	if c.maliciousPct < 0 || c.maliciousPct >= 100 || c.reconPct < 0 || c.reconPct >= 100 {
 		return fmt.Errorf("malicious/recon pct must be in [0,100)")
 	}
@@ -650,6 +835,9 @@ func parseFlags() config {
 		canaryPaths  = flag.String("canary-paths", "/.env,/.aws/credentials,/backup/db.sql,/internal/buckets,/admin/metrics", "seeded canary paths the attacker touches")
 		reconIP      = flag.String("recon-ip", "10.20.1.112", "UNLABELED recon/scanner source IP (white-space probing; never a canary)")
 		wsPaths      = flag.String("whitespace-paths", "/wp-login.php,/phpmyadmin/,/.svn/entries,/server-status,/actuator/env,/api/v2/admin,/cgi-bin/status,/owa/auth.owa", "non-canary white-space paths (404s) the recon scanner probes")
+		cmIP         = flag.String("careful-mover-ip", "10.20.1.104", "FRESH source IP for the canary-AVOIDING careful-mover deviant (distinct from benign/attacker/recon; NEVER touches a canary)")
+		cmPaths      = flag.String("careful-mover-paths", "/reports/daily,/internal/inventory,/analytics/export,/billing/ledger,/hr/directory,/ops/health", "NORMAL (non-canary, non-whitespace) application paths the careful-mover walks — a novel east-west path against under-trafficked services")
+		cmInterval   = flag.Duration("careful-mover-interval", 25*time.Second, "SLOW, methodical careful-mover cadence (a longer, low-jitter interval than the benign/malicious workers so it reads as cadence-deviant; 0 disables the careful-mover + the noisier deviant archetypes)")
 		baseRPM      = flag.Float64("base-rpm", 30, "per-identity peak benign requests/minute")
 		malPct       = flag.Float64("malicious-pct", 3, "malicious canary-touch share of total traffic (%)")
 		reconPct     = flag.Float64("recon-pct", 5, "recon white-space share of total traffic (%) for the background (short-probe) scanner")
@@ -674,6 +862,7 @@ func parseFlags() config {
 		benignIPs: splitCSV(*benignIPs), normalPaths: splitCSV(*normalPaths),
 		attackerIP: *attackerIP, canaryPaths: splitCSV(*canaryPaths),
 		reconIP: *reconIP, whitespacePaths: splitCSV(*wsPaths),
+		carefulMoverIP: *cmIP, carefulMoverPaths: splitCSV(*cmPaths), carefulMoverInterval: *cmInterval,
 		baseRPM: *baseRPM, maliciousPct: *malPct, reconPct: *reconPct, reconLive: *reconLive, reconHoldSec: *reconHoldSec,
 		maliciousKeepaliveInterval: *malKeepalive, recompute: *recompute, keepaliveInterval: *keepalive,
 		dailyCapUSD: *dailyCap, budgetFile: *budgetFile,
