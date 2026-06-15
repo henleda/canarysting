@@ -87,3 +87,47 @@ func TestDeriveDeviantsDropsShapelessKeepsUnknown(t *testing.T) {
 		t.Fatalf("kept row src kind = %q, want unknown", v.Rows[0].Src.Kind)
 	}
 }
+
+// Management-plane rows — a loopback SRC (127.0.0.0/8) and self-talk (src.addr ==
+// dst.addr) — are STABLE-pushed to the BOTTOM, below a genuine external mover, while
+// the tap's existing order is preserved otherwise. DEMOTE, never drop.
+func TestDeriveDeviantsDemotesManagementPlane(t *testing.T) {
+	raw := DeviantsTapView{
+		Scope: "s",
+		// Tap order (unfamiliar-first) places the management-plane rows FIRST and the
+		// genuine external mover LAST — the demote must reorder it.
+		Rows: []DeviantRowView{
+			{
+				// loopback SRC — management plane.
+				Src: DeviantEndpointView{Label: "127.0.0.1", Kind: "unknown", Addr: "127.0.0.1"},
+				Dst: DeviantEndpointView{Label: "api", Kind: "service", Addr: "127.0.1.2", Port: 8002},
+			},
+			{
+				// self-talk: src.addr == dst.addr — the box talking to itself.
+				Src: DeviantEndpointView{Label: "10.20.1.24", Kind: "unknown", Addr: "10.20.1.24"},
+				Dst: DeviantEndpointView{Label: "10.20.1.24", Kind: "unknown", Addr: "10.20.1.24", Port: 9000},
+			},
+			{
+				// genuine external mover: non-loopback src, src != dst — stays a lead.
+				Src: DeviantEndpointView{Label: "10.20.1.104", Kind: "unknown", Addr: "10.20.1.104"},
+				Dst: DeviantEndpointView{Label: "api", Kind: "service", Addr: "127.0.1.2", Port: 8002},
+			},
+		},
+	}
+	v := DeriveDeviants(raw)
+	if len(v.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (demote, never drop)", len(v.Rows))
+	}
+	// The genuine external mover is now first.
+	if v.Rows[0].Src.Addr != "10.20.1.104" {
+		t.Fatalf("row[0].src = %q, want 10.20.1.104 (genuine mover on top)", v.Rows[0].Src.Addr)
+	}
+	// The two management-plane rows are demoted to the bottom, preserving their
+	// original relative order (loopback before self-talk).
+	if v.Rows[1].Src.Addr != "127.0.0.1" {
+		t.Fatalf("row[1].src = %q, want 127.0.0.1 (loopback demoted)", v.Rows[1].Src.Addr)
+	}
+	if v.Rows[2].Src.Addr != "10.20.1.24" {
+		t.Fatalf("row[2].src = %q, want 10.20.1.24 (self-talk demoted)", v.Rows[2].Src.Addr)
+	}
+}

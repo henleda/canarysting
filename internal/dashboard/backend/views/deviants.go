@@ -1,5 +1,10 @@
 package views
 
+import (
+	"net/netip"
+	"sort"
+)
+
 // F2 rich non-tripwire deviant log — the dashboard-backend view (FEATURE-3; see
 // docs/TOPOLOGY_AND_DEVIANTS.md §4). The backend fetches the tap's
 // GET /raw/deviants, validates/normalizes the shape here, and serves it at
@@ -18,7 +23,7 @@ package views
 // It is verbatim the fence the panel will test. It states the hunting-only,
 // never-armed posture (Rule 8) without ever implying these are confirmed
 // adversaries or that the page took any action.
-const deviantsCaption = "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9)."
+const deviantsCaption = "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9)."
 
 // deviantsSimulatedNote is appended-as-a-separate-badge note when Simulated is true:
 // the synthetic-peer demo posture is running. The deviant flows are still real
@@ -105,5 +110,49 @@ func DeriveDeviants(raw DeviantsTapView) DeviantsView {
 		}
 		v.Rows = append(v.Rows, r)
 	}
+	// Read-side re-rank (Rule 8: a re-ordering of a logged view, never an action).
+	// The platform's own management-plane traffic — a loopback SRC (127.0.0.0/8 or
+	// ::1) or the box talking to itself (src.addr == dst.addr) — is the deployment's
+	// own infra noise, not a hunting lead. STABLE-push those rows to the BOTTOM so the
+	// genuine external movers (non-loopback src, src != dst) stay on top, while the
+	// tap's existing unfamiliar-first order is preserved within each group. We DEMOTE,
+	// never drop: a loopback-source flow could still be a real signal, just lowest
+	// priority.
+	sort.SliceStable(v.Rows, func(i, j int) bool {
+		mi, mj := isManagementPlane(v.Rows[i]), isManagementPlane(v.Rows[j])
+		if mi != mj {
+			// A non-management-plane row sorts BEFORE a management-plane one.
+			return !mi
+		}
+		// Same management-plane flag: defer to the tap's existing order (return false
+		// so SliceStable keeps the incoming relative order).
+		return false
+	})
 	return v
+}
+
+// isManagementPlane reports whether a deviant row is the deployment's own
+// management-plane noise rather than a hunting lead. It is true when the SRC addr
+// is loopback (127.0.0.0/8 or ::1) or when the row is self-talk (src.addr ==
+// dst.addr — e.g. the box at 10.20.1.24 talking to itself). The SRC/DST addrs are
+// RAW IP STRINGS on the wire (the backend mirrors the tap over HTTP), so we parse
+// them with net/netip before testing loopback. A parse failure is treated as NOT
+// management-plane: a non-empty, unparseable lead is left in place rather than
+// demoted on a parse miss. The self-talk test guards against empty addrs (an empty
+// SRC is not "talking to itself").
+func isManagementPlane(r DeviantRowView) bool {
+	src, srcErr := netip.ParseAddr(r.Src.Addr)
+	if srcErr == nil && src.IsLoopback() {
+		return true
+	}
+	// Self-talk (the box reaching itself). Compare canonically so textually-distinct
+	// but equal addresses (::1 vs 0:0:0:0:0:0:0:1, IPv4-mapped forms) still match; fall
+	// back to raw-string equality only when an end does not parse.
+	if r.Src.Addr == "" {
+		return false
+	}
+	if dst, dstErr := netip.ParseAddr(r.Dst.Addr); srcErr == nil && dstErr == nil {
+		return src.Compare(dst) == 0
+	}
+	return r.Src.Addr == r.Dst.Addr
 }

@@ -26,6 +26,16 @@ import { fmtBytes, fmtInt } from '@/lib/format';
 // HONESTY (Rule 8 / staged_labels): nothing here arms a response; the SHAPE/edges
 // are real observed traffic, only the NAMES are operator-registry metadata.
 
+// LEFT_PAD is dead negative space to the LEFT of the caller column so caller
+// labels (anchored 'end', e.g. "reporting-worker") get room to breathe inside the
+// viewBox instead of clipping off the left edge. It shifts the viewBox origin only
+// — every column X below is unchanged, so the columns-by-kind layout is identical.
+const LEFT_PAD = 160;
+// RIGHT_PAD mirrors LEFT_PAD on the right so the decoy labels (anchored 'start' to
+// the right of the ring, e.g. "planted_credential") get room inside the viewBox
+// instead of clipping off the right edge. Like LEFT_PAD it only extends the viewBox,
+// not any column X.
+const RIGHT_PAD = 150;
 const W = 1040;
 const COL_CALLER_X = 120;
 const COL_INGRESS_X = 320;
@@ -36,6 +46,13 @@ const ROW = 96; // vertical spacing between nodes in a column
 const SERVICE_R_MIN = 16;
 const SERVICE_R_MAX = 34;
 const NODE_R = 18; // caller / ingress / decoy base radius
+
+// X of the decoy-ring negative-space boundary (midway between services and decoys).
+const NEGSPACE_X = (COL_SERVICE_X + COL_DECOY_X) / 2;
+// The decoy ring sits in its own band to the right of the boundary; the faint band
+// fill makes the "negative space the legit mesh never serves" read as a region, not
+// just a dashed line. Right edge tracks the viewBox so the band runs to the margin.
+const RING_BAND_X1 = NEGSPACE_X + 26;
 
 type Placed = TopologyNode & { x: number; y: number; r: number; volume: number };
 
@@ -70,13 +87,14 @@ export default function TopologyGraph({ view }: { view: TopologyView }) {
     <div className="topo-wrap">
       <svg
         className="topo-svg"
-        viewBox={`0 0 ${W} ${height}`}
+        viewBox={`${-LEFT_PAD} 0 ${W + LEFT_PAD + RIGHT_PAD} ${height}`}
         role="img"
         aria-label="Learned east-west topology: callers, services, and canary decoys"
         preserveAspectRatio="xMidYMin meet"
       >
         {/* Directed-edge arrowhead. context-stroke makes it inherit each edge's
-            class color (learned/live/touch) so direction reads per edge. */}
+            class color (learned/live/touch) so direction reads per edge. A slightly
+            slimmer head with refX at the tip keeps it crisp where it meets the rim. */}
         <defs>
           <marker
             id="topo-arrow"
@@ -87,37 +105,53 @@ export default function TopologyGraph({ view }: { view: TopologyView }) {
             markerHeight="7"
             orient="auto"
           >
-            <path d="M0,1 L9,5 L0,9 z" fill="context-stroke" opacity="0.9" />
+            <path d="M0,1.5 L9,5 L0,8.5 z" fill="context-stroke" opacity="0.95" />
           </marker>
         </defs>
 
-        {/* Column headers */}
-        <text x={COL_CALLER_X} y={28} className="topo-col-h" textAnchor="middle">
+        {/* The decoy ring's negative-space BAND — a faint canary wash to the right of
+            the dashed boundary so the ring reads as a separate region the legit mesh
+            never serves, not just a column. Drawn first, behind everything. */}
+        <rect
+          x={RING_BAND_X1}
+          y={42}
+          width={W + RIGHT_PAD - RING_BAND_X1}
+          height={height - 42 - 12}
+          className="topo-ring-band"
+          rx={8}
+        />
+
+        {/* Column headers, with a hairline baseline that anchors them as a row. */}
+        <line x1={-LEFT_PAD + 12} y1={40} x2={W + RIGHT_PAD} y2={40} className="topo-header-rule" />
+        <text x={COL_CALLER_X} y={26} className="topo-col-h" textAnchor="middle">
           CALLERS
         </text>
         {hasIngress && (
-          <text x={COL_INGRESS_X} y={28} className="topo-col-h" textAnchor="middle">
+          <text x={COL_INGRESS_X} y={26} className="topo-col-h" textAnchor="middle">
             INGRESS
           </text>
         )}
-        <text x={COL_SERVICE_X} y={28} className="topo-col-h" textAnchor="middle">
+        <text x={COL_SERVICE_X} y={26} className="topo-col-h" textAnchor="middle">
           SERVICES · learned mesh
         </text>
-        <text x={COL_DECOY_X} y={28} className="topo-col-h topo-col-h-decoy" textAnchor="middle">
-          DECOY RING · negative space
+        <text x={COL_DECOY_X} y={26} className="topo-col-h topo-col-h-decoy" textAnchor="middle">
+          DECOY RING
+        </text>
+        <text x={COL_DECOY_X} y={37} className="topo-col-sub topo-col-sub-decoy" textAnchor="middle">
+          negative space · zero learned in-edges
         </text>
 
         {/* The dashed negative-space boundary the legit graph never crosses. */}
         <line
-          x1={(COL_SERVICE_X + COL_DECOY_X) / 2}
+          x1={NEGSPACE_X}
           y1={42}
-          x2={(COL_SERVICE_X + COL_DECOY_X) / 2}
+          x2={NEGSPACE_X}
           y2={height - 16}
           className="topo-negspace-line"
         />
 
         {/* Edges first (under the nodes). */}
-        <g>
+        <g className="topo-edges">
           {view.edges.map((e, i) => {
             const a = byId.get(e.src_id);
             const b = byId.get(e.dst_id);
@@ -127,7 +161,7 @@ export default function TopologyGraph({ view }: { view: TopologyView }) {
         </g>
 
         {/* Nodes on top. */}
-        <g>
+        <g className="topo-nodes">
           {placed.map((n) => (
             <NodeMark key={n.id} n={n} />
           ))}
@@ -191,12 +225,18 @@ function layout(view: TopologyView): { placed: Placed[]; byId: Map<string, Place
 function EdgeLine({ a, b, edge, maxFlow }: { a: Placed; b: Placed; edge: TopologyEdge; maxFlow: number }) {
   // Cubic curve, bowed horizontally between columns for legibility. End the curve at
   // the destination node's EDGE (not its center) so the arrowhead sits at the rim,
-  // visible rather than hidden under the circle. The curve arrives horizontally
-  // (the second control point shares b.y), so offset along x by the node radius.
+  // visible rather than hidden under the circle. The curve LEAVES the source and
+  // ARRIVES at the destination horizontally (control points share a.y then b.y), so
+  // edges depart/land flat against the rim — this untangles the caller->ingress fan
+  // and the ingress->service funnel where many edges share one endpoint. The control
+  // handles are pushed out (0.55 of the span) for a softer, more deliberate bow.
   const dirX = b.x >= a.x ? 1 : -1;
   const endX = b.x - dirX * (b.r + 3);
-  const mx = (a.x + endX) / 2;
-  const d = `M ${a.x} ${a.y} C ${mx} ${a.y}, ${mx} ${b.y}, ${endX} ${b.y}`;
+  const startX = a.x + dirX * (a.r + 1);
+  const handle = (endX - startX) * 0.55;
+  const c1x = startX + handle;
+  const c2x = endX - handle;
+  const d = `M ${startX} ${a.y} C ${c1x} ${a.y}, ${c2x} ${b.y}, ${endX} ${b.y}`;
 
   let cls = 'topo-edge topo-edge-learned';
   let width = 1;
@@ -223,27 +263,34 @@ function EdgeLine({ a, b, edge, maxFlow }: { a: Placed; b: Placed; edge: Topolog
 }
 
 // NodeMark draws a node circle + label, colored by kind. Decoys are dashed rings.
+// Labels carry a stroke-painted halo (paint-order: stroke) so they stay legible when
+// an edge runs underneath — this is the lever for the dense service column where
+// edges fan into the next tier right past the labels.
 function NodeMark({ n }: { n: Placed }) {
   const kindClass = `topo-node topo-node-${n.kind}`;
-  const labelDx = n.kind === 'caller' || n.kind === 'unknown' || n.kind === 'external' ? -(n.r + 8) : n.r + 8;
-  const anchor = labelDx < 0 ? 'end' : 'start';
+  const labelLeft = n.kind === 'caller' || n.kind === 'unknown' || n.kind === 'external';
+  const labelDx = labelLeft ? -(n.r + 9) : n.r + 9;
+  const anchor = labelLeft ? 'end' : 'start';
   const sub =
     n.kind === 'service'
       ? `${fmtInt(n.volume)} flows`
       : n.kind === 'decoy'
         ? 'no learned in-edges'
         : '';
+  // With a sub-label, raise the name and drop the sub so the pair centers on the node.
+  const labelY = sub ? n.y - 5 : n.y;
+  const subY = n.y + 8;
 
   return (
     <g className={kindClass}>
       <circle cx={n.x} cy={n.y} r={n.r} className={`topo-node-c topo-node-c-${n.kind}`}>
         <title>{`${n.label} · ${n.kind}`}</title>
       </circle>
-      <text x={n.x + labelDx} y={n.y - 2} textAnchor={anchor} className="topo-node-label">
+      <text x={n.x + labelDx} y={labelY} textAnchor={anchor} className="topo-node-label">
         {n.label}
       </text>
       {sub && (
-        <text x={n.x + labelDx} y={n.y + 11} textAnchor={anchor} className="topo-node-sub">
+        <text x={n.x + labelDx} y={subY} textAnchor={anchor} className="topo-node-sub">
           {sub}
         </text>
       )}
@@ -255,16 +302,24 @@ function Legend({ learnedCount, liveCount, touchCount }: { learnedCount: number;
   return (
     <div className="topo-legend">
       <span className="topo-legend-item">
-        <span className="topo-swatch topo-swatch-learned" /> learned · {learnedCount} edges
+        <span className="topo-swatch topo-swatch-learned" />
+        <span className="topo-legend-label">learned</span>
+        <span className="topo-legend-count">{learnedCount} edges</span>
       </span>
       <span className="topo-legend-item">
-        <span className="topo-swatch topo-swatch-live" /> live / deviant · {liveCount} (observe-only, never arms)
+        <span className="topo-swatch topo-swatch-live" />
+        <span className="topo-legend-label">live / deviant</span>
+        <span className="topo-legend-count">{liveCount} · observe-only, never arms</span>
       </span>
       <span className="topo-legend-item">
-        <span className="topo-swatch topo-swatch-touch" /> decoy touch · {touchCount} (the only edge into the ring)
+        <span className="topo-swatch topo-swatch-touch" />
+        <span className="topo-legend-label">decoy touch</span>
+        <span className="topo-legend-count">{touchCount} · the only edge into the ring</span>
       </span>
       <span className="topo-legend-item">
-        <span className="topo-swatch topo-swatch-decoy" /> canary decoy (negative space)
+        <span className="topo-swatch topo-swatch-decoy" />
+        <span className="topo-legend-label">canary decoy</span>
+        <span className="topo-legend-count">negative space</span>
       </span>
     </div>
   );

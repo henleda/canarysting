@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import TopBar from '@/components/TopBar';
 import Breadcrumbs from '@/components/Breadcrumbs';
 import { useOverview } from '@/lib/useOverview';
@@ -26,7 +27,7 @@ import type { DeviantsView, DeviantRow, DeviantEndpoint } from '@/lib/types';
 // Byte-identical fallback if the backend ever omits the pre-rendered caption (it
 // should not) — kept in lockstep with views/deviants.go deviantsCaption.
 const FALLBACK_CAPTION =
-  'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).';
+  "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).";
 
 export default function DeviantsPage() {
   const { snapshot, status } = useOverview();
@@ -109,15 +110,32 @@ export default function DeviantsPage() {
 // identity), the headline PEAK dim ("why it looked anomalous"), the compact 5-dim
 // mini-bar set, the recurrence count, and last-seen. Vocabulary is "anomalous" /
 // "logged" — never "detected" / "blocked" (we are not acting on it).
+//
+// The card is EXPANDABLE: clicking (or keyboard-toggling) the fingerprint header
+// reveals the full L4 east-west fingerprint detail panel. No new fetch — the row
+// already carries everything (resolved identities, all 5 dims, peak, recurrence,
+// score). The panel is honest that the L7 request PATH/payload is NOT captured here.
 function DeviantRowCard({ r }: { r: DeviantRow }) {
   // The hunting headline: an UNFAMILIAR source (an identity the operator never
   // registered — the careful-mover / recon lead) is ranked first and flagged. A
   // KNOWN source that deviates is a lower-priority, honest lead.
   const unfamiliar = r.src_familiarity === 'unfamiliar';
+  const [open, setOpen] = useState(false);
   return (
     <div className={`deviant-card${unfamiliar ? ' deviant-card-unfamiliar' : ''}`}>
       <div className="deviant-head">
-        <span className="deviant-fp">
+        {/* The fingerprint is the expand control: a real <button> so it is keyboard-
+            toggleable (Enter/Space) and screen-reader-announced via aria-expanded. */}
+        <button
+          type="button"
+          className="deviant-fp deviant-fp-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+          title={open ? 'collapse flow detail' : 'expand the full L4 fingerprint'}
+        >
+          <span className="deviant-caret" aria-hidden="true">
+            {open ? '▾' : '▸'}
+          </span>
           <span
             className={`deviant-fam ${unfamiliar ? 'deviant-fam-unfamiliar' : 'deviant-fam-known'}`}
             title={unfamiliar ? 'unfamiliar source — unregistered identity (hunting lead)' : 'known source — declared identity'}
@@ -127,7 +145,7 @@ function DeviantRowCard({ r }: { r: DeviantRow }) {
           <Endpoint e={r.src} role="from" />
           <span className="deviant-arrow">→</span>
           <Endpoint e={r.dst} role="to" />
-        </span>
+        </button>
         <span className="deviant-peak" title={`peak dim ${r.peak_dim} = ${fmtPct(r.peak_value)}`}>
           {r.peak_dim} · {fmtPct(r.peak_value)}
         </span>
@@ -135,10 +153,136 @@ function DeviantRowCard({ r }: { r: DeviantRow }) {
 
       <Dims r={r} />
 
+      {open && <DeviantDetail r={r} />}
+
       <div className="deviant-foot faint">
         <span className="pill-observe">OBSERVE-ONLY · never armed</span>
         <span>seen ~{r.hit_count.toLocaleString('en-US')} times</span>
         {r.last_seen && <span>last {fmtAgo(r.last_seen)}</span>}
+      </div>
+    </div>
+  );
+}
+
+// DeviantDetail is the expanded drill-down for one flow. It is built ENTIRELY from
+// the row (no new fetch) and is honest about what L4 east-west capture does and does
+// NOT carry: the dst :port is the real reached service port (L4) — NOT an L7 request
+// path; the L7 path/payload is genuinely absent here and joins in a later L7/SIEM
+// fusion slice. We never invent a path. The score=0 fold-seam note is expected
+// (no canary touch ⇒ no base suspicion score). OBSERVE-ONLY framing throughout.
+function DeviantDetail({ r }: { r: DeviantRow }) {
+  const dims: Array<{ label: string; meaning: string; v: number }> = [
+    { label: 'identity', meaning: 'unfamiliar source — an identity not in the registry', v: r.identity_novelty },
+    { label: 'adjacency', meaning: 'a new src → dst pair the baseline had not seen', v: r.adjacency_novelty },
+    { label: 'port', meaning: 'an unusual destination port for this source', v: r.port_novelty },
+    { label: 'volume', meaning: 'more bytes/flows than the learned baseline', v: r.volume_deviation },
+    { label: 'cadence', meaning: 'off-rhythm timing vs the learned cadence', v: r.cadence_deviation },
+  ];
+  return (
+    <section className="deviant-detail">
+      {/* (1) Resolved SRC and DST identity: label + kind + RAW addr + port (L4). */}
+      <div className="deviant-detail-ends">
+        <EndpointDetail e={r.src} role="from" />
+        <span className="deviant-detail-arrow" aria-hidden="true">→</span>
+        <EndpointDetail e={r.dst} role="to" />
+      </div>
+
+      {/* (2) Full 5-dim novelty breakdown, each labeled in plain English. */}
+      <div className="deviant-detail-block">
+        <div className="deviant-detail-h">baseline novelty — all 5 dimensions</div>
+        <div className="deviant-detail-dims">
+          {dims.map((d) => {
+            const pct = Math.max(0, Math.min(1, Number.isFinite(d.v) ? d.v : 0)) * 100;
+            const peak = d.label === peakDimKey(r.peak_dim);
+            return (
+              <div className={`deviant-detail-dim${peak ? ' deviant-detail-dim-peak' : ''}`} key={d.label}>
+                <div className="deviant-detail-dim-top">
+                  <span className="deviant-detail-dim-label">{d.label}</span>
+                  <span className="deviant-detail-dim-val">{fmtPct(d.v)}</span>
+                </div>
+                <span className="deviant-detail-dim-track">
+                  <span className="deviant-detail-dim-fill" style={{ width: `${pct}%` }} />
+                </span>
+                <span className="deviant-detail-dim-meaning">{d.meaning}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* (3) PEAK + (4) recurrence + (5) score, with the fold-seam note. */}
+      <div className="deviant-detail-meta">
+        <div className="deviant-detail-kv">
+          <span className="deviant-detail-k">peak signal</span>
+          <span className="deviant-detail-v">
+            {r.peak_dim} · {fmtPct(r.peak_value)}
+          </span>
+        </div>
+        <div className="deviant-detail-kv">
+          <span className="deviant-detail-k">recurrence</span>
+          <span className="deviant-detail-v">
+            seen ~{r.hit_count.toLocaleString('en-US')} times
+            {r.first_seen && r.last_seen ? ` · ${r.first_seen} → ${r.last_seen}` : ''}
+          </span>
+        </div>
+        <div className="deviant-detail-kv">
+          <span className="deviant-detail-k">score</span>
+          <span className="deviant-detail-v">
+            {r.score}
+            {r.score === 0 && (
+              <span className="deviant-detail-note">
+                {' '}
+                — score 0 is expected at the fold seam: no canary touch, no base suspicion score.
+              </span>
+            )}
+          </span>
+        </div>
+      </div>
+
+      {/* (6) HONESTY: this is the L4 east-west fingerprint; no L7 path is captured. */}
+      <div className="deviant-detail-honesty" role="note">
+        <span className="pill-observe">L4 east-west fingerprint</span> This is the network-layer (L4)
+        fingerprint of the flow — endpoints, the reached <code>:port</code>, and the baseline-novelty dims. The
+        L7 request <strong>path / payload is NOT captured here</strong>; it joins later in an L7/SIEM fusion
+        slice. We never show or invent a path we do not have. Observe-only — no response was armed (Rule 8).
+      </div>
+    </section>
+  );
+}
+
+// peakDimKey maps the row's human peak_dim string ("new identity", "volume
+// deviation", …) onto the matching 5-dim key so the peak dim can be highlighted in
+// the detail breakdown. Best-effort: an unmatched peak_dim simply highlights nothing.
+function peakDimKey(peakDim: string): string {
+  const p = (peakDim || '').toLowerCase();
+  if (p.includes('identity')) return 'identity';
+  if (p.includes('adjacen')) return 'adjacency';
+  if (p.includes('port')) return 'port';
+  if (p.includes('volume')) return 'volume';
+  if (p.includes('cadence')) return 'cadence';
+  return '';
+}
+
+// EndpointDetail renders one fully-resolved end for the drill-down: kind + label +
+// the RAW addr + the L4 port. The port is the L4 reached service port — explicitly
+// NOT an L7 path. An UNKNOWN/raw-IP kind is the unfamiliar-identity signal.
+function EndpointDetail({ e, role }: { e: DeviantEndpoint; role: 'from' | 'to' }) {
+  const unknown = e.kind === 'unknown';
+  const label = e.label || e.addr || 'unknown';
+  return (
+    <div className={`deviant-detail-ep${unknown ? ' deviant-detail-ep-unknown' : ''}`}>
+      <div className="deviant-detail-ep-role">{role === 'from' ? 'source' : 'destination'}</div>
+      <div className="deviant-detail-ep-id">
+        <span className="deviant-ep-kind">{e.kind}</span>
+        <span className="deviant-detail-ep-label">{label}</span>
+      </div>
+      <div className="deviant-detail-ep-addr">
+        {e.addr || '—'}
+        {role === 'to' && e.port > 0 && (
+          <span className="deviant-detail-ep-port" title="L4 reached service port (not an L7 path)">
+            :{e.port}
+          </span>
+        )}
       </div>
     </div>
   );
