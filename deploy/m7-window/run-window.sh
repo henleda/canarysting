@@ -41,6 +41,12 @@ DASHBOARD_TAP_ADDR=${PRIVATE_IP}:8088
 STING_FLOOR=1
 DEMO_FLOOR_FLAG=
 TOPOLOGY_FLAG=-topology-identities $ETC/topology-identities.json
+# SLICE-2 one-way SIEM/SOAR emitter — OFF by default (empty => no argument, window
+# posture byte-unchanged). To enable, set e.g.
+#   SIEM_FLAG=-siem-format json -siem-endpoint https://your-siem.example/hec
+# or "-siem-format cef" / "-siem-format stdout". The event is LOCAL-RICH (raw
+# src/path/SPIFFE) and goes to the operator's OWN SIEM — never the cross-customer feed.
+SIEM_FLAG=
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="

@@ -44,6 +44,7 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
+	"github.com/canarysting/canarysting/internal/intelligence/siem"
 	"github.com/canarysting/canarysting/internal/intelligence/transport"
 )
 
@@ -101,6 +102,23 @@ type Options struct {
 	// ConfirmSpoolPath, when Contribute is set + ScopeToken is given, is the NDJSON
 	// confirmation spool (this deployment -> the central aggregator, D6-3). "" => emit none.
 	ConfirmSpoolPath string
+
+	// --- Slice-2 one-way SIEM/SOAR emitter (operator-facing LOCAL alert stream) ---
+	// The emitter drains the LOCAL-RICH l7events store per scope and pushes one event
+	// per canary touch to the operator's OWN SIEM/SOAR. It is OFF by default
+	// (SIEMFormat empty/"off" => inert) so the live window posture is byte-unchanged
+	// until an operator opts in. It is NOT the cross-customer feed and never routes
+	// through internal/intelligence/network (rule 9).
+	//
+	// SIEMFormat selects the transport: ""/"off" (inert), "stdout" (NDJSON to the
+	// engine log), "json"/"webhook" (HTTP POST to SIEMEndpoint), or "cef" (CEF single
+	// line to stdout). SIEMEndpoint is the webhook/HEC URL (required for json/webhook;
+	// an empty endpoint with a network format fails safe back to OFF). SIEMHECToken is
+	// an optional Splunk HEC token. SIEMInterval is the poll cadence (0 => default 5s).
+	SIEMFormat   string
+	SIEMEndpoint string
+	SIEMHECToken string
+	SIEMInterval time.Duration
 }
 
 // Built holds the composed engine and the handles a binary wires further or
@@ -116,6 +134,7 @@ type Built struct {
 	Malicious       *observebaseline.MaliciousSet // nil if observe disabled
 	Events          *boltevents.Store             // nil if no DB
 	L7Events        *l7events.Store               // slice-1 local-rich enriched touch-record; nil if no DB
+	SIEM            *siem.Drainer                 // slice-2 one-way LOCAL SIEM/SOAR emitter; nil if no DB or disabled
 	OutcomeReporter contract.OutcomeReporter      // nil if no DB (no durable event store to amend)
 	Sharpen         *sharpen.Store                // D5-Phase-2 confirmed-malicious matcher; nil if no DB
 	Ledger          *network.Ledger               // D6 cross-scope SeenInScopes ledger; nil if no DB
@@ -194,6 +213,25 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		// scope-isolated (rule 5). Written from the same capturingEngine.Submit seam,
 		// gated to the same Tier>=Tag set; nothing here arms a response (rule 8).
 		b.L7Events = l7events.New(store)
+		// SLICE 2: the one-way SIEM/SOAR emitter — an operator-facing LOCAL alert stream
+		// over the l7events store. Built only when the operator opts in (SIEMFormat is a
+		// network/output format) AND the local-rich store exists. OFF by default
+		// (SIEMFormat ""/"off" => NopEmitter, the drain still runs but discards), so the
+		// live window posture is byte-unchanged until configured. It drains PER SCOPE
+		// (rule 5) and pushes the LOCAL-RICH event to the operator's own SIEM — it is NOT
+		// the cross-customer feed and is structurally forbidden from importing
+		// internal/intelligence/network (siem/importguard_test.go).
+		if opts.SIEMFormat != "" && opts.SIEMFormat != "off" {
+			sink, note := siem.NewSink(siem.SinkConfig{Format: opts.SIEMFormat, Endpoint: opts.SIEMEndpoint, HECToken: opts.SIEMHECToken})
+			log.Printf("boot: slice-2 SIEM emitter enabled (scope=%q sink=%s) — LOCAL-RICH operator alert stream; NOT the cross-customer feed", opts.Boundary, note)
+			b.SIEM = siem.New(siem.Config{
+				Source:      b.L7Events,
+				Sink:        sink,
+				Interval:    opts.SIEMInterval,
+				ExtraScopes: []contract.ScopeKey{contract.ScopeKey(opts.Boundary)},
+				ReapEnabled: true, // the slice-2 emitter owns the 30d TTL reap (l7events store.go)
+			})
+		}
 		// D5-Phase-2: the confirmed-malicious profile store reads flow events from the
 		// durable EventStore and structurally satisfies baseline.Matcher. Wired only
 		// with the DB present (it needs the event source); it is fed jail outcomes from
@@ -338,6 +376,16 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 func (b *Built) StartAggregator(ctx context.Context) {
 	if b.Aggregator != nil {
 		b.Aggregator.Run(ctx)
+	}
+}
+
+// StartSIEMEmitter runs the slice-2 one-way SIEM/SOAR drain until ctx is cancelled.
+// It is a no-op when the emitter is disabled (no DB / SIEMFormat off). Call it in a
+// goroutine, mirroring StartAggregator. It NEVER touches the verdict hot path (rule 8)
+// and NEVER routes through the cross-customer egress path (rule 9).
+func (b *Built) StartSIEMEmitter(ctx context.Context) {
+	if b.SIEM != nil {
+		b.SIEM.Run(ctx)
 	}
 }
 

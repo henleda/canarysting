@@ -412,6 +412,23 @@ func (s *Store) Snapshot(scope contract.ScopeKey) []EnrichedTouchRecord {
 	return out
 }
 
+// Scopes returns the set of scopes that currently hold at least one in-memory
+// record — the enumerator the slice-2 SIEM emitter uses to discover which scopes
+// to drain (Snapshot requires a scope arg, so without this it could only drain a
+// hardcoded boundary). It copies out under s.mu (the byScope map is lock-guarded);
+// the live map never escapes. Order is unspecified (map iteration). Rule 5: this
+// only lists the scope KEYS the local store already partitions on; it never merges
+// records across scopes.
+func (s *Store) Scopes() []contract.ScopeKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]contract.ScopeKey, 0, len(s.byScope))
+	for sc := range s.byScope {
+		out = append(out, sc)
+	}
+	return out
+}
+
 // LookupByCookie returns the records for one scope whose socket cookie matches —
 // the by-cookie join-back the deviant drill-down L7 path will use (rule 4). A
 // single cookie can carry several records if it touched distinct request lines.

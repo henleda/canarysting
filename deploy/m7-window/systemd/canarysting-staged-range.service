@@ -20,6 +20,13 @@ StateDirectory=canarysting
 # node resolver: "-topology-identities /etc/canarysting/topology-identities.json" (the
 # operator-declared IP/port->name map; see docs/TOPOLOGY_AND_DEVIANTS.md). Empty -> the
 # tap degrades nodes to IP labels (staged_labels=false), so it is safe to leave unset.
+# $SIEM_FLAG is the SLICE-2 one-way SIEM/SOAR emitter (operator-facing LOCAL alert
+# stream). Empty (the default) -> the emitter is OFF and the window posture is unchanged.
+# To enable, set SIEM_FLAG in m7.env to e.g. "-siem-format json -siem-endpoint
+# https://your-siem.example/hec" (or "-siem-format cef"/"-siem-format stdout"). The event
+# is LOCAL-RICH (raw src/path/SPIFFE) and goes to the OPERATOR'S OWN SIEM — it is NOT the
+# cross-customer feed; never point a webhook at a shared/third-party endpoint expecting
+# anonymization.
 ExecStart=/opt/canarysting/bin/staged-range \
   -scope-boundary ${SCOPE} \
   -grpc-addr 127.0.0.1:50052 \
@@ -35,6 +42,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   $DEMO_FLOOR_FLAG \
   $CONSUME_FLAG \
   $SHARED_SPOOL_FLAG \
+  $SIEM_FLAG \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3
