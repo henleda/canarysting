@@ -365,7 +365,7 @@ export const fixtureCostBreakdown: CostBreakdown = {
 // /api/topology emits (no 'live'/deviant edge until F2). The caller set mirrors the
 // simdriver's benign identities + the prober. Names come from the staging operator
 // registry (deploy/m7-window/topology-identities.json) — staged_labels.
-import type { TopologyView } from './types';
+import type { TopologyView, DeviantsView } from './types';
 
 const TOPO_FIRST = '2026-06-09T13:30:00Z';
 const TOPO_LAST = '2026-06-09T13:58:12Z';
@@ -452,6 +452,79 @@ export const fixtureTopology: TopologyView = {
     // BRIGHT source->decoy touch edge — the only edge that ever crosses into the
     // ring. A real adapter-recognized canary touch (Tier>=1) by cookie 0x118.
     { src_id: 'touch-src:0x118', dst_id: 'decoy:planted_credential', port: 0, proto: 'decoy', flow_count: 1, bytes: 0, first_seen: TOPO_LAST, last_seen: TOPO_LAST, class: 'decoy_touch' },
+  ],
+};
+
+// fixtureDeviants — the F2 deviant hunting log. Realistic fingerprints of flows
+// that DEVIATED from the learned baseline but touched NO canary, so NOTHING was
+// armed (Rule 8). Ranked HitCount desc, then peak_value desc, then last_seen desc:
+//   #1 the careful-mover — a FRESH identity (10.20.1.104, never in the registry, so
+//      it resolves UNKNOWN/raw-IP) probing the api service, with the highest +
+//      GROWING hit-count so it stays pinned despite its per-hit novelty decaying as
+//      it teaches the baseline. Peak: "new identity".
+//   #2 a new-identity burst (10.20.1.207) hitting auth — high identity/adjacency,
+//      lower hit-count.
+//   #3 a volume-spike — a KNOWN caller (etl-scheduler) moving far more data than
+//      baseline; peak "volume deviation", lowest hit-count.
+// simulated:true — the demo posture (the deviant flows are real local observations;
+// the synthetic-peer cross-customer context is what's simulated).
+export const fixtureDeviants: DeviantsView = {
+  scope: 'm7-window',
+  staged_labels: true,
+  simulated: true,
+  caption:
+    'These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).',
+  simulated_note:
+    'Demo posture: synthetic-peer cross-customer context is simulated. The deviant flows shown are real local observations.',
+  rows: [
+    {
+      // The careful-mover: fresh, unregistered identity -> resolves UNKNOWN/raw-IP.
+      src: { label: '10.20.1.104', kind: 'unknown', addr: '10.20.1.104', port: 0 },
+      dst: { label: 'api', kind: 'service', addr: '127.0.1.2', port: 8002 },
+      identity_novelty: 0.93,
+      adjacency_novelty: 0.81,
+      port_novelty: 0.12,
+      volume_deviation: 0.22,
+      cadence_deviation: 0.18,
+      peak_dim: 'new identity',
+      peak_value: 0.93,
+      hit_count: 41,
+      first_seen: '2026-06-09T11:02:30Z',
+      last_seen: '2026-06-09T13:57:48Z',
+      score: 0,
+    },
+    {
+      // New-identity burst: another unregistered identity probing auth.
+      src: { label: '10.20.1.207', kind: 'unknown', addr: '10.20.1.207', port: 0 },
+      dst: { label: 'auth', kind: 'service', addr: '127.0.1.3', port: 8003 },
+      identity_novelty: 0.88,
+      adjacency_novelty: 0.74,
+      port_novelty: 0.34,
+      volume_deviation: 0.15,
+      cadence_deviation: 0.41,
+      peak_dim: 'new identity',
+      peak_value: 0.88,
+      hit_count: 6,
+      first_seen: '2026-06-09T13:46:10Z',
+      last_seen: '2026-06-09T13:55:02Z',
+      score: 0,
+    },
+    {
+      // Volume-spike: a KNOWN caller moving far more data than baseline.
+      src: { label: 'etl-scheduler', kind: 'caller', addr: '10.20.1.108', port: 0 },
+      dst: { label: 'db-replica', kind: 'service', addr: '127.0.1.10', port: 8010 },
+      identity_novelty: 0.08,
+      adjacency_novelty: 0.12,
+      port_novelty: 0.05,
+      volume_deviation: 0.79,
+      cadence_deviation: 0.33,
+      peak_dim: 'volume deviation',
+      peak_value: 0.79,
+      hit_count: 2,
+      first_seen: '2026-06-09T13:20:00Z',
+      last_seen: '2026-06-09T13:51:36Z',
+      score: 0,
+    },
   ],
 };
 

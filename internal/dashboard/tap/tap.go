@@ -178,6 +178,9 @@ type CrossCustomerState struct {
 //	GET /raw/topology              — the F1 per-scope learned east-west topology
 //	                                 (decoded live map + resolved node labels +
 //	                                 injected decoy nodes/touch edges)
+//	GET /raw/deviants              — the F2 per-scope deviant hunting log (decoded
+//	                                 live deviant records + resolved identities,
+//	                                 ranked; observe-only, never armed — Rule 8)
 //	GET /healthz                   — liveness
 //	PUT /raw/attack-ledger         — M9 attacker posts its live real-cost meter
 //	GET /raw/attack-ledger         — read the live meter (backend polls this)
@@ -190,6 +193,7 @@ func (s *Source) Handler() http.Handler {
 	mux.HandleFunc("/raw/state", s.handleState)
 	mux.HandleFunc("/raw/events", s.handleEvents)
 	mux.HandleFunc("/raw/topology", s.handleTopology)
+	mux.HandleFunc("/raw/deviants", s.handleDeviants)
 	mux.HandleFunc("/raw/attack-ledger", s.handleAttackLedger)
 	return mux
 }

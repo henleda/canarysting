@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/canarysting/canarysting/bpf/observe"
+	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine/baseline"
 )
 
@@ -329,4 +330,94 @@ func (d *deviants) blobForKey(key string) (blob []byte, ok bool, err error) {
 	}
 	b, err := encodeDeviant(r)
 	return b, err == nil, err
+}
+
+// --- read-side snapshot (FEATURE-3 — the /raw/deviants data path) -----------
+//
+// DeviantSnapshot exposes a DECODED, copied view of the live in-memory per-scope
+// deviant log so the dashboard tap can resolve identity labels and emit the
+// deviants view (docs/TOPOLOGY_AND_DEVIANTS.md §4). It mirrors TopologySnapshot
+// EXACTLY: snapshot under a.mu (read lock), then hand back plain value structs the
+// caller owns — the package-private *DeviantFlowRecord pointers and the gob types
+// NEVER escape this package.
+//
+// This is READ-SIDE ONLY (Rule 8 — nothing here arms a response; the records are
+// of flows that touched NO canary) and LOCAL-ONLY (Rule 9 — the raw addresses stay
+// in the deployment; this accessor lives in observebaseline, which the egress
+// filter is structurally forbidden to import — see
+// internal/intelligence/network/egress_importguard_test.go). The addresses it
+// returns are the un-hashed local-rich identity; coarsening happens only at the
+// egress boundary, never here.
+
+// DeviantFlowRecordView is one deviant record, decoded for the read side. SrcIP/
+// DstIP are the canonical 4- or 16-byte address slices (length follows Family).
+// FirstSeen/LastSeen are wall-clock (a.clock()). It is a plain value the caller
+// owns; no package-private pointer or fixed [16]byte buffer escapes — the address
+// bytes are deep-copied at snapshot time (mirrors TopologySnapshot's edge addrs).
+type DeviantFlowRecordView struct {
+	SrcIP   []byte
+	DstIP   []byte
+	SrcPort uint16
+	DstPort uint16
+	Family  uint16
+
+	SocketCookie uint64
+
+	IdentityNovelty  float64
+	AdjacencyNovelty float64
+	PortNovelty      float64
+	VolumeDeviation  float64
+	CadenceDeviation float64
+	PeakNovelty      float64
+	PeakLabel        string
+
+	Score float64
+
+	FirstSeen time.Time
+	LastSeen  time.Time
+	HitCount  uint64
+}
+
+// DeviantSnap is the decoded deviant records for one scope.
+type DeviantSnap struct {
+	Records []DeviantFlowRecordView
+}
+
+// DeviantSnapshot returns a decoded, copied snapshot of the live in-memory deviant
+// log for sc (the CURRENT map — the source of truth, rehydrated on boot and folded
+// each tick). Empty (zero-value) for a scope with no accrued deviants. Safe for
+// concurrent reads; takes only the read lock and copies every field out (the
+// address bytes deep-copied to length-of-family slices so the internal [16]byte
+// buffers never alias), so the caller never touches package-private state.
+func (a *Aggregator) DeviantSnapshot(sc contract.ScopeKey) DeviantSnap {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	dv := a.deviants[sc]
+	if dv == nil {
+		return DeviantSnap{}
+	}
+	out := make([]DeviantFlowRecordView, 0, len(dv.records))
+	for _, r := range dv.records {
+		n := addrLen(r.Family)
+		out = append(out, DeviantFlowRecordView{
+			SrcIP:            append([]byte(nil), r.SrcIP[:n]...),
+			DstIP:            append([]byte(nil), r.DstIP[:n]...),
+			SrcPort:          r.SrcPort,
+			DstPort:          r.DstPort,
+			Family:           r.Family,
+			SocketCookie:     r.SocketCookie,
+			IdentityNovelty:  r.IdentityNovelty,
+			AdjacencyNovelty: r.AdjacencyNovelty,
+			PortNovelty:      r.PortNovelty,
+			VolumeDeviation:  r.VolumeDeviation,
+			CadenceDeviation: r.CadenceDeviation,
+			PeakNovelty:      r.PeakNovelty,
+			PeakLabel:        r.PeakLabel,
+			Score:            r.Score,
+			FirstSeen:        r.FirstSeen,
+			LastSeen:         r.LastSeen,
+			HitCount:         r.HitCount,
+		})
+	}
+	return DeviantSnap{Records: out}
 }

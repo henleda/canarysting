@@ -317,6 +317,21 @@ func (b *Backend) fetchTopology() (views.TopologyTapView, error) {
 	return tv, nil
 }
 
+// fetchDeviants fetches the tap's /raw/deviants and decodes it into the raw view.
+// It mirrors fetchTopology's plumbing (a plain GET + JSON decode); the backend
+// talks to the engine only over HTTP and never imports the tap package.
+func (b *Backend) fetchDeviants() (views.DeviantsTapView, error) {
+	var dv views.DeviantsTapView
+	body, err := b.get(b.cfg.TapBaseURL + "/raw/deviants")
+	if err != nil {
+		return dv, err
+	}
+	if err := json.Unmarshal(body, &dv); err != nil {
+		return dv, fmt.Errorf("decode deviants: %w", err)
+	}
+	return dv, nil
+}
+
 func (b *Backend) get(rawURL string) ([]byte, error) {
 	if _, err := url.Parse(rawURL); err != nil {
 		return nil, fmt.Errorf("bad url %q: %w", rawURL, err)
@@ -358,6 +373,7 @@ func (b *Backend) Handler() http.Handler {
 	mux.HandleFunc("GET /api/cost", b.serveCostBreakdown)
 	mux.HandleFunc("GET /api/recon", b.serveReconTimeline)
 	mux.HandleFunc("GET /api/topology", b.serveTopology)
+	mux.HandleFunc("GET /api/deviants", b.serveDeviants)
 	return mux
 }
 
@@ -505,6 +521,22 @@ func (b *Backend) serveTopology(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, views.DeriveTopology(raw))
+}
+
+// serveDeviants serves GET /api/deviants: the F2 deviant hunting log. It fetches
+// the tap's /raw/deviants per request (the log changes on its own fold cadence —
+// not part of the polled Overview snapshot), validates/shapes it via
+// views.DeriveDeviants, and serves the result. On tap failure it returns 503 (no
+// last-good cache — a stale hunting list would mislead; an honest error is better).
+// Read-side only (Rule 8 — these flows touched no canary and arm nothing) and
+// local-only (Rule 9 — raw addresses never cross a boundary).
+func (b *Backend) serveDeviants(w http.ResponseWriter, _ *http.Request) {
+	raw, err := b.fetchDeviants()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "tap unreachable")
+		return
+	}
+	writeJSON(w, views.DeriveDeviants(raw))
 }
 
 // maxSinceSec is the cookie-reuse-safe upper bound on the drill-down window

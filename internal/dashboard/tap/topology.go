@@ -22,8 +22,8 @@ package tap
 // flows (the engine gRPC :50051, the tap :8088, the dashboard — none of which an
 // operator names) are OMITTED for clarity; they would otherwise clutter the fabric
 // with anonymous IP nodes. The decoy ring and the source->decoy touch edges are
-// EXEMPT from this filter (the touch-src is a cookie-keyed unknown by design; the
-// decoy is kind=decoy) — they always render. A NAMED identity that appears as BOTH
+// EXEMPT from this filter (the touch-src is ONE synthesized addressless unknown by
+// design; the decoy is kind=decoy) — they always render. A NAMED identity that appears as BOTH
 // an edge source (its egress, port 0) AND an edge destination (its listen port)
 // coalesces to ONE node, keyed by its label+kind — so the dual-role split (a
 // service that both initiates and serves) collapses into a single fabric node, and
@@ -191,10 +191,11 @@ func (s *Source) buildTopology(now time.Time) TopologyView {
 	}
 
 	// (3) Source->decoy touch edges from RECENT real canary-touch events (Tier>=1).
-	// The event is addressless by design (only the socket cookie), so the touching
-	// identity is rendered as a cookie-keyed source node; the decoy node is keyed by
-	// CanaryType. This is the "attacker reached into negative space" visual and the
-	// ONLY edge class that crosses into the decoy ring.
+	// The events are addressless by design (only the socket cookie), so ALL touching
+	// flows collapse into ONE synthesized unknown-kind source node, with one bright
+	// edge per TOUCHED CanaryType (FlowCount = total touches of that type). This is
+	// the "flows reached into negative space" visual and the ONLY edge class that
+	// crosses into the decoy ring. The src node is added directly (filter-exempt).
 	for _, te := range s.recentTouchEdges(now) {
 		addNode(te.src)
 		view.Edges = append(view.Edges, te.edge)
@@ -213,11 +214,21 @@ type touchEdge struct {
 	edge TopologyEdge
 }
 
-// recentTouchEdges reads recent canary-touch events (Tier>=1) and turns each
-// (cookie, CanaryType) into a deduped source->decoy edge. Deduped by (cookie,
-// CanaryType): a repeat touch of the same decoy by the same flow bumps the edge's
-// FlowCount and LastSeen instead of duplicating it. Returns nothing when there is
-// no events store (nil-tolerant) or no recent touch.
+// recentTouchEdges reads recent canary-touch events (Tier>=1) and AGGREGATES them
+// into ONE synthesized source node plus ONE source->decoy edge per TOUCHED
+// CanaryType (FIX-2). The events are addressless by design (only the socket
+// cookie), so there is no real identity to draw — pre-aggregation, N distinct
+// cookies produced up to N source nodes and ~N*types edges, which exploded the
+// ring (e.g. ~1180 cookies -> ~1180 nodes / ~1563 edges). Here ALL touching flows
+// collapse into a single unknown-kind "decoy-armed flows" node, and each touched
+// decoy type gets one edge whose FlowCount is the TOTAL touches of that type
+// (summed across cookies); the distinct-cookie (distinct-flow) count is carried in
+// the node label/sub-count for honesty ("N flows reached these decoys" — never
+// "confirmed adversaries"). So the ring shows at most ~5 bright edges from one
+// source. Window/filter semantics are unchanged (30m window, Tier>=1,
+// CanaryType!=""). Returns nothing when there is no events store (nil-tolerant) or
+// no recent touch. The source node is filter-EXEMPT (added directly in
+// buildTopology), the money-shot that always renders.
 func (s *Source) recentTouchEdges(now time.Time) []touchEdge {
 	if s.Events == nil {
 		return nil
@@ -226,51 +237,75 @@ func (s *Source) recentTouchEdges(now time.Time) []touchEdge {
 	if err != nil || len(evs) == 0 {
 		return nil
 	}
-	type key struct {
-		cookie  uint64
-		decoyID string
+	srcID := touchSourceNodeID()
+	// Per-decoy-type aggregate: total touches, the bright edge being built, and the
+	// distinct cookies seen so FlowCount stays per-type while the node label can
+	// report the distinct-flow count overall.
+	type agg struct {
+		idx     int             // index into out
+		cookies map[uint64]bool // distinct flows touching this type
 	}
-	idx := map[key]int{}
+	byType := map[string]*agg{}
+	distinct := map[uint64]bool{} // distinct flows across all touched types
 	var out []touchEdge
 	for _, e := range evs {
 		if e.Tier < 1 || e.CanaryType == "" {
 			continue // only events that entered the response pipeline, with a known decoy
 		}
+		distinct[e.FlowID] = true
 		dID := decoyNodeID(contract.CanaryType(e.CanaryType))
-		k := key{cookie: e.FlowID, decoyID: dID}
-		if i, ok := idx[k]; ok {
-			out[i].edge.FlowCount++
-			if e.Timestamp.After(out[i].edge.LastSeen) {
-				out[i].edge.LastSeen = e.Timestamp
-			}
-			if e.Timestamp.Before(out[i].edge.FirstSeen) {
-				out[i].edge.FirstSeen = e.Timestamp
-			}
-			continue
+		a := byType[dID]
+		if a == nil {
+			a = &agg{idx: len(out), cookies: map[uint64]bool{}}
+			byType[dID] = a
+			out = append(out, touchEdge{
+				edge: TopologyEdge{
+					SrcID:     srcID,
+					DstID:     dID,
+					Proto:     "decoy",
+					FlowCount: 0,
+					FirstSeen: e.Timestamp,
+					LastSeen:  e.Timestamp,
+					Class:     edgeClassDecoyTouch,
+				},
+			})
 		}
-		srcID := touchSourceNodeID(e.FlowID)
-		idx[k] = len(out)
-		out = append(out, touchEdge{
-			src: TopologyNode{
-				// The touching identity is the socket cookie (the event carries no raw
-				// address — Rule 9 on the egress-bound event); render it as an
-				// unknown-kind source node labeled by its cookie hex.
-				ID:    srcID,
-				Label: "0x" + strconv.FormatUint(e.FlowID, 16),
-				Kind:  identity.KindUnknown.String(),
-			},
-			edge: TopologyEdge{
-				SrcID:     srcID,
-				DstID:     dID,
-				Proto:     "decoy",
-				FlowCount: 1,
-				FirstSeen: e.Timestamp,
-				LastSeen:  e.Timestamp,
-				Class:     edgeClassDecoyTouch,
-			},
-		})
+		a.cookies[e.FlowID] = true
+		out[a.idx].edge.FlowCount++ // total touches of THIS type (summed across cookies)
+		if e.Timestamp.After(out[a.idx].edge.LastSeen) {
+			out[a.idx].edge.LastSeen = e.Timestamp
+		}
+		if e.Timestamp.Before(out[a.idx].edge.FirstSeen) {
+			out[a.idx].edge.FirstSeen = e.Timestamp
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	// One shared synthesized source node for every touch edge (addNode dedups by id,
+	// so it collapses to a single node). It is addressless (the event carries no raw
+	// address — Rule 9 on the egress-bound event), hence unknown-kind. The label
+	// reports the distinct-flow count, honest about WHAT was observed: flows reached
+	// these decoys — never "confirmed adversaries".
+	src := TopologyNode{
+		ID:    srcID,
+		Label: touchSourceLabel(len(distinct)),
+		Kind:  identity.KindUnknown.String(),
+	}
+	for i := range out {
+		out[i].src = src
 	}
 	return out
+}
+
+// touchSourceLabel renders the aggregated touch-source node label from the count of
+// DISTINCT touching flows. Honest framing: "N flows reached these decoys", never a
+// claim of confirmed adversaries.
+func touchSourceLabel(distinctFlows int) string {
+	if distinctFlows == 1 {
+		return "decoy-armed flows · 1 flow"
+	}
+	return "decoy-armed flows · " + strconv.Itoa(distinctFlows) + " flows"
 }
 
 // catalogTypes returns the canary types to render as decoy nodes. When a catalog
@@ -333,6 +368,10 @@ func coalescedNodeID(node identity.Node, ip netip.Addr, port uint16) string {
 
 func decoyNodeID(t contract.CanaryType) string { return "decoy:" + string(t) }
 
-func touchSourceNodeID(cookie uint64) string {
-	return "touch-src:0x" + strconv.FormatUint(cookie, 16)
+// touchSourceNodeID is the id of the SINGLE synthesized source node that all
+// decoy-touch edges originate from (FIX-2 aggregate). It is no longer per-cookie:
+// the events are addressless, so every touching flow collapses into this one
+// unknown-kind node.
+func touchSourceNodeID() string {
+	return "touch-src:armed"
 }
