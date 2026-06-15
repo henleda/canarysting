@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine/baseline"
 	"github.com/canarysting/canarysting/internal/engine/calibration"
@@ -28,6 +29,7 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
+	"github.com/canarysting/canarysting/internal/topology/identity"
 )
 
 // crossMatchThreshold is the similarity at/above which the current adversary flow is
@@ -77,6 +79,17 @@ type Source struct {
 	Events     *boltevents.Store
 	Aggregator *observebaseline.Aggregator
 	SharedSet  *sharedset.Store // D6 cross-customer consumer (nil if not consuming)
+	// Resolver names the F1 learned-topology nodes (internal/topology/identity). It
+	// is OPERATOR-DECLARED metadata, never an engine verdict, and is NIL-TOLERANT:
+	// a nil resolver degrades every node to its IP label and reports
+	// staged_labels=false (the engine knows only hashed adjacency — it never
+	// natively knows service names). LOCAL-ONLY (Rule 9): the resolver and the raw
+	// edges it labels stay in the deployment.
+	Resolver *identity.Resolver
+	// Catalog supplies the canary decoy types injected as decoy nodes in the
+	// topology's negative space (the 5 types). Nil-tolerant: the topology endpoint
+	// falls back to the stable type identifiers when no catalog is wired.
+	Catalog *catalog.Catalog
 	// SimulatedPeers, when true, marks the consumed cross-customer patterns as
 	// SIMULATED (demo "art of the possible" via cmd/sim-peers), so the dashboard
 	// discloses they came from synthetic peers we operate — not real customers. It
@@ -162,6 +175,9 @@ type CrossCustomerState struct {
 //	GET /raw/events?since_sec=N    — the scope's interaction events in the last N
 //	                                 seconds (default 3600); the backend rolls
 //	                                 these into tier/cost/recon views
+//	GET /raw/topology              — the F1 per-scope learned east-west topology
+//	                                 (decoded live map + resolved node labels +
+//	                                 injected decoy nodes/touch edges)
 //	GET /healthz                   — liveness
 //	PUT /raw/attack-ledger         — M9 attacker posts its live real-cost meter
 //	GET /raw/attack-ledger         — read the live meter (backend polls this)
@@ -173,6 +189,7 @@ func (s *Source) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	mux.HandleFunc("/raw/state", s.handleState)
 	mux.HandleFunc("/raw/events", s.handleEvents)
+	mux.HandleFunc("/raw/topology", s.handleTopology)
 	mux.HandleFunc("/raw/attack-ledger", s.handleAttackLedger)
 	return mux
 }

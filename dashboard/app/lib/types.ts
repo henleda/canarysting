@@ -462,3 +462,46 @@ export interface ReconTimeline {
   rows: ReconRow[];
   total_recon: number;
 }
+
+// ============================================================================
+// F1 learned east-west topology — GET /api/topology (the dashboard backend's
+// validated mirror of the tap's GET /raw/topology). Mirrors
+// internal/dashboard/backend/views/topology.go 1:1 (snake_case).
+//
+// HONESTY (load-bearing — render the caption persistently): the graph SHAPE,
+// edges, and volumes are REAL observed traffic; only the node NAMES are
+// operator-registry metadata (staged_labels). The engine never natively knows
+// service names (it knows hashed adjacency), and the map NEVER auto-acts (Rule 8).
+// ============================================================================
+
+// TopologyNode is one identity in the learned graph. kind is the resolver token.
+export interface TopologyNode {
+  id: string;
+  label: string; // operator-declared name, SPIFFE-derived name, or (on a miss) the IP
+  kind: 'service' | 'caller' | 'decoy' | 'external' | 'unknown' | string;
+}
+
+// TopologyEdge is one directed adjacency. class distinguishes a learned baseline
+// edge from a live overlay and from the highlighted source->decoy touch edge (the
+// only edge that crosses into the decoy ring). first_seen/last_seen are RFC3339.
+export interface TopologyEdge {
+  src_id: string;
+  dst_id: string;
+  port: number;
+  proto: string; // "tcp" for learned edges; "decoy" for a touch edge
+  flow_count: number;
+  bytes: number;
+  first_seen: string;
+  last_seen: string;
+  class: 'learned' | 'live' | 'decoy_touch' | string;
+}
+
+// TopologyView is the GET /api/topology payload. staged_labels drives the
+// persistent honesty caption (which the backend also pre-renders into `caption`).
+export interface TopologyView {
+  scope: string;
+  staged_labels: boolean; // node NAMES came from an operator registry (vs IP fallback)
+  caption: string; // the persistent honesty fence to render verbatim
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+}

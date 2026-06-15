@@ -283,6 +283,82 @@ func TestTopologyScopeIsolation(t *testing.T) {
 	}
 }
 
+// TopologySnapshot decodes the live in-memory map into copied value views: the
+// folded edges + node catalog, with the right endpoints, counts, roles, and
+// wall-clock stamps. It is the slice-3 read-side accessor (mirrors LiveFlows).
+func TestTopologySnapshotReturnsFoldedEdgesAndNodes(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := newTopoAgg(t, r, now, nil)
+
+	// Two flows on one edge (10.0.1.5 -> 10.0.2.1:8080) so FlowCount accrues.
+	completeFlow(agg, r, 100, flowFromIPs(5, 1, 1400, 12, 2_000_000), now)
+	completeFlow(agg, r, 101, flowFromIPs(5, 1, 1400, 12, 2_000_000), now)
+
+	snap := agg.TopologySnapshot(testScope)
+	if len(snap.Edges) != 1 {
+		t.Fatalf("snapshot edges = %d, want 1", len(snap.Edges))
+	}
+	e := snap.Edges[0]
+	if len(e.SrcIP) != 4 || e.SrcIP[3] != 5 {
+		t.Fatalf("snapshot edge SrcIP = %v, want 10.0.1.5", e.SrcIP)
+	}
+	if len(e.DstIP) != 4 || e.DstIP[2] != 2 || e.DstIP[3] != 1 || e.DstPort != 8080 {
+		t.Fatalf("snapshot edge dst = %v:%d, want 10.0.2.1:8080", e.DstIP, e.DstPort)
+	}
+	if e.FlowCount != 2 {
+		t.Fatalf("snapshot edge FlowCount = %d, want 2", e.FlowCount)
+	}
+	if e.TotalBytes != 2*2800 {
+		t.Fatalf("snapshot edge TotalBytes = %d, want %d", e.TotalBytes, 2*2800)
+	}
+	if !e.FirstSeen.Equal(now) || !e.LastSeen.Equal(now) {
+		t.Fatalf("snapshot edge wall stamps = %v/%v, want %v", e.FirstSeen, e.LastSeen, now)
+	}
+
+	// Two nodes: one initiator + one service, with their roles surfaced as strings.
+	if len(snap.Nodes) != 2 {
+		t.Fatalf("snapshot nodes = %d, want 2", len(snap.Nodes))
+	}
+	roles := map[string]int{}
+	for _, n := range snap.Nodes {
+		roles[n.Role]++
+	}
+	if roles["initiator"] != 1 || roles["service"] != 1 {
+		t.Fatalf("snapshot node roles = %v, want one initiator + one service", roles)
+	}
+
+	// An unknown scope returns an empty snapshot (never panics).
+	empty := agg.TopologySnapshot(contract.ScopeKey("nope"))
+	if len(empty.Edges) != 0 || len(empty.Nodes) != 0 {
+		t.Fatalf("unknown-scope snapshot not empty: %+v", empty)
+	}
+}
+
+// The snapshot is a COPY: mutating the returned slices/byte buffers must not
+// corrupt the aggregator's live map (the raw *topoEdge pointers never escape).
+func TestTopologySnapshotIsCopy(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := newTopoAgg(t, r, now, nil)
+	completeFlow(agg, r, 100, flowFromIPs(5, 1, 1400, 12, 2_000_000), now)
+
+	snap := agg.TopologySnapshot(testScope)
+	if len(snap.Edges) != 1 {
+		t.Fatalf("precondition: edges = %d", len(snap.Edges))
+	}
+	// Stomp the returned address bytes; the live map must be unaffected.
+	for i := range snap.Edges[0].SrcIP {
+		snap.Edges[0].SrcIP[i] = 0xFF
+	}
+	topo := agg.topoFor(testScope)
+	for _, e := range topo.edges {
+		if e.SrcIP[3] != 5 {
+			t.Fatalf("live edge SrcIP mutated through the snapshot copy: %v", e.SrcIP[:4])
+		}
+	}
+}
+
 // The edge/node records survive a persist + reopen + rehydrate round-trip with
 // their wall-clock timestamps and counts intact (local-rich map survives reboot).
 func TestTopologyPersistAndRehydrate(t *testing.T) {

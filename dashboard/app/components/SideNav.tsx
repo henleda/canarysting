@@ -12,6 +12,7 @@ type Item = { href: string; label: string; hint: string; match: (p: string) => b
 const ITEMS: Item[] = [
   { href: '/', label: 'Operations', hint: 'the wall', match: (p) => p === '/' },
   { href: '/recon?since=1h', label: 'Recon', hint: 'watching, not acting', match: (p) => p.startsWith('/recon') },
+  { href: '/topology', label: 'Attack Surface', hint: 'legit services vs decoys', match: (p) => p.startsWith('/topology') },
   { href: '/intel?since=1h', label: 'Adversary Intel', hint: 'the compounding moat', match: (p) => p.startsWith('/intel') },
   { href: '/cost?since=1h', label: 'Attacker Cost', hint: 'the inversion', match: (p) => p.startsWith('/cost') },
   { href: '/precision?since=1h', label: 'Bystanders', hint: 'flow-precise, by construction', match: (p) => p.startsWith('/precision') },

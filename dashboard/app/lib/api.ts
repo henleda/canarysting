@@ -19,7 +19,7 @@ export async function fetchOverview(): Promise<Overview> {
 }
 
 // ---- Interactive console drill-down endpoints ----
-import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline } from './types';
+import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline, TopologyView } from './types';
 
 // `since` is the Go-duration string the time pills produce ("1h","6h","24h").
 // `session` (optional, Unix seconds of the session start) disambiguates a reused
@@ -43,6 +43,13 @@ export function costURL(since: string): string {
 export function reconURL(since: string): string {
   return `/api/recon?since=${since}`;
 }
+// topologyURL is the learned east-west graph (F1). It is a CURRENT-state view (the
+// aggregator's live in-memory topology map + canary decoy ring + recent touch
+// edges), not windowed — so there is no `since`. The backend serves the tap's
+// /raw/topology shape PLUS the pre-rendered honesty `caption`.
+export function topologyURL(): string {
+  return `/api/topology`;
+}
 
 async function fetchJSON<T>(url: string, label: string): Promise<T> {
   const res = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' } });
@@ -55,3 +62,4 @@ export const fetchFlows = (tier: number, since: string, minTier?: number) =>
   fetchJSON<FlowsList>(flowsURL(tier, since, minTier), 'flows');
 export const fetchCost = (since: string) => fetchJSON<CostBreakdown>(costURL(since), 'cost');
 export const fetchRecon = (since: string) => fetchJSON<ReconTimeline>(reconURL(since), 'recon');
+export const fetchTopology = () => fetchJSON<TopologyView>(topologyURL(), 'topology');
