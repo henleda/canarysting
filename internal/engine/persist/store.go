@@ -22,6 +22,7 @@ var (
 	bktBaseline  = []byte("baseline")  // scope -> {windowBucketKey -> aggregate gob blob}
 	bktMalicious = []byte("malicious") // scope -> {8-byte idHash -> 1} (confirmed-malicious identities)
 	bktEvents    = []byte("events")    // scope -> {8-byte seq -> event gob blob}
+	bktTopology  = []byte("topology")  // scope -> {edgeKey|nodeKey -> gob record blob} (F1 learned east-west topology, local-rich)
 	bktMeta      = []byte("meta")      // global -> {metaKey -> blob} (heartbeat, schema)
 )
 
@@ -51,7 +52,13 @@ func Open(path string) (*Store, int, error) {
 	s := &Store{db: db}
 	found := 0
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktMeta} {
+		// bktTopology is added the SAME tolerant way as the others
+		// (CreateBucketIfNotExists). It is intentionally NOT gated behind a
+		// SchemaVersion bump: an existing multi-week baseline.db that predates the
+		// topology bucket must keep opening (the create is a no-op when present and
+		// a fresh empty bucket when absent — never a re-decode of stale blobs). See
+		// docs/TOPOLOGY_AND_DEVIANTS.md §3.
+		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktMeta} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -160,11 +167,30 @@ type BucketWrite struct {
 	Blob  []byte
 }
 
-// PutBucketsAndHeartbeat writes every BucketWrite AND the heartbeat in ONE bbolt
-// transaction (one fsync), instead of one transaction per bucket. The aggregator
-// calls it once per fold tick with only the buckets dirtied since the last tick,
-// so disk I/O is bounded and is never done while holding the in-memory lock.
-func (s *Store) PutBucketsAndHeartbeat(writes []BucketWrite, now time.Time) error {
+// TopologyWrite is one (scope, recordKey) F1 topology record (an edge or node
+// blob) to persist. It rides the SAME single fold-tick transaction as the
+// baseline buckets (PutBucketsAndHeartbeat), so a topology upsert adds no extra
+// fsync and is never done while the aggregator holds its in-memory lock
+// (docs/TOPOLOGY_AND_DEVIANTS.md §3, Rule 6). A Delete entry (Blob == nil)
+// removes the key — that is how the reaper's evictions are persisted in the same
+// batch. The bucket layout is per-scope (scopeSub), so isolation is by layout
+// (Rule 5) exactly like the baseline.
+type TopologyWrite struct {
+	Scope  contract.ScopeKey
+	Key    []byte
+	Blob   []byte // nil => delete this key (a reaper eviction)
+	Delete bool   // explicit delete flag (Blob may be nil for an empty record too)
+}
+
+// PutBucketsAndHeartbeat writes every BucketWrite, every TopologyWrite, AND the
+// heartbeat in ONE bbolt transaction (one fsync), instead of one transaction per
+// bucket. The aggregator calls it once per fold tick with only the buckets
+// dirtied since the last tick (and the topology records touched/evicted this
+// tick), so disk I/O is bounded and is never done while holding the in-memory
+// lock. The topology writes are applied AFTER the baseline writes within the same
+// commit; ordering within a single transaction is immaterial (it commits
+// atomically), but keeping baseline first preserves the original write's intent.
+func (s *Store) PutBucketsAndHeartbeat(writes []BucketWrite, topo []TopologyWrite, now time.Time) error {
 	if s.readOnly {
 		return ErrReadOnly
 	}
@@ -183,6 +209,25 @@ func (s *Store) PutBucketsAndHeartbeat(writes []BucketWrite, now time.Time) erro
 				return err
 			}
 			if err := sb.Put([]byte(w.Key), append([]byte(nil), w.Blob...)); err != nil {
+				return err
+			}
+		}
+		troot := tx.Bucket(bktTopology)
+		for _, w := range topo {
+			if w.Scope == "" {
+				return errors.New("persist: empty scope in topology write")
+			}
+			sb, err := troot.CreateBucketIfNotExists([]byte(w.Scope))
+			if err != nil {
+				return err
+			}
+			if w.Delete || w.Blob == nil {
+				if err := sb.Delete(append([]byte(nil), w.Key...)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := sb.Put(append([]byte(nil), w.Key...), append([]byte(nil), w.Blob...)); err != nil {
 				return err
 			}
 		}
@@ -311,6 +356,37 @@ func (s *Store) RangeEventsRecent(scope contract.ScopeKey, maxN int, fn func(seq
 			}
 		}
 		return nil
+	})
+}
+
+// --- per-scope F1 topology records ------------------------------------------
+//
+// The topology bucket holds the LOCAL-RICH learned east-west map: directed edges
+// and node-catalog entries keyed by their canonical (un-hashed) key. It is
+// scope-isolated by layout (scopeSub) like every other store, and is LOCAL-ONLY
+// — nothing here ever feeds internal/intelligence/network (the cross-customer
+// egress path stays coarse/hashed; docs/TOPOLOGY_AND_DEVIANTS.md §6). Writes ride
+// PutBucketsAndHeartbeat (one fsync per fold tick); these accessors are read-only
+// rehydrate/inspection helpers.
+
+// RangeTopology calls fn for every (recordKey, blob) under scope in key order.
+// blob must not be retained past the call (it points into the read transaction).
+func (s *Store) RangeTopology(scope contract.ScopeKey, fn func(key, blob []byte) error) error {
+	return s.rangeNested(bktTopology, scope, fn)
+}
+
+// RangeTopologyScopes calls fn for every scope that has any persisted topology
+// record, independently of baseline-bucket presence (the two accrue via the same
+// batched write but a scope could in principle have one and not the other).
+func (s *Store) RangeTopologyScopes(fn func(scope contract.ScopeKey) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		root := tx.Bucket(bktTopology)
+		if root == nil {
+			return nil
+		}
+		return root.ForEachBucket(func(k []byte) error {
+			return fn(contract.ScopeKey(append([]byte(nil), k...)))
+		})
 	})
 }
 

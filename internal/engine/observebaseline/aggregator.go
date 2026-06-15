@@ -49,6 +49,10 @@ type Config struct {
 	Floor    DataFloor         // the eBPF data floor (zero => DefaultDataFloor)
 	Interval time.Duration     // fold tick (zero => DefaultInterval)
 	Now      func() time.Time  // injectable clock (nil => time.Now)
+	// TopologyTTL is the wall-clock TTL for the F1 learned-topology reaper (zero
+	// => topoTTLDefault, 30d). Edges/nodes whose wall-clock LastSeen is older than
+	// this age out on the fold tick.
+	TopologyTTL time.Duration
 }
 
 // liveFlow records the attribution of one tracked cookie (the scope/bucket/day
@@ -66,6 +70,13 @@ type AggStats struct {
 	ExcludedFolds    uint64 // flows skipped because their source is confirmed-malicious
 	UnresolvedFolds  uint64 // flows dropped because their scope could not be resolved
 	RehydrateSkipped uint64 // persisted aggregate blobs that failed to decode on rehydrate (lost history)
+	// TopologyEvicted is the count of F1 topology edges/nodes dropped by the cap or
+	// TTL reaper — observable lost-detail, mirroring RehydrateSkipped, so eviction
+	// is never silent.
+	TopologyEvicted uint64
+	// TopologyRehydrateSkipped is the count of persisted topology blobs that failed
+	// to decode on rehydrate (lost local-rich detail; the baseline is unaffected).
+	TopologyRehydrateSkipped uint64
 }
 
 // Aggregator implements baseline.FeatureSource.
@@ -79,6 +90,7 @@ type Aggregator struct {
 	floor    DataFloor
 	interval time.Duration
 	clock    func() time.Time
+	topoTTL  time.Duration
 
 	mu             sync.RWMutex
 	aggregates     map[contract.ScopeKey]map[string]*bucketAggregate
@@ -88,7 +100,13 @@ type Aggregator struct {
 	freshFolds     map[contract.ScopeKey]uint64          // completed folds since this process started
 	recoveryQuorum map[contract.ScopeKey]uint64          // freshFolds target before re-live after a coverage gap
 	dirty          map[contract.ScopeKey]map[string]bool // (scope,bucket) changed since the last persist
-	stats          AggStats
+	// F1 learned east-west topology (local-rich). Per-scope edge accumulator +
+	// node catalog, folded once per completed flow beside the hashed baseline
+	// folds. dirtyTopo tracks the edge/node keys touched-or-evicted since the last
+	// persist; both are touched ONLY under a.mu and never on the request hot path.
+	topology  map[contract.ScopeKey]*topology
+	dirtyTopo map[contract.ScopeKey]map[string]bool
+	stats     AggStats
 }
 
 var _ baseline.FeatureSource = (*Aggregator)(nil)
@@ -104,6 +122,9 @@ func New(cfg Config) *Aggregator {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.TopologyTTL <= 0 {
+		cfg.TopologyTTL = topoTTLDefault
+	}
 	return &Aggregator{
 		reader:         cfg.Reader,
 		gates:          cfg.Gates,
@@ -114,6 +135,7 @@ func New(cfg Config) *Aggregator {
 		floor:          cfg.Floor.Normalized(),
 		interval:       cfg.Interval,
 		clock:          cfg.Now,
+		topoTTL:        cfg.TopologyTTL,
 		aggregates:     map[contract.ScopeKey]map[string]*bucketAggregate{},
 		live:           map[uint64]*liveFlow{},
 		folded:         map[uint64]bool{},
@@ -121,6 +143,8 @@ func New(cfg Config) *Aggregator {
 		freshFolds:     map[contract.ScopeKey]uint64{},
 		recoveryQuorum: map[contract.ScopeKey]uint64{},
 		dirty:          map[contract.ScopeKey]map[string]bool{},
+		topology:       map[contract.ScopeKey]*topology{},
+		dirtyTopo:      map[contract.ScopeKey]map[string]bool{},
 	}
 }
 
@@ -215,6 +239,39 @@ func (a *Aggregator) Rehydrate() {
 			return ms.Rehydrate(sc)
 		})
 	}
+
+	// Rehydrate the F1 learned-topology edge/node maps so the local-rich view
+	// survives a reboot (the baseline does; the topology should too). It carries
+	// no gate state, so there is nothing to force STALE — only the raw learned map
+	// is restored. An undecodable blob is skipped and counted (lost local detail),
+	// never failing the whole window.
+	_ = a.store.RangeTopologyScopes(func(sc contract.ScopeKey) error {
+		topo := newTopology()
+		_ = a.store.RangeTopology(sc, func(key, blob []byte) error {
+			if len(key) == 0 {
+				return nil
+			}
+			switch key[0] {
+			case topoKindEdge:
+				e, err := decodeEdge(blob)
+				if err != nil {
+					a.stats.TopologyRehydrateSkipped++
+					return nil
+				}
+				topo.edges[string(key)] = e
+			case topoKindNode:
+				n, err := decodeNode(blob)
+				if err != nil {
+					a.stats.TopologyRehydrateSkipped++
+					return nil
+				}
+				topo.nodes[string(key)] = n
+			}
+			return nil
+		})
+		a.topology[sc] = topo
+		return nil
+	})
 }
 
 // foldOnce reads the kernel map, folds completed flows into the baseline-of-
@@ -222,10 +279,13 @@ func (a *Aggregator) Rehydrate() {
 // runs under the lock; the durable write runs AFTER the lock is released, so the
 // hot-path Features/Multiplier is never blocked on disk I/O.
 func (a *Aggregator) foldOnce(now time.Time) {
-	writes := a.foldLocked(now)
+	writes, topoWrites := a.foldLocked(now)
 	if a.store != nil {
-		// One transaction (one fsync) for all dirtied buckets plus the heartbeat.
-		_ = a.store.PutBucketsAndHeartbeat(writes, now)
+		// One transaction (one fsync) for all dirtied baseline buckets, the F1
+		// topology records touched/evicted this tick, plus the heartbeat. The
+		// topology write rides the existing fsync (Rule 6) and is built AFTER the
+		// in-memory lock is released, exactly like the baseline write.
+		_ = a.store.PutBucketsAndHeartbeat(writes, topoWrites, now)
 	}
 }
 
@@ -239,7 +299,7 @@ func (a *Aggregator) foldOnce(now time.Time) {
 // ticks. `live` holds open cookies' attribution; `folded` remembers folded
 // cookies so a closed entry that lingers (until the LRU evicts it) is not
 // double-counted. Both are pruned when a cookie leaves the map.
-func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
+func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist.TopologyWrite) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -305,6 +365,20 @@ func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
 		a.gates.SetLive(sc, live)
 	}
 
+	// F1 topology reaper: age out stale edges/nodes (wall-clock TTL) on the fold
+	// tick, off the hot path. Reaped keys are marked dirty so the batched write
+	// deletes them in the same fsync; the lost count is observable (mirrors
+	// RehydrateSkipped) so eviction is never silent.
+	for sc, topo := range a.topology {
+		if topo == nil {
+			continue
+		}
+		for _, k := range topo.reap(now, a.topoTTL) {
+			a.markTopoDirty(sc, k)
+			a.stats.TopologyEvicted++
+		}
+	}
+
 	// Encode only the buckets dirtied since the last persist.
 	var writes []persist.BucketWrite
 	for sc, keys := range a.dirty {
@@ -320,7 +394,32 @@ func (a *Aggregator) foldLocked(now time.Time) []persist.BucketWrite {
 		}
 	}
 	a.dirty = map[contract.ScopeKey]map[string]bool{}
-	return writes
+
+	// Encode only the topology records touched-or-evicted since the last persist.
+	// A key whose in-memory record is gone (evicted by cap or reaper) is persisted
+	// as a delete (Blob nil) so the on-disk store mirrors memory.
+	var topoWrites []persist.TopologyWrite
+	for sc, keys := range a.dirtyTopo {
+		topo := a.topology[sc]
+		for key := range keys {
+			if topo == nil {
+				topoWrites = append(topoWrites, persist.TopologyWrite{Scope: sc, Key: []byte(key), Delete: true})
+				continue
+			}
+			blob, ok, err := topo.blobForKey(key)
+			if err != nil {
+				continue // encode failure: leave the prior on-disk value; do not delete
+			}
+			if !ok {
+				topoWrites = append(topoWrites, persist.TopologyWrite{Scope: sc, Key: []byte(key), Delete: true})
+				continue
+			}
+			topoWrites = append(topoWrites, persist.TopologyWrite{Scope: sc, Key: []byte(key), Blob: blob})
+		}
+	}
+	a.dirtyTopo = map[contract.ScopeKey]map[string]bool{}
+
+	return writes, topoWrites
 }
 
 func (a *Aggregator) foldCompleted(lf *liveFlow, fs observe.FlowStats, now time.Time) {
@@ -340,6 +439,27 @@ func (a *Aggregator) foldCompleted(lf *liveFlow, fs observe.FlowStats, now time.
 	}
 	agg.foldFlow(fs, lf.day)
 	a.markDirty(lf.scope, lf.bucket)
+
+	// F1 local-rich capture: upsert the directed edge + node-catalog entries from
+	// the SAME raw fs hashAdjacency consumed, kept un-hashed. Wall-clock stamped
+	// from now (a.clock() at the call site) — NEVER kernel FirstSeenNs/LastSeenNs
+	// (those are bpf_ktime monotonic). Inherits fold-once from a.live/a.folded; the
+	// hashed baseline counts above are unchanged. Cap evictions on insert and the
+	// keys touched are marked dirty for the batched write.
+	topo := a.topology[lf.scope]
+	if topo == nil {
+		topo = newTopology()
+		a.topology[lf.scope] = topo
+	}
+	touched, evicted := topo.fold(fs, now)
+	for _, k := range touched {
+		a.markTopoDirty(lf.scope, k)
+	}
+	for _, k := range evicted {
+		a.markTopoDirty(lf.scope, k)
+		a.stats.TopologyEvicted++
+	}
+
 	a.lastFold[lf.scope] = now
 	a.freshFolds[lf.scope]++
 	a.stats.CompletedFolds++
@@ -352,6 +472,15 @@ func (a *Aggregator) markDirty(sc contract.ScopeKey, bucket string) {
 		a.dirty[sc] = d
 	}
 	d[bucket] = true
+}
+
+func (a *Aggregator) markTopoDirty(sc contract.ScopeKey, key string) {
+	d := a.dirtyTopo[sc]
+	if d == nil {
+		d = map[string]bool{}
+		a.dirtyTopo[sc] = d
+	}
+	d[key] = true
 }
 
 // Features implements baseline.FeatureSource: it derives the flow's deviation
