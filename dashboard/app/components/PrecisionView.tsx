@@ -16,7 +16,7 @@ import type { FlowFunnelView, Overview } from '@/lib/types';
 //   - decoy-touched / contained / jailed = the DISTINCT-flow funnel (sessions, not
 //                 events; each flow once at its highest tier)
 // Every actioned flow is in the funnel BECAUSE it touched a decoy. There is no
-// per-flow benign list by design (we never persist benign identities — rules 8/9);
+// per-flow non-armed list by design (we never persist non-armed identities — rules 8/9);
 // the contrast (huge observed vs tiny actioned, all decoy-touchers) IS the proof.
 
 // PrecisionFunnel is the SHARED structural-zero block: the giant 0 + the

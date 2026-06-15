@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { fmtInt, fmtPct } from '@/lib/format';
-import { WALL_LINK } from './LiveEscalation';
+import { WALL_LINK } from '@/lib/links';
 import type { TierStep } from '@/lib/types';
 
 interface TierLadderProps {

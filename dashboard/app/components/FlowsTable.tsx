@@ -45,6 +45,10 @@ export default function FlowsTable({
   const router = useRouter();
   const { since } = useSince();
 
+  // The backend can return flows: null (Go nil slice) on an empty/tier-filtered
+  // window; normalize once so every .length / .map below is null-safe.
+  const flows = data?.flows ?? [];
+
   const setTier = (v: number) => {
     const p = new URLSearchParams({ since });
     if (v >= 0) p.set('tier', String(v));
@@ -66,8 +70,8 @@ export default function FlowsTable({
       )}
       {!data ? (
         <div className="faint mono">{loading ? 'WARMING UP…' : 'no flows'}</div>
-      ) : data.flows.length === 0 && tierFilter === 0 ? (
-        // Tier 0 (Observe) has NO per-flow records BY DESIGN. Benign east-west is
+      ) : flows.length === 0 && tierFilter === 0 ? (
+        // Tier 0 (Observe) has NO per-flow records BY DESIGN. Observed-normal east-west is
         // folded into the eBPF baseline as an aggregate count, but never persisted
         // as an interaction event (the engine drops everything below Tier 1 —
         // boltevents CaptureVerdict returns nil for v.Tier < TierTag). The Tier-0
@@ -76,7 +80,7 @@ export default function FlowsTable({
         <div className="t0-empty">
           <div className="t0-empty-h">No per-flow records at Tier&nbsp;0 — by&nbsp;design</div>
           <p>
-            CanarySting keeps <b>no per-flow log of benign east-west traffic.</b> The Tier-0
+            CanarySting keeps <b>no per-flow log of observed-normal east-west traffic.</b> The Tier-0
             count is an aggregate the eBPF baseline folds into “normal” — not a record of
             who-talked-to-whom. Per-flow detail begins at <b>Tier&nbsp;1: the first decoy touch.</b>
           </p>
@@ -88,7 +92,7 @@ export default function FlowsTable({
             <Link href="/recon?since=1h">Recon →</Link>.
           </p>
         </div>
-      ) : data.flows.length === 0 ? (
+      ) : flows.length === 0 ? (
         <div className="faint mono">no sessions in window{minTier > 0 ? ` that reached ≥ ${tierName(minTier)}` : tierFilter >= 0 ? ` at tier ${tierFilter}` : ''}</div>
       ) : (
         <table className="flows-table">
@@ -98,13 +102,18 @@ export default function FlowsTable({
             </tr>
           </thead>
           <tbody>
-            {data.flows.map((f, i) => {
+            {flows.map((f, i) => {
               const tcls = f.peak_tier >= 3 ? 't3' : f.peak_tier === 2 ? 't2' : '';
-              const start = Math.floor(new Date(f.session_start).getTime() / 1000);
+              const t = new Date(f.session_start).getTime();
+              const start = Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+              const href =
+                start > 0
+                  ? `/flow/${f.flow_id_hex}?since=${since}&session=${start}`
+                  : `/flow/${f.flow_id_hex}?since=${since}`;
               return (
                 <tr key={`${f.flow_id_hex}-${f.session_index}`} className={tcls}>
                   <td className="cookie">
-                    <Link href={`/flow/${f.flow_id_hex}?since=${since}&session=${start}`}>{f.flow_id_hex}</Link>
+                    <Link href={href}>{f.flow_id_hex}</Link>
                     {f.session_count > 1 && <span className="session-badge">{f.session_index}/{f.session_count}</span>}
                   </td>
                   <td className="tiercell">T{f.peak_tier} {f.verdict}</td>
@@ -119,7 +128,7 @@ export default function FlowsTable({
           </tbody>
         </table>
       )}
-      {data && data.flows.length > 200 && <div className="faint mono" style={{ marginTop: 10 }}>showing {data.flows.length} sessions</div>}
+      {flows.length > 200 && <div className="faint mono" style={{ marginTop: 10 }}>showing {flows.length} sessions</div>}
     </>
   );
 }

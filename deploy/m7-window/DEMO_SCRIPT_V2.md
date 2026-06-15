@@ -19,18 +19,22 @@ economic-attrition / "burn their compute" story is a **bonus appendix** (§ Appe
 never the headline — a capable attacker detects a *safe* deception, so the bleed
 only fully lands on dumb scanners; the durable value is the trustworthy auto-block.
 
-## The one screen (top → bottom, the T3 reframe)
+## The one screen (top → bottom, the FleetWall reframe)
 
-1. **TopBar** — scope, env, `CALIBRATED` + `BASELINE LIVE` pills (observe ON, M live).
-2. **LiveEscalation | AttackerCost** — the acquired flow + the cost meter.
-3. **KernelContainment | BystanderHealth** *(side by side — the WOW)* — the jailed socket next to same-host workloads still serving 200.
-4. **ReconLive | Credibility | AdversaryIntelligence** *(the context band)* — recon ("Watching, not acting": anomalous-from-baseline flows, surfaced not actioned) + M/baseline novelty + the cross-customer network (simulated peers, disclosed).
+1. **TopBar** — scope, env, `CALIBRATED` + `BASELINE LIVE` pills (observe ON, M live). *(A `RECONNECTING` pill appears if the SSE feed goes stale — expected on tab-resume, not an error.)*
+2. **FleetSafety** *(the fleet hero, FULL WIDTH)* — the structural-zero claim (giant **0** + "actioned by anything other than a decoy touch" + the "placement is careful, not infallible" caveat), a data-gated **⚠ simulated** badge, then the cumulative-reach **DISTINCT-flow funnel** (observed › decoy-touched › contained › jailed), a blast-radius line, the two-rails caption, and a subordinate per-EVENT fraction line linking to `/cost`.
+3. **KernelContainment | BystanderHealth** *(side by side, EQUAL height, EACH list scrollable)* — the jailed socket cookie next to same-host workloads still serving 200.
+4. **LiveSpotlight** *(FULL WIDTH, horizontally scrollable)* — the live-attacker cookie strip: a featured **● LIVE** card (cookie, verdict, score, base × M, spark) + the rest of the armed/decoy-touched flows as compact cards, with "browse all → `/flows`".
 
-(The attacker-arc Journey ribbon is intentionally NOT on the one screen — it didn't fit a fixed-height layout, and the arc is already legible from the tier-ladder climb in LiveEscalation + the jail. The `/flow/<cookie>` drill-down still has the full journey.)
+**OFF-WALL** (left **SideNav** routed pages): **Recon** (`/recon`), **Adversary Intel** (`/intel`), **Attacker Cost** (`/cost`), **Bystanders/Precision** (`/precision`), **Credibility** (`/credibility`), **Flows** (`/flows`). LiveEscalation (the old single-flow hero) and AttackerCost are **NO LONGER on the wall**.
 
-The traffic simulator (T2) keeps this **alive on its own** — benign east-west fills
-the observed funnel, a recon scanner populates ReconLive, and a malicious flow drives
-the escalation. No scripted puppetry; you narrate a live system.
+(The attacker-arc Journey ribbon is intentionally NOT on the one screen — the arc is legible from the cumulative-reach funnel stages in FleetSafety, the featured ● LIVE card in LiveSpotlight, and the kernel jail. The `/flow/<cookie>` drill-down still has the full per-flow journey.)
+
+The traffic simulator keeps this **alive on its own** — benign east-west fills the
+observed rail of the FleetSafety funnel; the malicious archetype fleet drives the
+decoy-touched › contained › jailed tail and populates the LiveSpotlight strip; the
+recon scanner populates the off-wall Recon page (left rail). No scripted puppetry;
+you narrate a live system.
 
 ## Pre-flight (the one-box staging recipe)
 
@@ -46,12 +50,12 @@ the escalation. No scripted puppetry; you narrate a live system.
 
 | beat | on screen | say |
 |---|---|---|
-| **0 · Observe (0:00–0:40)** | The box at rest, **calibrated** (green pills), a **large observed-normal funnel**, nothing escalating. | "This has been learning normal east-west traffic, and right now it's doing nothing to anyone — that's the point. The only thing that can ever arm a response is a touch on a decoy no real workload would reach. Not anomaly, not deviation. **Zero false positives, by construction, not by tuning.**" |
-| **1 · We see the recon (0:40–1:20)** | **ReconLive** lights with anomalous non-canary flows ("surfaced, not actioned"). | "We *do* see suspicious activity — scanning in the negative space, identities the baseline has never seen. Watch: we surface it, and we take **no action.** Nothing here armed a response, because none of it touched a decoy. That restraint **is** the zero-FP guarantee." |
-| **2 · The trigger is a decoy touch (1:20–2:00)** | A flow touches a decoy → escalates **against live M (>1)** T0→T1→T2; attrition begins (poison_field). | "The instant it touches a decoy, it's evidence. It escalates — and notice M is live: the learned baseline *sharpens* the score, it never triggers. The response arms automatically, in the kernel, on this one socket cookie." |
-| **3 · THE WOW — flow-precise jail (2:00–2:55)** | **KernelContainment** (jailed cookie) **beside BystanderHealth** (same-host workloads still serving 200), one frame. | "We dropped exactly one socket in the kernel, by its cookie. Same host, real workloads — **still 200, untouched.** We contain the flow, not the host, not the IP, not the service. Zero legitimate flows actioned. That's not a tuning number; it's the architecture." |
-| **4 · Reached zero real data (2:55–3:35)** | Journey ends; AttackerCost RealMeter ($, replay or live). | "It reached **zero real data** — credentials and hosts that don't exist. And it cost it real time and money to get nothing. *(If asked about the bleed: see the appendix — but the headline is the alarm + the precision, not the dollars.)*" |
-| **5 · The compounding moat (3:35–4:30)** | **AdversaryIntelligence** cross-customer: "consuming N patterns confirmed by ≥3 deployments — **⚠ simulated peer data**"; then a terminal `cat` of one crossed pattern (opaque + 7 coarse fields). | "Every interaction becomes an anonymized fingerprint. Confirmed across enough deployments, it crosses the network. **To be straight: these peers are simulated — synthetic deployments we operate, the art of the possible — not real customers yet.** Here's the wire: seven coarse fields, no traffic, no credentials, by construction. We'd like you to be one of the first real ones." |
+| **0 · Observe (0:00–0:40)** | **FleetSafety** hero: a giant **0** over the cumulative-reach funnel — a huge **observed** rail narrowing to a thin **decoy-touched › contained › jailed** tail; calibrated green pills; the **⚠ simulated** badge visible. | "This has been learning normal east-west, and the headline is a zero — nothing on this fleet was actioned by anything other than a touch on a planted decoy. **Zero false positives, by construction, not by tuning.** The wide bar is everything observed; the thin tail is the flows that actually touched a decoy and got a response. And up front: the badge says simulated — this is simdriver traffic, not a live customer fleet." |
+| **1 · We see the recon (0:40–1:20)** | Click **Recon** in the left rail ("watching, not acting") → anomalous non-canary flows surfaced, none actioned. | "We *do* see scanning in the negative space and identities the baseline has never seen — we surface every one and take **no action**: none touched a decoy, so none armed a response. That gap — everything observed vs the thin slice actioned — is the zero-FP guarantee made visible." |
+| **2 · The trigger is a decoy touch (1:20–2:00)** | In **FleetSafety** the **decoy-touched › contained** stages tick up; in the Row-4 **LiveSpotlight** the featured **● LIVE** card shows the live score and **base × M** (M>1, observe ON). | "The instant a flow touches a decoy it's evidence — watch the funnel's decoy-touched/contained stages move and the featured live card light up. The base-times-M means the learned baseline is live and **SHARPENS** the score — it never triggers. Response arms automatically, in the kernel, on that one socket cookie. *(Full M / baseline-novelty proof is on the Credibility page in the rail.)*" |
+| **3 · THE WOW — flow-precise jail (2:00–2:55)** | **KernelContainment** (jailed cookie, scrollable) **beside BystanderHealth** (same-host workloads still serving 200, scrollable), equal height, one eye-span. | "We dropped exactly one socket in the kernel, by its cookie. Same host, real workloads — **still 200, untouched** by the response. We contain the flow, not the host, not the IP, not the service. **No non-armed flow was actioned** — and that's not a tuning number, it's the architecture." |
+| **4 · Reached zero real data (2:55–3:35)** | Back on **FleetSafety**: the **jailed** stage holds; the subordinate per-event line at the bottom links to `/cost`. *(Open Attacker Cost in the rail only if a technical buyer asks for economics.)* | "It reached **zero real data** — credentials and hosts that don't exist — and it cost real time and money to get nothing. The headline stays the alarm and the precision, not the dollars; the per-event response fraction links to the full cost page. *(Economics live on the Attacker Cost page in the rail — see the appendix.)*" |
+| **5 · The compounding moat (3:35–4:30)** | Click **Adversary Intel** in the left rail → the cross-customer panel: "consuming N patterns confirmed by ≥3 deployments — **⚠ simulated peer data**"; then a terminal `cat` of one crossed pattern (opaque id + 7 coarse fields). | "Every interaction becomes an anonymized fingerprint; confirmed across enough deployments it crosses the network. **Straight up — the badge says it — these peers are simulated: synthetic deployments we operate, the art of the possible, not real customers yet.** Here's the wire: seven coarse fields, no traffic, no credentials, by construction. We'd like you to be one of the first real ones." |
 | **6 · The ask (4:30–5:00)** | — | "Don't take my word for any of it. **Point your red team at it** — see § RED_TEAM_HARNESS. Two challenges: arm a response without touching a decoy, or jail a legitimate flow. If they can't, the zero-FP-and-precise-containment claim is yours to verify, not mine to assert." |
 
 ## Honesty card (say these; never say the others)
@@ -84,7 +88,7 @@ the escalation. No scripted puppetry; you narrate a live system.
 
 ## Appendix — economic attrition (only if asked)
 
-The Tier-2 attrition (poison_field over a tarpit) imposes real time + token cost and feeds a fabricated, internally-consistent environment. It **fully bleeds unsophisticated/automated attackers** (they don't detect it) and **delays + denies + intel's** sophisticated ones. It is a bonus, not the headline: a capable attacker detects the *provably-safe* (= provably-fake) decoys fast, so do not pitch "we bleed every attacker." Show the per-axis overlapping cost bars + the RealMeter only if a technical buyer asks for the economics.
+The Tier-2 attrition (poison_field over a tarpit) imposes real time + token cost and feeds a fabricated, internally-consistent environment. It **fully bleeds unsophisticated/automated attackers** (they don't detect it) and **delays + denies + intel's** sophisticated ones. It is a bonus, not the headline: a capable attacker detects the *provably-safe* (= provably-fake) decoys fast, so do not pitch "we bleed every attacker." Open the **Attacker Cost** page (`/cost`, left rail) — the by-mechanism cost breakdown + the engagement contest — only if a technical buyer asks for the economics.
 
 ## Teardown
 

@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import PanelHead from './PanelHead';
 import { fmtBytes, fmtInt, fmtK, fmtOffsetLabel, fmtTimeLong } from '@/lib/format';
-import { WALL_LINK } from './LiveEscalation';
+import { WALL_LINK } from '@/lib/links';
 import type { AdversaryIntelView, AxisReactionView, CrossCustomerView, FlowFingerprint, ReconEvent } from '@/lib/types';
 
 // AdversaryIntelligence is the band-right cell (widest). Three facets in the

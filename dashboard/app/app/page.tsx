@@ -25,8 +25,9 @@ export default function OperationsPage() {
     <div className="app">
       <TopBar snapshot={snapshot} status={effectiveStatus} />
       {/* Row 2 — THE FLEET WALL: "is the fleet safe?" answered full-width. The
-          structural-zero claim + the three-rail fleet band (observed / armed /
-          jailed, each on its own basis) + the distinct-flow funnel. */}
+          structural-zero claim (PrecisionFunnel) + the cumulative-reach distinct-flow
+          funnel (observed › decoy-touched › contained › jailed). The old redundant
+          3-stat band was removed. */}
       <FleetSafety snapshot={snapshot} />
       {/* Row 3 — THE WOW: flow-precise containment in ONE eye-span: the attacker
           socket jailed in-kernel (left) right next to non-actioned same-host
@@ -39,7 +40,7 @@ export default function OperationsPage() {
       {/* Row 4 — the demoted single-flow spotlight (1 of N active). Credibility
           moved to its own /credibility page so its baseline-multiplier feature
           bars get full height instead of being clipped in this short strip. */}
-      <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} />
+      <LiveSpotlight escalation={snapshot?.escalation} armedCount={armedCount} status={effectiveStatus} />
     </div>
   );
 }

@@ -1,10 +1,10 @@
 import Link from 'next/link';
 import PanelHead from './PanelHead';
-import { WALL_LINK } from './LiveEscalation';
+import { WALL_LINK } from '@/lib/links';
 import { fmtInt } from '@/lib/format';
 import type { CredibilityView } from '@/lib/types';
 
-// Credibility is the band-middle cell: the "real learned state" panel. Three
+// Credibility is the /credibility page panel: the "real learned state" panel. Three
 // cred-items:
 //   1. Guardrail — architectural invariant (guardrail_active, always true): a
 //      flow off-baseline that never touches a canary triggers nothing.

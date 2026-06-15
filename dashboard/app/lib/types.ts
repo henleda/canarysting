@@ -40,17 +40,22 @@ export interface TierStep {
   is_active: boolean; // highest occupied tier
 }
 
-// FlowFunnelView is the DISTINCT-flow funnel (each flow counted once at its
-// highest tier, within this window). Distinct from the per-event tier ladder:
-// these are sessions, not events. observed › decoy-touched › contained › jailed.
+// FlowFunnelView is the DISTINCT-flow funnel by CUMULATIVE REACH: each flow is
+// counted in EVERY tier it reached, within this window — not once at its peak. So a
+// jailed flow is ALSO counted in contained (it reached both). Distinct from the
+// per-event tier ladder: these are sessions, not events. The › arrows in
+// observed › decoy-touched › contained › jailed mean "reached at least".
 export interface FlowFunnelView {
-  decoy_touched: number; // distinct flows that touched a decoy this window (== FlowsList.total_count)
-  contained: number; // distinct flows whose peak tier is T2
-  jailed: number; // distinct flows whose peak tier is T3
+  decoy_touched: number; // distinct flows that reached at least a decoy touch (Tier 1) this window (== FlowsList.total_count)
+  contained: number; // distinct flows that reached tier >= 2 this window
+  jailed: number; // distinct flows that reached tier >= 3 this window (also counted in contained)
   distinct_active: number; // distinct flows currently active this window
 }
 
-// EscalationView is the hero-left panel: the current attacker flow + tier ladder.
+// EscalationView carries the current attacker flow + tier ladder + the distinct-flow
+// funnel. On the current wall: escalation.flow → LiveSpotlight (Row 4 strip);
+// flow_funnel/funnel_caption → FleetSafety (Row 2). The tier_ladder is rendered by
+// TierLadder where embedded.
 export interface EscalationView {
   flow?: FlowView | null; // nil if none (json: omitempty)
   tier_ladder: [TierStep, TierStep, TierStep, TierStep]; // always length 4 (T0..T3)
@@ -84,9 +89,10 @@ export interface EngagementView {
   disengaged_early_fraction: number;
 }
 
-// AttackerCostView is the hero-right panel. Framing (AX3): the headline is
-// OPPORTUNITY COST on a velocity-dependent adversary — imposed time + engagement —
-// not a dollar bill. tokens_burned is a qualified PROXY, demoted below time.
+// AttackerCostView powers the /cost page (CostView); it is no longer a hero panel on
+// the wall. Framing (AX3): the headline is OPPORTUNITY COST on a velocity-dependent
+// adversary — imposed time + engagement — not a dollar bill. tokens_burned is a
+// qualified PROXY, demoted below time.
 export interface AttackerCostView {
   active_response_count: number; // T2+T3
   jailed: number; // T3
@@ -285,13 +291,14 @@ export interface Overview {
   // Fleet band: distinct armed flows this window (snapshot, not cumulative).
   armed_flows: ArmedFlowsView;
 
-  // Hero left: live escalation + tier ladder.
+  // escalation.flow → LiveSpotlight (Row 4 strip); escalation.flow_funnel/
+  // funnel_caption → FleetSafety (Row 2).
   escalation: EscalationView;
 
-  // Hero right: attacker cost.
+  // Powers the /cost page (CostView); no longer a hero panel on the wall.
   attacker_cost: AttackerCostView;
 
-  // Secondary band.
+  // kernel_containment + bystanders → Row 3; credibility → /credibility page.
   kernel_containment: KernelContainmentView;
   credibility: CredibilityView;
   adversary_intel: AdversaryIntelView;
@@ -406,7 +413,7 @@ export interface FlowRow {
 }
 
 export interface FlowsList {
-  flows: FlowRow[];
+  flows: FlowRow[] | null; // Go nil slice marshals to JSON null on an empty/filtered window
   total_count: number;
   filtered: number;
 }

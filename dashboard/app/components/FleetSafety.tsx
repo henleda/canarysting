@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { PrecisionFunnel, DistinctFunnel } from './PrecisionView';
-import { WALL_LINK } from './LiveEscalation';
+import { WALL_LINK } from '@/lib/links';
 import { fmtInt } from '@/lib/format';
 import type { Overview } from '@/lib/types';
 

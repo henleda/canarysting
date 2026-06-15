@@ -37,3 +37,7 @@ dashboard/app/.next/
 dashboard/app/.env.local
 dashboard/app/next-env.d.ts
 dashboard/app/tsconfig.tsbuildinfo
+
+# Local scratch screenshots / Word docs (founder error reports)
+*.docx
+~$*.docx

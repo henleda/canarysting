@@ -320,11 +320,11 @@ export const fixtureFlowsList: FlowsList = {
 
 // Feed the fixture's live-attacker strip the existing 3 ranked armed-flow rows so
 // the strip render path shows cards (the 0x118 row dedups against escalation.flow).
-fixtureOverview.escalation.attacker_flows = fixtureFlowsList.flows;
+fixtureOverview.escalation.attacker_flows = fixtureFlowsList.flows ?? [];
 
 export const fixtureCostBreakdown: CostBreakdown = {
   total: { time_held_sec: 24, bytes_served: 25726, requests: 3, token_cost: 6432 },
-  by_flow: fixtureFlowsList.flows.filter((f) => f.total_cost.time_held_sec > 0),
+  by_flow: (fixtureFlowsList.flows ?? []).filter((f) => f.total_cost.time_held_sec > 0),
   by_mechanism: [
     { mechanism: 'fake_tree', event_count: 3, time_held_sec: 24, bytes_served: 25726, requests: 3, token_cost: 6432 },
   ],

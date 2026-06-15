@@ -22,7 +22,12 @@ export default function ReconTimeline({ data, loading }: { data: ReconTimelineT 
           {rows.map((r, i) => {
             // Deep-link to the EXACT session this T1 belongs to (a reused cookie has
             // several sessions; without &session= the detail lands on the latest one).
-            const href = `/flow/${r.flow_id_hex}?since=${since}&session=${Math.floor(new Date(r.session_start).getTime() / 1000)}`;
+            const t = new Date(r.session_start).getTime();
+            const start = Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+            const href =
+              start > 0
+                ? `/flow/${r.flow_id_hex}?since=${since}&session=${start}`
+                : `/flow/${r.flow_id_hex}?since=${since}`;
             return (
               <tr key={i}>
                 <td>{r.offset_label}</td>
