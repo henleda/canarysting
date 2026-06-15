@@ -92,6 +92,15 @@ func main() {
 		confirmSpool = flag.String("confirm-spool", "", "D6-3: NDJSON confirmation spool written on each local jail (this deployment -> central aggregator). Required with -contribute.")
 		consume      = flag.Bool("consume", false, "D6: load cleared cross-customer patterns from -shared-spool to sharpen M for matching local flows (detection context only, rule 8). Default off.")
 		sharedSpool  = flag.String("shared-spool", "", "D6: NDJSON spool of cleared cross-customer patterns to load at boot. Required with -consume.")
+
+		// SLICE 2 one-way SIEM/SOAR emitter (operator-facing LOCAL alert stream; OFF by
+		// default). It drains the LOCAL-RICH l7events store per scope and pushes one event
+		// per canary touch to the operator's OWN SIEM/SOAR. It is NOT the cross-customer
+		// feed and never routes through internal/intelligence/network (rule 9).
+		siemFormat   = flag.String("siem-format", "off", "SLICE 2 one-way SIEM emitter format: off (default, inert) | stdout (NDJSON to the log) | json|webhook (HTTP POST to -siem-endpoint) | cef (CEF single line). The event is LOCAL-RICH (raw src/path/SPIFFE) and goes to YOUR OWN SIEM — never the cross-customer feed; do not point a webhook at a shared/third-party endpoint expecting anonymization.")
+		siemEndpoint = flag.String("siem-endpoint", "", "SLICE 2: webhook / Splunk-HEC URL for -siem-format json|webhook (one-way POST). Empty with a network format fails safe back to off.")
+		siemHECToken = flag.String("siem-hec-token", "", "SLICE 2: optional Splunk HEC token sent as 'Authorization: Splunk <token>' on the webhook POST.")
+		siemInterval = flag.Duration("siem-interval", 0, "SLICE 2: SIEM emitter poll cadence (0 => default 5s). Keep short relative to a touch spray so a record is emitted before the per-scope cap can evict it.")
 	)
 	flag.Parse()
 
@@ -140,6 +149,10 @@ func main() {
 		ConfirmSpoolPath:      *confirmSpool,
 		Consume:               *consume,
 		SharedSpoolPath:       *sharedSpool,
+		SIEMFormat:            *siemFormat,
+		SIEMEndpoint:          *siemEndpoint,
+		SIEMHECToken:          *siemHECToken,
+		SIEMInterval:          *siemInterval,
 	}, observe.PlatformObserver())
 	if err != nil {
 		log.Fatalf("staged-range: refusing to start: %v", err)
@@ -171,6 +184,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go built.StartAggregator(ctx)
+	// SLICE 2: the one-way SIEM/SOAR drain. Off unless -siem-format selects a real
+	// sink; otherwise the Built.SIEM handle is nil and this is a no-op. It runs OFF the
+	// verdict hot path (rule 8) and never reaches the cross-customer egress path (rule 9).
+	go built.StartSIEMEmitter(ctx)
 
 	// Read-only data tap for the M8 dashboard-backend (the engine owns the live
 	// state + the locked EventStore). It serves raw JSON only; all presentation is
