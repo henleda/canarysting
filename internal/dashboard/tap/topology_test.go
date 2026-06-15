@@ -2,6 +2,7 @@ package tap
 
 import (
 	"context"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,22 +43,25 @@ func (r *fakeTopoReader) IterStats(fn func(uint64, observe.FlowStats) error) err
 	return nil
 }
 
-// foldedAggregator builds an aggregator, pre-loads one CLOSED demo-mesh flow
-// (caller 10.20.1.101 -> service on the api port 8002), and folds it once by
-// running Run with an already-cancelled context (Run folds once on ctx.Done).
-func foldedAggregator(t *testing.T, now time.Time) *observebaseline.Aggregator {
+// flow4 builds a closed observe.FlowStats for a v4 (srcA.B.C.D -> dstA.B.C.D:port)
+// hop the aggregator will fold into one learned edge.
+func flow4(src, dst [4]byte, dstPort uint16) observe.FlowStats {
+	var s, d [16]byte
+	copy(s[:], src[:])
+	copy(d[:], dst[:])
+	return observe.FlowStats{
+		Family: observe.AFInet, SrcIP: s, DstIP: d,
+		SrcPort: 40000, DstPort: dstPort,
+		IngressBytes: 1400, EgressBytes: 1400, IngressPackets: 10, EgressPackets: 10,
+		FirstSeenNs: 1000, LastSeenNs: 2_000_000, Closed: 1,
+	}
+}
+
+// aggregatorWith builds an aggregator pre-loaded with the given closed flows and
+// folds them once (Run on an already-cancelled ctx folds once on ctx.Done).
+func aggregatorWith(t *testing.T, now time.Time, flows map[uint64]observe.FlowStats) *observebaseline.Aggregator {
 	t.Helper()
-	var src, dst [16]byte
-	src[0], src[1], src[2], src[3] = 10, 20, 1, 101
-	dst[0], dst[1], dst[2], dst[3] = 10, 20, 1, 24
-	r := &fakeTopoReader{flows: map[uint64]observe.FlowStats{
-		0x118: {
-			Family: observe.AFInet, SrcIP: src, DstIP: dst,
-			SrcPort: 40000, DstPort: 8002,
-			IngressBytes: 1400, EgressBytes: 1400, IngressPackets: 10, EgressPackets: 10,
-			FirstSeenNs: 1000, LastSeenNs: 2_000_000, Closed: 1,
-		},
-	}}
+	r := &fakeTopoReader{flows: flows}
 	res, err := scope.NewStaticResolver(scope.Config{Boundary: topoTestScope})
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +77,24 @@ func foldedAggregator(t *testing.T, now time.Time) *observebaseline.Aggregator {
 	return agg
 }
 
-// demoResolver labels the demo mesh: api on port 8002 (service) and the caller IP
-// (caller). Mirrors deploy/m7-window/topology-identities.json.
+// foldedAggregator pre-loads one CLOSED demo-mesh flow: caller 10.20.1.101 dialing
+// the api service at its distinct loopback identity 127.0.1.2:8002.
+func foldedAggregator(t *testing.T, now time.Time) *observebaseline.Aggregator {
+	t.Helper()
+	return aggregatorWith(t, now, map[uint64]observe.FlowStats{
+		0x118: flow4([4]byte{10, 20, 1, 101}, [4]byte{127, 0, 1, 2}, 8002),
+	})
+}
+
+// demoResolver labels the demo mesh in the DISTINCT-IDENTITY scheme: each service
+// is named by its 127.0.1.<K> IP (so its egress[port 0] and listen[port N] sides
+// coalesce), and the caller by IP. Mirrors deploy/m7-window/topology-identities.json.
 func demoResolver(t *testing.T) *identity.Resolver {
 	t.Helper()
 	cfg, err := identity.LoadConfig(strings.NewReader(`{"entries":[
-		{"port":8002,"name":"api","kind":"service"},
+		{"ip":"127.0.1.1","name":"frontend","kind":"service"},
+		{"ip":"127.0.1.2","name":"api","kind":"service"},
+		{"ip":"127.0.1.3","name":"auth","kind":"service"},
 		{"ip":"10.20.1.101","name":"reporting-worker","kind":"caller"}
 	]}`))
 	if err != nil {
@@ -88,7 +104,8 @@ func demoResolver(t *testing.T) *identity.Resolver {
 }
 
 // The endpoint resolves learned-node labels from the operator registry and reports
-// staged_labels=true; the learned edge carries the real observed shape/volume.
+// staged_labels=true; the learned edge carries the real observed shape/volume, and
+// both endpoints carry the new IDENTITY-keyed coalesced node ids.
 func TestTopologyResolvesLabelsAndShape(t *testing.T) {
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
 	src := &Source{
@@ -110,11 +127,15 @@ func TestTopologyResolvesLabelsAndShape(t *testing.T) {
 	if learned[0].Port != 8002 || learned[0].FlowCount != 1 || learned[0].Bytes != 2800 {
 		t.Fatalf("learned edge wrong: %+v", learned[0])
 	}
-	// Both endpoints resolve to their operator-declared names and kinds.
+	// Both endpoints resolve to their operator-declared names and kinds, keyed by
+	// the new IDENTITY-coalesced id scheme.
 	byID := nodesByID(view)
 	svc, ok := byID[learned[0].DstID]
 	if !ok || svc.Label != "api" || svc.Kind != "service" {
 		t.Fatalf("service node = %+v (ok=%v), want api/service", svc, ok)
+	}
+	if learned[0].DstID != "id:service:api" {
+		t.Fatalf("service node id = %q, want id:service:api", learned[0].DstID)
 	}
 	caller, ok := byID[learned[0].SrcID]
 	if !ok || caller.Label != "reporting-worker" || caller.Kind != "caller" {
@@ -122,28 +143,162 @@ func TestTopologyResolvesLabelsAndShape(t *testing.T) {
 	}
 }
 
-// With NO resolver, staged_labels is false and learned nodes degrade to IP labels
-// (the engine knows only hashed adjacency — it never invents a service name).
-func TestTopologyNilResolverDegradesToIP(t *testing.T) {
+// A service that appears as BOTH an edge source (its egress) and an edge
+// destination (its listen side) coalesces to ONE node.
+func TestTopologyCoalescesDualRoleService(t *testing.T) {
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	// frontend (127.0.1.1) -> api (127.0.1.2:8002), then api -> auth (127.0.1.3:8003).
+	// api is a DESTINATION on the first edge and a SOURCE on the second.
+	agg := aggregatorWith(t, now, map[uint64]observe.FlowStats{
+		0x1: flow4([4]byte{127, 0, 1, 1}, [4]byte{127, 0, 1, 2}, 8002),
+		0x2: flow4([4]byte{127, 0, 1, 2}, [4]byte{127, 0, 1, 3}, 8003),
+	})
+	src := &Source{Scope: topoTestScope, Aggregator: agg, Resolver: demoResolver(t), Now: func() time.Time { return now }}
+	view := src.buildTopology(now)
+
+	byID := nodesByID(view)
+	if _, ok := byID["id:service:api"]; !ok {
+		t.Fatalf("api node missing; nodes=%v", nodeIDs(view))
+	}
+	// Count distinct api nodes — must be exactly one despite the dual role.
+	apiCount := 0
+	for _, n := range view.Nodes {
+		if n.Label == "api" {
+			apiCount++
+		}
+	}
+	if apiCount != 1 {
+		t.Fatalf("api appears as %d nodes, want 1 (dual-role must coalesce); nodes=%v", apiCount, nodeIDs(view))
+	}
+}
+
+// frontend -> api -> auth renders as a connected named chain: three distinct nodes
+// joined by two learned edges that share the api node.
+func TestTopologyNamedChainConnects(t *testing.T) {
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := aggregatorWith(t, now, map[uint64]observe.FlowStats{
+		0x1: flow4([4]byte{127, 0, 1, 1}, [4]byte{127, 0, 1, 2}, 8002),
+		0x2: flow4([4]byte{127, 0, 1, 2}, [4]byte{127, 0, 1, 3}, 8003),
+	})
+	src := &Source{Scope: topoTestScope, Aggregator: agg, Resolver: demoResolver(t), Now: func() time.Time { return now }}
+	view := src.buildTopology(now)
+
+	learned := edgesOfClass(view, edgeClassLearned)
+	if len(learned) != 2 {
+		t.Fatalf("learned edges = %d, want 2", len(learned))
+	}
+	byID := nodesByID(view)
+	for _, want := range []string{"id:service:frontend", "id:service:api", "id:service:auth"} {
+		if _, ok := byID[want]; !ok {
+			t.Fatalf("chain node %q missing; nodes=%v", want, nodeIDs(view))
+		}
+	}
+	// The two edges must share the api node: frontend->api and api->auth.
+	var fa, aa bool
+	for _, e := range learned {
+		if e.SrcID == "id:service:frontend" && e.DstID == "id:service:api" {
+			fa = true
+		}
+		if e.SrcID == "id:service:api" && e.DstID == "id:service:auth" {
+			aa = true
+		}
+	}
+	if !fa || !aa {
+		t.Fatalf("chain not connected through api: frontend->api=%v api->auth=%v; edges=%+v", fa, aa, learned)
+	}
+}
+
+// An edge to an UNKNOWN endpoint (not in the resolver — e.g. a management-plane
+// flow) is DROPPED by the clean-fabric filter.
+func TestTopologyDropsUnknownEndpointEdge(t *testing.T) {
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	// frontend (named) -> 127.0.0.9:50051 (the engine gRPC port, NOT in the map).
+	agg := aggregatorWith(t, now, map[uint64]observe.FlowStats{
+		0x1: flow4([4]byte{127, 0, 1, 1}, [4]byte{127, 0, 0, 9}, 50051),
+	})
+	src := &Source{Scope: topoTestScope, Aggregator: agg, Resolver: demoResolver(t), Now: func() time.Time { return now }}
+	view := src.buildTopology(now)
+
+	if got := len(edgesOfClass(view, edgeClassLearned)); got != 0 {
+		t.Fatalf("learned edges = %d, want 0 (edge to unnamed infra endpoint must be dropped)", got)
+	}
+	// And the unnamed endpoint must not have been added as a node.
+	for _, n := range view.Nodes {
+		if n.Kind == "unknown" {
+			t.Fatalf("unknown infra node leaked into the graph: %+v", n)
+		}
+	}
+}
+
+// The two ingress endpoints (the accept address 127.0.0.1:8080 and the
+// upstream-bind source 127.0.2.1) both named "ingress-gateway" coalesce to ONE
+// ingress node — even appearing on different edges.
+func TestTopologyCoalescesIngressEndpoints(t *testing.T) {
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	cfg, err := identity.LoadConfig(strings.NewReader(`{"entries":[
+		{"ip":"127.0.1.1","name":"frontend","kind":"service"},
+		{"ip":"127.0.0.1","port":8080,"name":"ingress-gateway","kind":"external"},
+		{"ip":"127.0.2.1","name":"ingress-gateway","kind":"external"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := identity.NewResolver(cfg)
+
+	// Two flows that both involve the ingress under its two addresses:
+	//   - a caller hits the ingress accept address 127.0.0.1:8080,
+	//   - the ingress (originating 127.0.2.1) reaches the frontend.
+	// Both ingress endpoints must collapse to the same node id.
+	if got := coalescedNodeID(resolver.Resolve(netip.MustParseAddr("127.0.0.1"), 8080, "", ""), netip.MustParseAddr("127.0.0.1"), 8080); got != "id:external:ingress-gateway" {
+		t.Fatalf("ingress accept id = %q, want id:external:ingress-gateway", got)
+	}
+	if got := coalescedNodeID(resolver.Resolve(netip.MustParseAddr("127.0.2.1"), 0, "", ""), netip.MustParseAddr("127.0.2.1"), 0); got != "id:external:ingress-gateway" {
+		t.Fatalf("ingress source id = %q, want id:external:ingress-gateway", got)
+	}
+
+	agg := aggregatorWith(t, now, map[uint64]observe.FlowStats{
+		0x1: flow4([4]byte{127, 0, 2, 1}, [4]byte{127, 0, 1, 1}, 8001), // ingress -> frontend
+	})
+	src := &Source{Scope: topoTestScope, Aggregator: agg, Resolver: resolver, Now: func() time.Time { return now }}
+	view := src.buildTopology(now)
+	ingressCount := 0
+	for _, n := range view.Nodes {
+		if n.Label == "ingress-gateway" {
+			ingressCount++
+		}
+	}
+	if ingressCount != 1 {
+		t.Fatalf("ingress appears as %d nodes, want 1 (the two endpoints must coalesce); nodes=%v", ingressCount, nodeIDs(view))
+	}
+}
+
+// With NO resolver, staged_labels is false and EVERY learned endpoint degrades to
+// unknown — so the clean-fabric filter drops every learned edge (the engine knows
+// only hashed adjacency; it never invents a name). The decoy ring still renders.
+func TestTopologyNilResolverDegradesToEmptyFabric(t *testing.T) {
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
 	src := &Source{
 		Scope:      topoTestScope,
 		Aggregator: foldedAggregator(t, now),
+		Catalog:    catalog.Default(),
 		Now:        func() time.Time { return now },
 	}
 	view := src.buildTopology(now)
 	if view.StagedLabels {
 		t.Fatal("staged_labels = true with no resolver, want false")
 	}
-	learned := edgesOfClass(view, edgeClassLearned)
-	if len(learned) != 1 {
-		t.Fatalf("learned edges = %d, want 1", len(learned))
+	if got := len(edgesOfClass(view, edgeClassLearned)); got != 0 {
+		t.Fatalf("learned edges = %d with no resolver, want 0 (all unnamed -> filtered)", got)
 	}
-	byID := nodesByID(view)
-	svc := byID[learned[0].DstID]
-	// 10.20.1.24 is private => Unknown kind, labeled by IP.
-	if svc.Label != "10.20.1.24" || svc.Kind != "unknown" {
-		t.Fatalf("degraded service node = %+v, want IP label / unknown", svc)
+	// The decoy ring is still injected (filter-exempt).
+	decoys := 0
+	for _, n := range view.Nodes {
+		if n.Kind == "decoy" {
+			decoys++
+		}
+	}
+	if decoys != 5 {
+		t.Fatalf("decoy nodes = %d with no resolver, want 5 (ring is filter-exempt)", decoys)
 	}
 }
 
@@ -180,8 +335,9 @@ func TestTopologyInjectsDecoyNodes(t *testing.T) {
 	}
 }
 
-// A recent real canary-touch event (Tier>=1) lights a source->decoy edge; repeat
-// touches of the same decoy by the same flow are deduped (FlowCount bumps).
+// A recent real canary-touch event (Tier>=1) lights a source->decoy edge; the
+// touch is filter-EXEMPT even though the touch-src is an unknown-kind cookie node.
+// Repeat touches of the same decoy by the same flow are deduped (FlowCount bumps).
 func TestTopologyTouchEdgeFromRealEvent(t *testing.T) {
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "events.db")
@@ -224,9 +380,14 @@ func TestTopologyTouchEdgeFromRealEvent(t *testing.T) {
 		if byID[e.DstID].Kind != "decoy" {
 			t.Fatalf("touch edge dst %q is not a decoy node: %+v", e.DstID, byID[e.DstID])
 		}
-		// And its source node must exist (the touching identity).
-		if _, ok := byID[e.SrcID]; !ok {
+		// And its source node must exist (the touching identity — an unknown-kind
+		// cookie node that SURVIVES the filter because touch edges are exempt).
+		srcNode, ok := byID[e.SrcID]
+		if !ok {
 			t.Fatalf("touch edge source node %q not injected", e.SrcID)
+		}
+		if srcNode.Kind != "unknown" {
+			t.Fatalf("touch-src node kind = %q, want unknown", srcNode.Kind)
 		}
 		if e.DstID == decoyNodeID(catalog.TypePlantedCredential) && e.FlowCount != 2 {
 			t.Fatalf("planted_credential touch FlowCount = %d, want 2 (two touches deduped)", e.FlowCount)
@@ -259,4 +420,12 @@ func nodesByID(v TopologyView) map[string]TopologyNode {
 		m[n.ID] = n
 	}
 	return m
+}
+
+func nodeIDs(v TopologyView) []string {
+	out := make([]string, 0, len(v.Nodes))
+	for _, n := range v.Nodes {
+		out = append(out, n.ID)
+	}
+	return out
 }

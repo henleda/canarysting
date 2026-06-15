@@ -528,12 +528,16 @@ body { min-height: 100%; }
 .topo-node-c { stroke-width: 1.5; }
 .topo-node-c-service { fill: rgba(95,129,153,0.18); stroke: var(--observe); }
 .topo-node-c-caller { fill: rgba(234,240,245,0.06); stroke: var(--ink-dim); }
-.topo-node-c-external, .topo-node-c-unknown { fill: rgba(255,77,96,0.08); stroke: var(--sting); }
+/* ingress gateway (kind external): a declared, trusted entry point — neutral steel,
+   NOT the alarm-red reserved for unknown/attacker nodes. */
+.topo-node-c-external { fill: rgba(95,129,153,0.12); stroke: var(--observe); }
+.topo-node-c-unknown { fill: rgba(255,77,96,0.08); stroke: var(--sting); }
 .topo-node-c-decoy { fill: rgba(255,206,58,0.06); stroke: var(--canary); stroke-dasharray: 3 4; }
 .topo-node-label { font-family: var(--mono); font-size: 11px; fill: var(--ink); dominant-baseline: middle; }
 .topo-node-sub { font-family: var(--mono); font-size: 8.5px; fill: var(--ink-faint); dominant-baseline: middle; }
 .topo-node-decoy .topo-node-label { fill: var(--canary); }
-.topo-node-unknown .topo-node-label, .topo-node-external .topo-node-label { fill: var(--sting); }
+.topo-node-external .topo-node-label { fill: var(--observe); }
+.topo-node-unknown .topo-node-label { fill: var(--sting); }
 
 /* Legend below the graph. */
 .topo-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; padding-top: 12px;

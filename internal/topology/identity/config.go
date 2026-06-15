@@ -31,9 +31,10 @@ type Config struct {
 //   - port       -> a named service by listen/destination port (the all-loopback
 //     demo mesh, where the PORT — not the IP — is the discriminator)
 //
-// ip and cidr are mutually exclusive on one entry. Kind is "service" or "caller"
-// (the operator-declarable kinds); "decoy"/"external"/"unknown" are resolver-
-// derived classes, not operator inputs.
+// ip and cidr are mutually exclusive on one entry. Kind is "service", "caller", or
+// "external" (the operator-declarable kinds — "external" names a declared off-mesh
+// entry point such as the ingress gateway); "decoy"/"unknown" are resolver-derived
+// classes, not operator inputs.
 type Entry struct {
 	CIDR string `json:"cidr,omitempty"`
 	IP   string `json:"ip,omitempty"`
@@ -86,10 +87,18 @@ func (e *Entry) normalize(idx int) error {
 		e.kind = KindService
 	case "caller":
 		e.kind = KindCaller
+	case "external":
+		// "external" names a declared off-mesh entry point — e.g. the ingress
+		// gateway (Envoy), which originates traffic into the mesh from its own
+		// loopback identity. It is operator-declarable (unlike "decoy"/"unknown",
+		// which are resolver-derived classes) so the ingress hop can be NAMED and
+		// placed as an entry point in the topology view instead of degrading to an
+		// anonymous IP node.
+		e.kind = KindExternal
 	case "":
-		return fmt.Errorf("identity: entry %d (%q): missing kind (want \"service\" or \"caller\")", idx, e.Name)
+		return fmt.Errorf("identity: entry %d (%q): missing kind (want \"service\", \"caller\", or \"external\")", idx, e.Name)
 	default:
-		return fmt.Errorf("identity: entry %d (%q): unknown kind %q (want \"service\" or \"caller\")", idx, e.Name, e.Kind)
+		return fmt.Errorf("identity: entry %d (%q): unknown kind %q (want \"service\", \"caller\", or \"external\")", idx, e.Name, e.Kind)
 	}
 
 	if e.IP != "" && e.CIDR != "" {

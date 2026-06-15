@@ -14,13 +14,25 @@ package views
 
 // topologyStagedCaption is the persistent on-screen honesty fence shown when node
 // labels came from an operator registry (staged_labels=true). It is verbatim the
-// fence the panel will test (docs/TOPOLOGY_AND_DEVIANTS.md §5 fence 1).
-const topologyStagedCaption = "Staged-range view: node NAMES come from the operator registry; the engine baseline is hashed. The graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours."
+// fence the panel will test (docs/TOPOLOGY_AND_DEVIANTS.md §5 fence 1). It states
+// the view is the DECLARED east-west fabric (the named services/callers + the
+// ingress gateway) and that unresolved management-plane flows are omitted for
+// clarity — never implying the engine knows names or that the map auto-acts.
+const topologyStagedCaption = "Declared east-west fabric: edges connect the operator-registry services, callers, and ingress gateway; unresolved management-plane flows are omitted for clarity. Node NAMES come from the operator registry; the engine baseline is hashed and the graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours."
 
 // topologyUnlabeledCaption is shown when NO operator registry is loaded
 // (staged_labels=false): the nodes are IP labels, so the caption must NOT claim a
-// name registry. The shape/edges are still real observed traffic.
-const topologyUnlabeledCaption = "No node-name registry loaded: nodes are labeled by raw IP. The graph SHAPE/edges are real observed traffic; the engine baseline is hashed. In production this is drawn from your own service registry."
+// name registry. With nothing named, the clean-fabric filter omits the unresolved
+// management-plane flows and the learned fabric is empty; the decoy ring still
+// renders. The shape/edges that do show are still real observed traffic.
+const topologyUnlabeledCaption = "No node-name registry loaded: nodes are labeled by raw IP and unresolved management-plane flows are omitted for clarity. The graph SHAPE/edges are real observed traffic; the engine baseline is hashed. In production this is drawn from your own service registry."
+
+// topologyEmptyFabricCaption is shown when a registry IS loaded (staged_labels=true)
+// but ZERO named east-west edges survived the clean-fabric filter — only the decoy
+// ring (and any canary-touch) remains. Without this, the assertive staged caption
+// would claim observed named edges that are not on screen — an overclaim. This
+// makes the empty case honest rather than fabricating a populated fabric.
+const topologyEmptyFabricCaption = "No named east-west edges observed yet in this scope — only the canary decoy ring (and any canary touch) is shown; the legit mesh never touches it. Node NAMES come from the operator registry; the graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours."
 
 // TopologyNodeView is one node in the learned graph. Kind is the resolver token:
 // "service" | "caller" | "decoy" | "external" | "unknown".
@@ -76,12 +88,8 @@ func DeriveTopology(raw TopologyTapView) TopologyView {
 	v := TopologyView{
 		Scope:        raw.Scope,
 		StagedLabels: raw.StagedLabels,
-		Caption:      topologyUnlabeledCaption,
 		Nodes:        []TopologyNodeView{},
 		Edges:        []TopologyEdgeView{},
-	}
-	if raw.StagedLabels {
-		v.Caption = topologyStagedCaption
 	}
 
 	known := make(map[string]struct{}, len(raw.Nodes))
@@ -95,6 +103,7 @@ func DeriveTopology(raw TopologyTapView) TopologyView {
 		known[n.ID] = struct{}{}
 		v.Nodes = append(v.Nodes, n)
 	}
+	hasLearnedFabric := false
 	for _, e := range raw.Edges {
 		if _, ok := known[e.SrcID]; !ok {
 			continue
@@ -102,7 +111,23 @@ func DeriveTopology(raw TopologyTapView) TopologyView {
 		if _, ok := known[e.DstID]; !ok {
 			continue
 		}
+		if e.Class == "learned" {
+			hasLearnedFabric = true // a named east-west edge actually survived
+		}
 		v.Edges = append(v.Edges, e)
+	}
+
+	// Caption AFTER the edge filter so it reflects what is ACTUALLY on screen: an
+	// assertive "declared fabric" claim must never sit beside a graph that is only
+	// the decoy ring (the staged_labels-true-but-empty case — see the on-box
+	// caller-source-rewrite risk in docs/TOPOLOGY_AND_DEVIANTS.md).
+	switch {
+	case !raw.StagedLabels:
+		v.Caption = topologyUnlabeledCaption
+	case hasLearnedFabric:
+		v.Caption = topologyStagedCaption
+	default:
+		v.Caption = topologyEmptyFabricCaption
 	}
 	return v
 }

@@ -348,15 +348,23 @@ export const fixtureCostBreakdown: CostBreakdown = {
 };
 
 // ---- F1 learned topology fixture (NEXT_PUBLIC_FIXTURE=1) ----
-// A representative slice of the M7 5-service loopback mesh: 4 named callers + the
-// 5 services (frontend 8001, api 8002, auth 8003, db 8004, cache 8005 — the demo
-// is all-loopback 127.0.0.1, so the LISTEN port disambiguates each service), the
-// 5 canary decoys in the negative-space ring, ~10 learned edges, one FAINT live
-// deviant edge inside the legit subgraph (the "careful-mover" pivot that never
-// reaches the ring), and one BRIGHT source->decoy touch edge (the money shot).
-// Node ids mirror the backend contract: svc:<ip>:<port> / caller:<ip> /
-// decoy:<canary_type> / touch-src:0x<cookie>. Names come from the staging
-// operator registry (deploy/m7-window/topology-identities.json) — staged_labels.
+// The DECLARED east-west fabric of the M7 mesh, matched to the new LIVE shape so
+// NEXT_PUBLIC_FIXTURE renders the same thing /api/topology serves. The distinct-
+// identity scheme (each service LISTENs on AND dials from its own 127.0.1.<K>; the
+// ingress Envoy originates 127.0.2.1) means the tap names each endpoint by IDENTITY
+// and coalesces a service's egress/listen sides into ONE node. So node ids are the
+// tap's IDENTITY-keyed scheme 'id:<kind>:<label>' for named nodes (services,
+// callers, the ingress-gateway), and the tap's own ids for the decoy ring
+// ('decoy:<canary_type>') and the touch source ('touch-src:0x<cookie>').
+//
+// Shape: named callers -> the ingress-gateway entry point -> frontend, then the
+// multi-tier service->service fabric (edge -> app -> service -> data tier, matching
+// deploy/m7-window/server-compose.yml), the 5 canary decoys in the negative-space
+// ring (zero learned in-edges), and ONE bright source->decoy touch edge (the money
+// shot). Only 'learned' + 'decoy_touch' classes — exactly what the slice-3 live
+// /api/topology emits (no 'live'/deviant edge until F2). The caller set mirrors the
+// simdriver's benign identities + the prober. Names come from the staging operator
+// registry (deploy/m7-window/topology-identities.json) — staged_labels.
 import type { TopologyView } from './types';
 
 const TOPO_FIRST = '2026-06-09T13:30:00Z';
@@ -366,49 +374,81 @@ export const fixtureTopology: TopologyView = {
   scope: 'm7-window',
   staged_labels: true,
   caption:
-    'Staged-range view: node NAMES come from the operator registry; the engine baseline is hashed. The graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours.',
+    'Declared east-west fabric: edges connect the operator-registry services, callers, and ingress gateway; unresolved management-plane flows are omitted for clarity. Node NAMES come from the operator registry; the engine baseline is hashed and the graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours.',
   nodes: [
     // Callers (left column) — named external initiators from the staging registry.
-    { id: 'caller:10.20.1.101', label: 'reporting-worker', kind: 'caller' },
-    { id: 'caller:10.20.1.102', label: 'batch-client', kind: 'caller' },
-    { id: 'caller:10.20.1.103', label: 'web-client', kind: 'caller' },
-    { id: 'caller:10.20.1.111', label: 'prober', kind: 'caller' },
-    // Services (middle column) — port disambiguates on the loopback mesh.
-    { id: 'svc:10.20.1.24:8001', label: 'frontend', kind: 'service' },
-    { id: 'svc:10.20.1.24:8002', label: 'api', kind: 'service' },
-    { id: 'svc:10.20.1.24:8003', label: 'auth', kind: 'service' },
-    { id: 'svc:10.20.1.24:8004', label: 'db', kind: 'service' },
-    { id: 'svc:10.20.1.24:8005', label: 'cache', kind: 'service' },
+    { id: 'id:caller:reporting-worker', label: 'reporting-worker', kind: 'caller' },
+    { id: 'id:caller:batch-client', label: 'batch-client', kind: 'caller' },
+    { id: 'id:caller:web-client', label: 'web-client', kind: 'caller' },
+    { id: 'id:caller:mobile-gateway', label: 'mobile-gateway', kind: 'caller' },
+    { id: 'id:caller:partner-api', label: 'partner-api', kind: 'caller' },
+    { id: 'id:caller:ci-runner', label: 'ci-runner', kind: 'caller' },
+    { id: 'id:caller:etl-scheduler', label: 'etl-scheduler', kind: 'caller' },
+    { id: 'id:caller:support-console', label: 'support-console', kind: 'caller' },
+    { id: 'id:caller:ops-dashboard', label: 'ops-dashboard', kind: 'caller' },
+    { id: 'id:caller:prober', label: 'prober', kind: 'caller' },
+    // The ingress gateway (kind 'external') — the entry point. Both Envoy endpoints
+    // (the accept address + the upstream-bind source) coalesce into this one node.
+    { id: 'id:external:ingress-gateway', label: 'ingress-gateway', kind: 'external' },
+    // Services (middle column) — each named by its distinct identity; the egress
+    // and listen sides coalesce, so each appears exactly once.
+    { id: 'id:service:frontend', label: 'frontend', kind: 'service' },
+    { id: 'id:service:cdn-edge', label: 'cdn-edge', kind: 'service' },
+    { id: 'id:service:api', label: 'api', kind: 'service' },
+    { id: 'id:service:auth', label: 'auth', kind: 'service' },
+    { id: 'id:service:db', label: 'db', kind: 'service' },
+    { id: 'id:service:cache', label: 'cache', kind: 'service' },
+    { id: 'id:service:payments', label: 'payments', kind: 'service' },
+    { id: 'id:service:search', label: 'search', kind: 'service' },
+    { id: 'id:service:ledger', label: 'ledger', kind: 'service' },
+    { id: 'id:service:db-replica', label: 'db-replica', kind: 'service' },
+    { id: 'id:service:session-store', label: 'session-store', kind: 'service' },
     // Canary decoys (right ring) — the 5 catalog types, zero learned in-edges.
+    // Tap emits these with the 'decoy:<canary_type>' id (NOT the identity scheme).
     { id: 'decoy:planted_credential', label: 'planted_credential', kind: 'decoy' },
     { id: 'decoy:fake_secret', label: 'fake_secret', kind: 'decoy' },
     { id: 'decoy:decoy_file', label: 'decoy_file', kind: 'decoy' },
     { id: 'decoy:fake_bucket', label: 'fake_bucket', kind: 'decoy' },
     { id: 'decoy:fake_endpoint', label: 'fake_endpoint', kind: 'decoy' },
     // The touch source — a flow that reached into the negative space (cookie 0x118).
+    // Tap emits this with the 'touch-src:0x<cookie>' id (NOT the identity scheme).
     { id: 'touch-src:0x118', label: '0x118', kind: 'unknown' },
   ],
   edges: [
-    // Learned baseline edges (solid; thickness ~ flow_count). The legit east-west
-    // mesh: web/clients -> frontend/api -> auth/db/cache.
-    { src_id: 'caller:10.20.1.103', dst_id: 'svc:10.20.1.24:8001', port: 8001, proto: 'tcp', flow_count: 1840, bytes: 24_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8001', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 1620, bytes: 19_200_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'caller:10.20.1.102', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 940, bytes: 11_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8003', port: 8003, proto: 'tcp', flow_count: 880, bytes: 3_100_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 1320, bytes: 16_800_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8002', dst_id: 'svc:10.20.1.24:8005', port: 8005, proto: 'tcp', flow_count: 1510, bytes: 8_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8003', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 420, bytes: 2_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'caller:10.20.1.101', dst_id: 'svc:10.20.1.24:8002', port: 8002, proto: 'tcp', flow_count: 260, bytes: 1_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    { src_id: 'svc:10.20.1.24:8004', dst_id: 'svc:10.20.1.24:8005', port: 8005, proto: 'tcp', flow_count: 380, bytes: 2_050_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
-    // FAINT live/deviant edge — the careful-mover's NOVEL pivot (reporting-worker
-    // reaching db direct, an adjacency it never normally walks). It stays INSIDE
-    // the legit subgraph and NEVER reaches the decoy ring — observe-only, Rule 8.
-    // FIXTURE-ONLY until F2: the slice-3 live /api/topology emits only 'learned'
-    // and 'decoy_touch' classes (the deviant overlay lands with the F2 deviants
-    // store). Do NOT narrate this edge as live engine output in a slice-3 demo —
-    // and once real deviant edges flow, the F2 page must carry the ⚠ simulated
-    // badge wherever careful-mover (simdriver) traffic is shown (docs §5 fence 2).
-    { src_id: 'caller:10.20.1.101', dst_id: 'svc:10.20.1.24:8004', port: 8004, proto: 'tcp', flow_count: 4, bytes: 11_200, first_seen: '2026-06-09T13:52:00Z', last_seen: TOPO_LAST, class: 'live' },
+    // Ingress: named callers reach the ingress gateway, which fans into the mesh.
+    { src_id: 'id:caller:web-client', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 1980, bytes: 26_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:reporting-worker', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 320, bytes: 2_300_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:batch-client', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 960, bytes: 11_600_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:mobile-gateway', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 1240, bytes: 14_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:partner-api', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 540, bytes: 6_100_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:ci-runner', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 210, bytes: 1_300_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:etl-scheduler', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 430, bytes: 5_200_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:support-console', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 180, bytes: 920_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:ops-dashboard', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 260, bytes: 1_500_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:caller:prober', dst_id: 'id:external:ingress-gateway', port: 8080, proto: 'tcp', flow_count: 140, bytes: 480_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:external:ingress-gateway', dst_id: 'id:service:frontend', port: 8001, proto: 'tcp', flow_count: 3400, bytes: 41_000_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // Edge tier: frontend -> {cdn-edge, api}; cdn-edge -> api.
+    { src_id: 'id:service:frontend', dst_id: 'id:service:cdn-edge', port: 8008, proto: 'tcp', flow_count: 1700, bytes: 9_800_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:frontend', dst_id: 'id:service:api', port: 8002, proto: 'tcp', flow_count: 1620, bytes: 19_200_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:cdn-edge', dst_id: 'id:service:api', port: 8002, proto: 'tcp', flow_count: 1500, bytes: 8_400_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // App tier: api -> {auth, db, cache, payments, search}.
+    { src_id: 'id:service:api', dst_id: 'id:service:auth', port: 8003, proto: 'tcp', flow_count: 880, bytes: 3_100_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:api', dst_id: 'id:service:db', port: 8004, proto: 'tcp', flow_count: 1320, bytes: 16_800_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:api', dst_id: 'id:service:cache', port: 8005, proto: 'tcp', flow_count: 1510, bytes: 8_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:api', dst_id: 'id:service:payments', port: 8006, proto: 'tcp', flow_count: 640, bytes: 4_200_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:api', dst_id: 'id:service:search', port: 8007, proto: 'tcp', flow_count: 720, bytes: 5_600_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // Service tier: auth -> session-store; payments -> ledger; search -> db-replica.
+    { src_id: 'id:service:auth', dst_id: 'id:service:session-store', port: 8011, proto: 'tcp', flow_count: 700, bytes: 2_100_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:payments', dst_id: 'id:service:ledger', port: 8009, proto: 'tcp', flow_count: 600, bytes: 3_300_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:search', dst_id: 'id:service:db-replica', port: 8010, proto: 'tcp', flow_count: 680, bytes: 5_000_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // Data tier: ledger -> db; db-replica -> cache.
+    { src_id: 'id:service:ledger', dst_id: 'id:service:db', port: 8004, proto: 'tcp', flow_count: 560, bytes: 3_000_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    { src_id: 'id:service:db-replica', dst_id: 'id:service:cache', port: 8005, proto: 'tcp', flow_count: 620, bytes: 2_900_000, first_seen: TOPO_FIRST, last_seen: TOPO_LAST, class: 'learned' },
+    // NOTE: no 'live'/deviant edge here. The slice-3 live /api/topology emits ONLY
+    // 'learned' and 'decoy_touch' classes; the deviant overlay (a novel pivot from an
+    // UNLABELED identity, which the clean-fabric filter drops anyway) lands with the
+    // F2 deviants store + its own ⚠ simulated fence. Keeping the fixture to those two
+    // classes makes it a faithful mirror of what the live page actually serves.
     // BRIGHT source->decoy touch edge — the only edge that ever crosses into the
     // ring. A real adapter-recognized canary touch (Tier>=1) by cookie 0x118.
     { src_id: 'touch-src:0x118', dst_id: 'decoy:planted_credential', port: 0, proto: 'decoy', flow_count: 1, bytes: 0, first_seen: TOPO_LAST, last_seen: TOPO_LAST, class: 'decoy_touch' },
