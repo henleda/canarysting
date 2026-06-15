@@ -21,10 +21,12 @@ export default function BystanderHealth({ bystanders }: { bystanders: BystanderV
     <section className="cell">
       <PanelHead title="Bystanders — still serving" preTags={[{ label: 'same host' }]} />
       {active ? (
-        <div className="feed">
-          {flows.slice(0, 6).map((f, i) => (
-            <BystanderRow key={`${f.flow_id_hex}-${i}`} f={f} />
-          ))}
+        <div className="cell-scroll">
+          <div className="feed">
+            {flows.map((f, i) => (
+              <BystanderRow key={`${f.flow_id_hex}-${i}`} f={f} />
+            ))}
+          </div>
         </div>
       ) : (
         <span className="faint" style={{ fontSize: 10 }}>

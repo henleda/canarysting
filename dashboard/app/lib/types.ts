@@ -58,6 +58,7 @@ export interface EscalationView {
   ladder_caption: string;
   flow_funnel: FlowFunnelView; // the distinct-flow funnel (sessions, not events)
   funnel_caption: string; // the verbatim two-rails caption
+  attacker_flows?: FlowRow[]; // capped ranked armed-flow cards for the live-attacker strip
 }
 
 // AxisCostView is one OVERLAPPING per-axis subtotal: a flow lands on EVERY axis its

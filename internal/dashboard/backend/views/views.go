@@ -247,6 +247,10 @@ type EscalationView struct {
 	// contradict the distinct-flow funnel). T0 observed is its own cumulative rail
 	// (never summed); the funnel stages are distinct flows within the window.
 	FunnelCaption string `json:"funnel_caption"`
+
+	// AttackerFlows is the capped, ranked list of armed (decoy-touched) flows for
+	// the wall's live-attacker strip — distinct sessions, peak-tier desc then recency.
+	AttackerFlows []FlowRow `json:"attacker_flows"`
 }
 
 // FlowView is the currently-tracked attacker flow shown in the live panel.
@@ -448,6 +452,14 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 	// events, so the per-event count overclaims the number of jailed flows.
 	funnel := DeriveFlowFunnel(events)
 
+	// AttackerFlows: the capped, ranked armed-flow cards for the wall's live-attacker
+	// strip. DeriveFlowsList(-1) already returns FlowRow sorted peak-tier desc, then
+	// last_seen desc; cap to the first 24 so the strip stays bounded.
+	af := DeriveFlowsList(events, -1).Flows
+	if len(af) > 24 {
+		af = af[:24]
+	}
+
 	ov := Overview{
 		Scope:        state.Scope,
 		At:           state.At,
@@ -462,6 +474,7 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 			FlowFunnel:        funnel,
 			// Two-rail funnel caption — deliberately NOT the per-event LadderCaption.
 			FunnelCaption: "Two rails, not one denominator: T0 observed is cumulative since engine start (its own rail, never summed); the funnel stages count DISTINCT flows that reached at least that tier within this window — a flow is counted in each stage it reached, not per event.",
+			AttackerFlows: af,
 		},
 		AttackerCost:      buildAttackerCost(summary),
 		KernelContainment: buildKernelContainment(events),
