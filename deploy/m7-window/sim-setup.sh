@@ -24,7 +24,13 @@ cd "$REPO" || { echo "repo not at $REPO"; exit 1; }
 # Tunables (env-overridable).
 SIM_TARGET="${SIM_TARGET:-http://127.0.0.1:8080}"
 SIM_TAP="${SIM_TAP:-http://127.0.0.1:8088}"
-SIM_BENIGN_IPS="${SIM_BENIGN_IPS:-10.20.1.101,10.20.1.102,10.20.1.103}"
+SIM_BENIGN_IPS="${SIM_BENIGN_IPS:-10.20.1.101,10.20.1.102,10.20.1.103,10.20.1.105,10.20.1.106,10.20.1.107,10.20.1.108,10.20.1.109,10.20.1.110}"
+# Benign normal paths MUST trigger the mesh frontend's east-west fanout so the
+# multi-hop fabric (frontend->cdn-edge->api->payments/search->ledger/db-replica->...)
+# is GENUINELY driven and learned by the observe baseline. The mesh only fans out on
+# /, /index.html, and /api/* (deploy/m7-window/mesh/main.go serve()); other paths 404
+# with no downstream call. Keep these disjoint from any canary path (Rule 8).
+SIM_NORMAL_PATHS="${SIM_NORMAL_PATHS:-/,/index.html,/api/health,/api/status}"
 SIM_ATTACKER_IP="${SIM_ATTACKER_IP:-10.20.1.111}"
 SIM_RECON_IP="${SIM_RECON_IP:-10.20.1.112}"
 # FRESH identity for the canary-AVOIDING careful-mover deviant (never touches a canary).
@@ -43,8 +49,10 @@ SIM_LIVE_BUDGET_USD="${SIM_LIVE_BUDGET_USD:-0.5}"
 SIM_KEY_FILE="${SIM_KEY_FILE:-$ETC/anthropic.key}"
 
 echo "=== add source identities as secondary IPs on $IFACE ==="
-# .101-.103 (benign) / .104 (careful-mover deviant) / .111 (declared attacker) /
-# .112 (UNLABELED recon scanner).
+# .101-.103,.105-.110 (benign — one diurnal worker + one keepalive each, all
+# driving the expanded mesh fabric) / .104 (careful-mover deviant) / .111
+# (declared attacker) / .112 (UNLABELED recon scanner). NOTE .104 is the
+# careful-mover's identity and is deliberately NOT a benign caller.
 for ip in ${SIM_BENIGN_IPS//,/ } "$SIM_CAREFUL_MOVER_IP" "$SIM_ATTACKER_IP" "$SIM_RECON_IP"; do
   if ! ip addr show dev "$IFACE" | grep -q "inet $ip/"; then
     sudo ip addr add "$ip/24" dev "$IFACE" 2>/dev/null \
@@ -67,6 +75,7 @@ sudo tee "$ETC/sim.env" >/dev/null <<EOF
 SIM_TARGET=$SIM_TARGET
 SIM_TAP=$SIM_TAP
 SIM_BENIGN_IPS=$SIM_BENIGN_IPS
+SIM_NORMAL_PATHS=$SIM_NORMAL_PATHS
 SIM_ATTACKER_IP=$SIM_ATTACKER_IP
 SIM_RECON_IP=$SIM_RECON_IP
 SIM_CAREFUL_MOVER_IP=$SIM_CAREFUL_MOVER_IP

@@ -1,15 +1,32 @@
 {
-  "_comment": "STAGING-ONLY operator-declared node-identity map for the M7 window topology view (F1; see docs/TOPOLOGY_AND_DEVIANTS.md §3). It is the DEMO's source of human-legible node NAMES — and nothing else. The topology SHAPE, edges, and volumes are REAL observed traffic from the live engine; only these names are staging metadata. In production this map is the customer's OWN service registry / CMDB export (IP/CIDR/port -> name), or SPIFFE service names from the mTLS peer cert. The engine does NOT natively know service names; it knows hashed adjacency. THIS IS A DIFFERENT CONCERN from ground-truth-registry.json (the stagedlabel calibration ground truth) — leave that file untouched; the node resolver (internal/topology/identity) does not import the labeler. The demo mesh is all-loopback 127.0.0.1 (deploy/m7-window/server-compose.yml), so the LISTEN PORT disambiguates each service, not the IP — hence the port-only service entries.",
+  "_comment": "STAGING-ONLY operator-declared node-identity map for the M7 window topology view (F1; see docs/TOPOLOGY_AND_DEVIANTS.md §3). It is the DEMO's source of human-legible node NAMES — and nothing else. The topology SHAPE, edges, and volumes are REAL observed traffic from the live engine; only these names are staging metadata. In production this map is the customer's OWN service registry / CMDB export (IP/CIDR/port -> name), or SPIFFE service names from the mTLS peer cert. The engine does NOT natively know service names; it knows hashed adjacency. THIS IS A DIFFERENT CONCERN from ground-truth-registry.json (the stagedlabel calibration ground truth) — leave that file untouched; the node resolver (internal/topology/identity) does not import the labeler. The demo mesh is all-loopback 127.0.0.1 (deploy/m7-window/server-compose.yml), so the LISTEN PORT disambiguates each service, not the IP — hence the port-only service entries. Ports here MUST match server-compose.yml's LISTEN ports; callers here MUST match the simdriver's benign/attacker/recon identities (deploy/m7-window/sim-setup.sh + ground-truth-registry.json).",
   "entries": [
     { "port": 8001, "name": "frontend", "kind": "service" },
     { "port": 8002, "name": "api", "kind": "service" },
     { "port": 8003, "name": "auth", "kind": "service" },
     { "port": 8004, "name": "db", "kind": "service" },
     { "port": 8005, "name": "cache", "kind": "service" },
+    { "port": 8006, "name": "payments", "kind": "service" },
+    { "port": 8007, "name": "search", "kind": "service" },
+    { "port": 8008, "name": "cdn-edge", "kind": "service" },
+    { "port": 8009, "name": "ledger", "kind": "service" },
+    { "port": 8010, "name": "db-replica", "kind": "service" },
+    { "port": 8011, "name": "session-store", "kind": "service" },
+    { "port": 8012, "name": "inventory", "kind": "service" },
+    { "port": 8013, "name": "orders", "kind": "service" },
+    { "port": 8014, "name": "analytics", "kind": "service" },
+    { "port": 8015, "name": "notifications", "kind": "service" },
+    { "port": 8016, "name": "profile", "kind": "service" },
 
     { "ip": "10.20.1.101", "name": "reporting-worker", "kind": "caller" },
     { "ip": "10.20.1.102", "name": "batch-client", "kind": "caller" },
     { "ip": "10.20.1.103", "name": "web-client", "kind": "caller" },
+    { "ip": "10.20.1.105", "name": "mobile-gateway", "kind": "caller" },
+    { "ip": "10.20.1.106", "name": "partner-api", "kind": "caller" },
+    { "ip": "10.20.1.107", "name": "ci-runner", "kind": "caller" },
+    { "ip": "10.20.1.108", "name": "etl-scheduler", "kind": "caller" },
+    { "ip": "10.20.1.109", "name": "support-console", "kind": "caller" },
+    { "ip": "10.20.1.110", "name": "ops-dashboard", "kind": "caller" },
     { "ip": "10.20.1.111", "name": "prober", "kind": "caller" }
   ]
 }

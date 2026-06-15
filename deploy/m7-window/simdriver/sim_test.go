@@ -67,10 +67,11 @@ func validConfig() config {
 		normalPaths:          []string{"/shop"},
 		attackerIP:           "10.20.1.111",
 		canaryPaths:          []string{"/.env", "/.aws/credentials"},
+		canaryPrefixes:       []string{"/secrets/", "/config/", "/backup/", "/internal/", "/admin/"},
 		reconIP:              "10.20.1.112",
 		whitespacePaths:      []string{"/wp-login.php", "/phpmyadmin/"},
 		carefulMoverIP:       "10.20.1.104",
-		carefulMoverPaths:    []string{"/reports/daily", "/internal/inventory"},
+		carefulMoverPaths:    []string{"/api/reports/daily", "/api/inventory"},
 		carefulMoverInterval: 25 * time.Second,
 		maliciousPct:         3,
 		reconPct:             5,
@@ -120,6 +121,43 @@ func TestValidateRule8CarefulMoverNeverTouchesCanary(t *testing.T) {
 	c.carefulMoverPaths = []string{"/reports/daily", "/.env"} // /.env is a canary!
 	if err := c.validate(); err == nil {
 		t.Fatal("config with a careful-mover path that is also a canary MUST be refused (Rule 8)")
+	}
+}
+
+// REGRESSION (the load-bearing one): the adapter matches DIRECTORY canaries by
+// PREFIX, so a careful-mover path SITTING UNDER a canary directory — e.g.
+// "/internal/inventory" under the "/internal/" canary — would be treated as a
+// canary touch and ARM, silently defeating the deviant. Plain exact-match
+// disjoint() misses this; validate() must catch it via the prefix check. (This
+// was a real bug: the original -careful-mover-paths default included
+// "/internal/inventory".)
+func TestValidateRule8CarefulMoverNeverUnderCanaryPrefix(t *testing.T) {
+	c := validConfig()
+	c.carefulMoverPaths = []string{"/api/reports/daily", "/internal/inventory"} // under /internal/ canary dir
+	if err := c.validate(); err == nil {
+		t.Fatal("careful-mover path under a canary DIRECTORY prefix MUST be refused (Rule 8) — it would arm")
+	}
+	// The same guard protects the benign and recon classes.
+	c = validConfig()
+	c.normalPaths = []string{"/shop", "/admin/dashboard"} // under /admin/ canary dir
+	if err := c.validate(); err == nil {
+		t.Fatal("benign path under a canary DIRECTORY prefix MUST be refused (Rule 8)")
+	}
+}
+
+// underAnyCanary is the prefix-aware check behind the guard above: exact canary
+// match OR at-or-under a canary directory; clean paths pass.
+func TestUnderAnyCanary(t *testing.T) {
+	canaries := []string{"/.env", "/admin/metrics"}
+	prefixes := []string{"/internal/", "/admin/"}
+	if bad, ok := underAnyCanary([]string{"/api/ok", "/internal/inventory"}, canaries, prefixes); !ok || bad != "/internal/inventory" {
+		t.Fatalf("expected /internal/inventory flagged under /internal/, got %q,%v", bad, ok)
+	}
+	if bad, ok := underAnyCanary([]string{"/api/ok", "/.env"}, canaries, prefixes); !ok || bad != "/.env" {
+		t.Fatalf("expected exact canary /.env flagged, got %q,%v", bad, ok)
+	}
+	if _, ok := underAnyCanary([]string{"/api/reports/daily", "/api/inventory"}, canaries, prefixes); ok {
+		t.Fatal("clean /api/* paths must not be flagged")
 	}
 }
 
