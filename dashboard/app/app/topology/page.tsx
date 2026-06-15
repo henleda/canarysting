@@ -26,9 +26,11 @@ import type { TopologyView } from '@/lib/types';
 // other: with an operator registry loaded the NAMES are staged; without one the
 // nodes fall back to raw IPs and we say exactly that.
 const STAGED_CAPTION =
-  'Staged-range view: node NAMES come from the operator registry; the engine baseline is hashed. The graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours.';
+  'Declared east-west fabric: edges connect the operator-registry services, callers, and ingress gateway; unresolved management-plane flows are omitted for clarity. Node NAMES come from the operator registry; the engine baseline is hashed and the graph SHAPE/edges are real observed traffic. In production this is drawn from your own service registry, not ours.';
+// Byte-identical to the backend's topologyUnlabeledCaption (views/topology.go) so
+// the degraded-path fallback never diverges from what the backend would serve.
 const UNLABELED_CAPTION =
-  'No node-name registry loaded: nodes are labeled by raw IP. The graph SHAPE/edges are real observed traffic — load an operator registry to attach service names.';
+  'No node-name registry loaded: nodes are labeled by raw IP and unresolved management-plane flows are omitted for clarity. The graph SHAPE/edges are real observed traffic; the engine baseline is hashed. In production this is drawn from your own service registry.';
 
 export default function TopologyPage() {
   const { snapshot, status } = useOverview();

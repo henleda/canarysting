@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -34,6 +35,23 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// listenHost extracts the bind host from a LISTEN value like "127.0.1.2:8002"
+// (-> "127.0.1.2"). A bare ":8002" or "0.0.0.0:8002" (or an unparseable value)
+// yields "" — the caller then binds NO source address (graceful fallback). This
+// is what makes each mesh service dial its downstreams FROM its own distinct
+// loopback identity (127.0.1.<K>), so the observe path sees a named src per
+// service instead of a single 127.0.0.1 that collapses every initiator.
+func listenHost(listen string) string {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return ""
+	}
+	return host
 }
 
 // canaryPrefixes mirror the negative-space paths the envoy adapter seeds + recognizes
@@ -66,9 +84,24 @@ func main() {
 
 	// DisableKeepAlives so each internal hop is a distinct completing flow the
 	// observe path folds — the internal east-west adjacencies accrue per-call.
+	//
+	// Bind the dial SOURCE to this service's own LISTEN host (e.g. 127.0.1.2) so a
+	// downstream call originates this service's distinct loopback identity, not the
+	// shared 127.0.0.1. That distinct src IP is what the node resolver names — it
+	// keeps each service a separate node in the learned east-west fabric. On a bare
+	// ":8000" / "0.0.0.0" LISTEN, listenHost returns "" and we bind nothing (the OS
+	// picks the source) — graceful fallback for local dev / unit tests.
+	transport := &http.Transport{DisableKeepAlives: true}
+	if host := listenHost(listen); host != "" {
+		dialer := &net.Dialer{
+			Timeout:   2 * time.Second,
+			LocalAddr: &net.TCPAddr{IP: net.ParseIP(host), Port: 0},
+		}
+		transport.DialContext = dialer.DialContext
+	}
 	client := &http.Client{
 		Timeout:   2 * time.Second,
-		Transport: &http.Transport{DisableKeepAlives: true},
+		Transport: transport,
 	}
 	fanout := func(ctx context.Context) {
 		for _, d := range downstreams {

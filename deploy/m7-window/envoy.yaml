@@ -67,12 +67,18 @@ static_resources:
   - name: frontend
     type: STRICT_DNS
     connect_timeout: 1s
+    # Originate the connection to the frontend FROM 127.0.2.1 so the ingress hop is
+    # a distinct, nameable source (the operator map labels it "ingress-gateway").
+    # Only the frontend cluster binds; the ext_proc cluster stays unbound so its
+    # management-plane flow resolves to no name and the tap filter drops it.
+    upstream_bind_config:
+      source_address: { address: 127.0.2.1, port_value: 0 }
     load_assignment:
       cluster_name: frontend
       endpoints:
       - lb_endpoints:
         - endpoint:
-            address: { socket_address: { address: 127.0.0.1, port_value: 8001 } }
+            address: { socket_address: { address: 127.0.1.1, port_value: 8001 } }
 
   - name: canarysting_extproc
     type: STRICT_DNS

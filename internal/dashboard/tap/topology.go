@@ -16,6 +16,20 @@ package tap
 //      canary-touch event (boltevents, Tier>=1: CanaryType -> decoy node, the
 //      touching flow identity -> source node).
 //
+// CLEAN-FABRIC RULE (the view shows the DECLARED east-west fabric): a learned edge
+// is kept ONLY when BOTH endpoints resolve to a NAMED identity (a declared service
+// or caller, or the declared ingress gateway). Unresolved management-plane / infra
+// flows (the engine gRPC :50051, the tap :8088, the dashboard — none of which an
+// operator names) are OMITTED for clarity; they would otherwise clutter the fabric
+// with anonymous IP nodes. The decoy ring and the source->decoy touch edges are
+// EXEMPT from this filter (the touch-src is a cookie-keyed unknown by design; the
+// decoy is kind=decoy) — they always render. A NAMED identity that appears as BOTH
+// an edge source (its egress, port 0) AND an edge destination (its listen port)
+// coalesces to ONE node, keyed by its label+kind — so the dual-role split (a
+// service that both initiates and serves) collapses into a single fabric node, and
+// the two ingress endpoints (the accept address + the upstream-bind source) merge
+// into ONE "ingress-gateway" node.
+//
 // RULES (load-bearing):
 //   - Rule 8 (read-side only): nothing here arms a response. The touch edges are
 //     drawn from events that ALREADY entered the response pipeline; surfacing them
@@ -122,27 +136,36 @@ func (s *Source) buildTopology(now time.Time) TopologyView {
 		}
 	}
 
-	// (1) The learned graph: nodes from the catalog, edges from the accrued map.
+	// (1) The learned graph: edges from the accrued map, resolved + coalesced.
+	// Nodes are derived from the edge ENDPOINTS we actually keep (NOT from
+	// snap.Nodes — the catalog's node list carries a service's initiator and
+	// service entries separately, the dual-role split that produced orphan/dup
+	// nodes). Resolving each endpoint and coalescing by identity collapses that
+	// split, and the clean-fabric filter drops any edge touching an unnamed
+	// (management-plane/infra) endpoint.
 	if s.Aggregator != nil {
 		snap := s.Aggregator.TopologySnapshot(s.Scope)
-		for _, nd := range snap.Nodes {
-			ip := addrFrom(nd.Addr)
-			node := resolver.Resolve(ip, nd.Port, "", "")
-			addNode(TopologyNode{
-				ID:    learnedNodeID(nd.Role, ip, nd.Port),
-				Label: node.Label,
-				Kind:  node.Kind.String(),
-			})
-		}
 		for _, e := range snap.Edges {
 			srcIP := addrFrom(e.SrcIP)
 			dstIP := addrFrom(e.DstIP)
-			// The SrcIP is an initiator (port 0 in the catalog key); the DstIP is a
-			// service reached on DstPort — match the catalog's node-ID convention so
-			// the edge endpoints join to the injected nodes.
+			// Resolve the SrcIP as an initiator (port 0 — its egress side) and the
+			// DstIP as a service on DstPort (its listen side). With the distinct-
+			// identity demo scheme each is named by IP alone, so a service that both
+			// initiates and serves resolves to the same {label,kind} on both sides
+			// and coalesces to ONE node.
+			srcNode := resolver.Resolve(srcIP, 0, "", "")
+			dstNode := resolver.Resolve(dstIP, e.DstPort, "", "")
+			// Clean-fabric filter: keep the edge ONLY if BOTH endpoints are named.
+			if srcNode.Kind == identity.KindUnknown || dstNode.Kind == identity.KindUnknown {
+				continue
+			}
+			srcID := coalescedNodeID(srcNode, srcIP, 0)
+			dstID := coalescedNodeID(dstNode, dstIP, e.DstPort)
+			addNode(TopologyNode{ID: srcID, Label: srcNode.Label, Kind: srcNode.Kind.String()})
+			addNode(TopologyNode{ID: dstID, Label: dstNode.Label, Kind: dstNode.Kind.String()})
 			view.Edges = append(view.Edges, TopologyEdge{
-				SrcID:     learnedNodeID("initiator", srcIP, 0),
-				DstID:     learnedNodeID("service", dstIP, e.DstPort),
+				SrcID:     srcID,
+				DstID:     dstID,
 				Port:      e.DstPort,
 				Proto:     "tcp",
 				FlowCount: e.FlowCount,
@@ -285,19 +308,27 @@ func addrFrom(b []byte) netip.Addr {
 	}
 }
 
-// learnedNodeID is the stable ID for a learned node: role + canonical address (+
-// listen port for a service). It matches between node injection and edge endpoints
-// so edges join to nodes. A service is disambiguated by its port (the all-loopback
-// demo mesh); an initiator by its address only.
-func learnedNodeID(role string, ip netip.Addr, port uint16) string {
+// coalescedNodeID is the stable ID for a learned-edge endpoint.
+//
+//   - For a NAMED node (Kind != KindUnknown — a declared service/caller/external)
+//     the id is keyed by IDENTITY (label+kind), NOT by address+port. So the SAME
+//     identity appearing as an edge source (its egress, port 0) AND an edge
+//     destination (its listen port) coalesces into ONE node, and the two declared
+//     ingress endpoints (the accept address + the upstream-bind source) — both
+//     named "ingress-gateway" — merge into a single ingress node.
+//   - For an UNKNOWN node the id is keyed by address+port so distinct infra
+//     endpoints stay distinct. (In practice the clean-fabric filter drops edges
+//     touching an unknown endpoint, so this branch is only reachable if a future
+//     caller keeps unknown endpoints; it is kept correct regardless.)
+func coalescedNodeID(node identity.Node, ip netip.Addr, port uint16) string {
+	if node.Kind != identity.KindUnknown {
+		return "id:" + node.Kind.String() + ":" + node.Label
+	}
 	addr := ""
 	if ip.IsValid() {
 		addr = ip.String()
 	}
-	if role == "service" {
-		return "svc:" + addr + ":" + strconv.Itoa(int(port))
-	}
-	return "caller:" + addr
+	return "ip:" + addr + ":" + strconv.Itoa(int(port))
 }
 
 func decoyNodeID(t contract.CanaryType) string { return "decoy:" + string(t) }

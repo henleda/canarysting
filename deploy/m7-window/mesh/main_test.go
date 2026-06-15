@@ -57,6 +57,29 @@ func TestFrontendRouting(t *testing.T) {
 	}
 }
 
+// listenHost parses the bind host out of LISTEN so a service dials its downstreams
+// from its OWN distinct loopback identity (the named east-west fabric). A bare port
+// or a wildcard host must yield "" so we bind no LocalAddr (graceful fallback).
+func TestListenHostParsesBindAddress(t *testing.T) {
+	for _, tc := range []struct {
+		listen string
+		want   string
+	}{
+		{"127.0.1.2:8002", "127.0.1.2"},
+		{"127.0.1.1:8001", "127.0.1.1"},
+		{"127.0.1.16:8016", "127.0.1.16"},
+		{":8000", ""},        // bare port -> no bind
+		{"0.0.0.0:8080", ""}, // wildcard v4 -> no bind
+		{"[::]:8080", ""},    // wildcard v6 -> no bind
+		{"not-a-listen", ""}, // unparseable -> no bind
+		{"", ""},             // empty -> no bind
+	} {
+		if got := listenHost(tc.listen); got != tc.want {
+			t.Errorf("listenHost(%q) = %q, want %q", tc.listen, got, tc.want)
+		}
+	}
+}
+
 // The frontend is NOT covered by harmless.CrossScan — assert by hand it ships no
 // real-looking secrets or routable hosts across all served paths.
 func TestFrontendShipsNoSecrets(t *testing.T) {
