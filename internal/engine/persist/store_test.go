@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	bolt "go.etcd.io/bbolt"
+
 	"github.com/canarysting/canarysting/internal/contract"
 )
 
@@ -249,5 +251,131 @@ func TestEmptyScopeRefused(t *testing.T) {
 	s := openTemp(t)
 	if err := s.PutBucket("", "b1", []byte("x")); err == nil {
 		t.Fatal("empty scope accepted; must refuse to store unscoped state")
+	}
+}
+
+// Topology writes ride PutBucketsAndHeartbeat (the single fold-tick fsync) and
+// are readable back per-scope, scope-isolated. A Delete entry removes the key in
+// the same transaction (how reaper evictions are persisted).
+func TestTopologyWriteRangeAndDelete(t *testing.T) {
+	s := openTemp(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	topo := []TopologyWrite{
+		{Scope: "scopeA", Key: []byte{0x01, 0xAA}, Blob: []byte("edge-A")},
+		{Scope: "scopeA", Key: []byte{0x02, 0xBB}, Blob: []byte("node-A")},
+		{Scope: "scopeB", Key: []byte{0x01, 0xAA}, Blob: []byte("edge-B")},
+	}
+	if err := s.PutBucketsAndHeartbeat(nil, topo, now); err != nil {
+		t.Fatalf("PutBucketsAndHeartbeat(topology): %v", err)
+	}
+	// The heartbeat also committed in the same transaction.
+	if _, ok, _ := s.LastObserveSeen(); !ok {
+		t.Fatal("heartbeat not written alongside topology")
+	}
+
+	collect := func(sc contract.ScopeKey) map[string]string {
+		out := map[string]string{}
+		if err := s.RangeTopology(sc, func(k, v []byte) error {
+			out[string(k)] = string(v)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	a := collect("scopeA")
+	if len(a) != 2 || a[string([]byte{0x01, 0xAA})] != "edge-A" || a[string([]byte{0x02, 0xBB})] != "node-A" {
+		t.Fatalf("scopeA topology = %v", a)
+	}
+	// Scope isolation: scopeB's same key holds its own value, never scopeA's.
+	b := collect("scopeB")
+	if len(b) != 1 || b[string([]byte{0x01, 0xAA})] != "edge-B" {
+		t.Fatalf("scopeB topology = %v (scope bleed?)", b)
+	}
+	// RangeTopologyScopes enumerates exactly the two scopes that have records.
+	seen := map[contract.ScopeKey]bool{}
+	if err := s.RangeTopologyScopes(func(sc contract.ScopeKey) error { seen[sc] = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !seen["scopeA"] || !seen["scopeB"] || len(seen) != 2 {
+		t.Fatalf("RangeTopologyScopes = %v", seen)
+	}
+
+	// A Delete entry removes the key (a reaper eviction) in the batched write.
+	del := []TopologyWrite{{Scope: "scopeA", Key: []byte{0x02, 0xBB}, Delete: true}}
+	if err := s.PutBucketsAndHeartbeat(nil, del, now); err != nil {
+		t.Fatal(err)
+	}
+	a = collect("scopeA")
+	if len(a) != 1 || a[string([]byte{0x01, 0xAA})] != "edge-A" {
+		t.Fatalf("after delete scopeA topology = %v, want only the edge", a)
+	}
+
+	// An empty scope in a topology write is refused (no unscoped state).
+	if err := s.PutBucketsAndHeartbeat(nil, []TopologyWrite{{Scope: "", Key: []byte{0x01}, Blob: []byte("x")}}, now); err == nil {
+		t.Fatal("empty scope in topology write accepted")
+	}
+}
+
+// Back-compat: a store created BEFORE bktTopology existed (no topology bucket on
+// disk, schema_version == 1) must still open cleanly — CreateBucketIfNotExists is
+// tolerant and SchemaVersion is UNCHANGED, so a multi-week live baseline.db is not
+// invalidated. We simulate the old store by opening, deleting the topology bucket,
+// and reopening; the reopen must succeed, report the SAME SchemaVersion, and the
+// pre-existing baseline data must survive.
+func TestOpenBackCompatWithoutTopologyBucket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	s, ver, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ver != SchemaVersion {
+		t.Fatalf("fresh store schema = %d, want %d", ver, SchemaVersion)
+	}
+	if err := s.PutBucket("scopeA", "b1", []byte("legacy-baseline")); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a pre-topology store: delete the topology bucket that Open created.
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket(bktTopology) != nil {
+			return tx.DeleteBucket(bktTopology)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(bktTopology) != nil {
+			t.Fatal("topology bucket still present after delete (setup failed)")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen the legacy store: must succeed, same schema, baseline intact, and the
+	// topology bucket recreated tolerantly (no refuse-to-start, no version bump).
+	s2, ver2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen of legacy (pre-topology) store failed: %v", err)
+	}
+	defer s2.Close()
+	if ver2 != SchemaVersion {
+		t.Fatalf("legacy reopen schema = %d, want %d (must NOT bump)", ver2, SchemaVersion)
+	}
+	blob, ok, err := s2.GetBucket("scopeA", "b1")
+	if err != nil || !ok || string(blob) != "legacy-baseline" {
+		t.Fatalf("legacy baseline lost on reopen: ok=%v blob=%q err=%v", ok, blob, err)
+	}
+	// Topology now usable (the bucket was recreated on open).
+	if err := s2.PutBucketsAndHeartbeat(nil, []TopologyWrite{
+		{Scope: "scopeA", Key: []byte{0x01, 0x01}, Blob: []byte("e")},
+	}, time.Now()); err != nil {
+		t.Fatalf("topology write after legacy reopen failed: %v", err)
 	}
 }
