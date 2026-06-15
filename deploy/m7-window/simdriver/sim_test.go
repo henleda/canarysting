@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -59,14 +63,17 @@ func TestDisjoint(t *testing.T) {
 
 func validConfig() config {
 	return config{
-		benignIPs:       []string{"10.20.1.101"},
-		normalPaths:     []string{"/shop"},
-		attackerIP:      "10.20.1.111",
-		canaryPaths:     []string{"/.env", "/.aws/credentials"},
-		reconIP:         "10.20.1.112",
-		whitespacePaths: []string{"/wp-login.php", "/phpmyadmin/"},
-		maliciousPct:    3,
-		reconPct:        5,
+		benignIPs:            []string{"10.20.1.101"},
+		normalPaths:          []string{"/shop"},
+		attackerIP:           "10.20.1.111",
+		canaryPaths:          []string{"/.env", "/.aws/credentials"},
+		reconIP:              "10.20.1.112",
+		whitespacePaths:      []string{"/wp-login.php", "/phpmyadmin/"},
+		carefulMoverIP:       "10.20.1.104",
+		carefulMoverPaths:    []string{"/reports/daily", "/internal/inventory"},
+		carefulMoverInterval: 25 * time.Second,
+		maliciousPct:         3,
+		reconPct:             5,
 	}
 }
 
@@ -98,5 +105,106 @@ func TestValidatePctBounds(t *testing.T) {
 	c.maliciousPct = 100
 	if err := c.validate(); err == nil {
 		t.Fatal("malicious-pct of 100 must be rejected (ratio undefined)")
+	}
+}
+
+// The load-bearing safety guarantee for the deviant class: the careful-mover walks
+// NORMAL paths only, so it must be STRUCTURALLY unable to arm a response. validate()
+// must REFUSE to start if a careful-mover path is also a canary path (Rule 8) — and
+// PASS when the sets are disjoint.
+func TestValidateRule8CarefulMoverNeverTouchesCanary(t *testing.T) {
+	if err := validConfig().validate(); err != nil {
+		t.Fatalf("valid careful-mover config rejected: %v", err)
+	}
+	c := validConfig()
+	c.carefulMoverPaths = []string{"/reports/daily", "/.env"} // /.env is a canary!
+	if err := c.validate(); err == nil {
+		t.Fatal("config with a careful-mover path that is also a canary MUST be refused (Rule 8)")
+	}
+}
+
+// The careful-mover must stay on NORMAL application paths, distinct from the recon
+// white-space — overlapping the scanner's negative-space would blur the deviant.
+func TestValidateCarefulMoverDisjointFromWhitespace(t *testing.T) {
+	c := validConfig()
+	c.carefulMoverPaths = []string{"/reports/daily", "/wp-login.php"} // a recon white-space path
+	if err := c.validate(); err == nil {
+		t.Fatal("config with a careful-mover path that is also a white-space path MUST be refused")
+	}
+}
+
+// When the careful-mover is enabled (interval > 0) it MUST have at least one path;
+// when disabled (interval 0) the path checks are skipped entirely.
+func TestValidateCarefulMoverEnableToggle(t *testing.T) {
+	c := validConfig()
+	c.carefulMoverPaths = nil
+	if err := c.validate(); err == nil {
+		t.Fatal("careful-mover enabled with no paths MUST be refused")
+	}
+	// Disabling the class (interval 0) skips the deviant path checks — even an
+	// (unused) overlapping path set is tolerated because no deviant flow runs.
+	c.carefulMoverInterval = 0
+	c.carefulMoverPaths = []string{"/.env"} // would be illegal if enabled
+	if err := c.validate(); err != nil {
+		t.Fatalf("disabled careful-mover (interval 0) must skip the deviant checks: %v", err)
+	}
+}
+
+// The careful-mover worker, run from the configured identity against the configured
+// NORMAL paths, must request ONLY those paths and NEVER a canary — the path-selection
+// half of the Rule-8 guarantee (validate() is the config half). It uses 127.0.0.1 as
+// the source so the test binds without elevated privileges / extra interfaces.
+func TestCarefulMoverHitsOnlyNormalPathsNeverCanary(t *testing.T) {
+	normal := map[string]struct{}{"/reports/daily": {}, "/internal/inventory": {}, "/analytics/export": {}}
+	canary := map[string]struct{}{"/.env": {}, "/.aws/credentials": {}}
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path]++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	paths := []string{"/reports/daily", "/internal/inventory", "/analytics/export"}
+	// A short interval so several touches land quickly; the worker stops on ctx cancel.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runCarefulMover(ctx, "127.0.0.1", srv.URL, paths, 1, 5*time.Millisecond)
+	}()
+
+	// Poll until the worker has made several requests, then stop it.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		total := 0
+		for _, n := range seen {
+			total += n
+		}
+		mu.Unlock()
+		if total >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("careful-mover made no requests")
+	}
+	for p := range seen {
+		if _, ok := canary[p]; ok {
+			t.Fatalf("careful-mover touched a CANARY path %q — Rule 8 violation", p)
+		}
+		if _, ok := normal[p]; !ok {
+			t.Fatalf("careful-mover requested unexpected path %q (not in the configured normal set)", p)
+		}
 	}
 }

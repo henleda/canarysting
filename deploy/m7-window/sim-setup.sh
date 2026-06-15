@@ -27,6 +27,10 @@ SIM_TAP="${SIM_TAP:-http://127.0.0.1:8088}"
 SIM_BENIGN_IPS="${SIM_BENIGN_IPS:-10.20.1.101,10.20.1.102,10.20.1.103}"
 SIM_ATTACKER_IP="${SIM_ATTACKER_IP:-10.20.1.111}"
 SIM_RECON_IP="${SIM_RECON_IP:-10.20.1.112}"
+# FRESH identity for the canary-AVOIDING careful-mover deviant (never touches a canary).
+SIM_CAREFUL_MOVER_IP="${SIM_CAREFUL_MOVER_IP:-10.20.1.104}"
+SIM_CAREFUL_MOVER_PATHS="${SIM_CAREFUL_MOVER_PATHS:-/reports/daily,/internal/inventory,/analytics/export,/billing/ledger,/hr/directory,/ops/health}"
+SIM_CAREFUL_MOVER_INTERVAL="${SIM_CAREFUL_MOVER_INTERVAL:-25s}"
 SIM_BASE_RPM="${SIM_BASE_RPM:-30}"
 SIM_MALICIOUS_PCT="${SIM_MALICIOUS_PCT:-3}"
 SIM_RECON_PCT="${SIM_RECON_PCT:-5}"
@@ -39,8 +43,9 @@ SIM_LIVE_BUDGET_USD="${SIM_LIVE_BUDGET_USD:-0.5}"
 SIM_KEY_FILE="${SIM_KEY_FILE:-$ETC/anthropic.key}"
 
 echo "=== add source identities as secondary IPs on $IFACE ==="
-# .101-.103 (benign) / .111 (declared attacker) / .112 (UNLABELED recon scanner).
-for ip in ${SIM_BENIGN_IPS//,/ } "$SIM_ATTACKER_IP" "$SIM_RECON_IP"; do
+# .101-.103 (benign) / .104 (careful-mover deviant) / .111 (declared attacker) /
+# .112 (UNLABELED recon scanner).
+for ip in ${SIM_BENIGN_IPS//,/ } "$SIM_CAREFUL_MOVER_IP" "$SIM_ATTACKER_IP" "$SIM_RECON_IP"; do
   if ! ip addr show dev "$IFACE" | grep -q "inet $ip/"; then
     sudo ip addr add "$ip/24" dev "$IFACE" 2>/dev/null \
       && echo "  + $ip" || echo "  (could not add $ip — may already be assigned to the ENI)"
@@ -64,6 +69,9 @@ SIM_TAP=$SIM_TAP
 SIM_BENIGN_IPS=$SIM_BENIGN_IPS
 SIM_ATTACKER_IP=$SIM_ATTACKER_IP
 SIM_RECON_IP=$SIM_RECON_IP
+SIM_CAREFUL_MOVER_IP=$SIM_CAREFUL_MOVER_IP
+SIM_CAREFUL_MOVER_PATHS=$SIM_CAREFUL_MOVER_PATHS
+SIM_CAREFUL_MOVER_INTERVAL=$SIM_CAREFUL_MOVER_INTERVAL
 SIM_BASE_RPM=$SIM_BASE_RPM
 SIM_MALICIOUS_PCT=$SIM_MALICIOUS_PCT
 SIM_RECON_PCT=$SIM_RECON_PCT

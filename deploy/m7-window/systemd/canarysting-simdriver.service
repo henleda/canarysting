@@ -12,6 +12,7 @@ EnvironmentFile=/etc/canarysting/sim.env
 ExecStart=/opt/canarysting/bin/simdriver \
   -target ${SIM_TARGET} -tap-addr ${SIM_TAP} \
   -benign-ips ${SIM_BENIGN_IPS} -attacker-ip ${SIM_ATTACKER_IP} -recon-ip ${SIM_RECON_IP} \
+  -careful-mover-ip ${SIM_CAREFUL_MOVER_IP} -careful-mover-paths ${SIM_CAREFUL_MOVER_PATHS} -careful-mover-interval ${SIM_CAREFUL_MOVER_INTERVAL} \
   -base-rpm ${SIM_BASE_RPM} -malicious-pct ${SIM_MALICIOUS_PCT} -recon-pct ${SIM_RECON_PCT} \
   -daily-cap-usd ${SIM_DAILY_CAP_USD} -budget-file ${SIM_BUDGET_FILE} \
   -cassette ${SIM_CASSETTE} -cassette-interval ${SIM_CASSETTE_INTERVAL} \
