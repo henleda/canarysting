@@ -266,7 +266,7 @@ func TestTopologyWriteRangeAndDelete(t *testing.T) {
 		{Scope: "scopeA", Key: []byte{0x02, 0xBB}, Blob: []byte("node-A")},
 		{Scope: "scopeB", Key: []byte{0x01, 0xAA}, Blob: []byte("edge-B")},
 	}
-	if err := s.PutBucketsAndHeartbeat(nil, topo, now); err != nil {
+	if err := s.PutBucketsAndHeartbeat(nil, topo, nil, now); err != nil {
 		t.Fatalf("PutBucketsAndHeartbeat(topology): %v", err)
 	}
 	// The heartbeat also committed in the same transaction.
@@ -304,7 +304,7 @@ func TestTopologyWriteRangeAndDelete(t *testing.T) {
 
 	// A Delete entry removes the key (a reaper eviction) in the batched write.
 	del := []TopologyWrite{{Scope: "scopeA", Key: []byte{0x02, 0xBB}, Delete: true}}
-	if err := s.PutBucketsAndHeartbeat(nil, del, now); err != nil {
+	if err := s.PutBucketsAndHeartbeat(nil, del, nil, now); err != nil {
 		t.Fatal(err)
 	}
 	a = collect("scopeA")
@@ -313,8 +313,124 @@ func TestTopologyWriteRangeAndDelete(t *testing.T) {
 	}
 
 	// An empty scope in a topology write is refused (no unscoped state).
-	if err := s.PutBucketsAndHeartbeat(nil, []TopologyWrite{{Scope: "", Key: []byte{0x01}, Blob: []byte("x")}}, now); err == nil {
+	if err := s.PutBucketsAndHeartbeat(nil, []TopologyWrite{{Scope: "", Key: []byte{0x01}, Blob: []byte("x")}}, nil, now); err == nil {
 		t.Fatal("empty scope in topology write accepted")
+	}
+}
+
+// Deviant writes ride PutBucketsAndHeartbeat (the single fold-tick fsync) and are
+// readable back per-scope, scope-isolated. A Delete entry removes the key in the
+// same transaction (how reaper evictions are persisted). Mirrors the topology test.
+func TestDeviantWriteRangeAndDelete(t *testing.T) {
+	s := openTemp(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	deviants := []DeviantWrite{
+		{Scope: "scopeA", Key: []byte{0x01, 0xAA}, Blob: []byte("dev-A1")},
+		{Scope: "scopeA", Key: []byte{0x01, 0xBB}, Blob: []byte("dev-A2")},
+		{Scope: "scopeB", Key: []byte{0x01, 0xAA}, Blob: []byte("dev-B1")},
+	}
+	if err := s.PutBucketsAndHeartbeat(nil, nil, deviants, now); err != nil {
+		t.Fatalf("PutBucketsAndHeartbeat(deviants): %v", err)
+	}
+	if _, ok, _ := s.LastObserveSeen(); !ok {
+		t.Fatal("heartbeat not written alongside deviants")
+	}
+
+	collect := func(sc contract.ScopeKey) map[string]string {
+		out := map[string]string{}
+		if err := s.RangeDeviants(sc, func(k, v []byte) error {
+			out[string(k)] = string(v)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	a := collect("scopeA")
+	if len(a) != 2 || a[string([]byte{0x01, 0xAA})] != "dev-A1" || a[string([]byte{0x01, 0xBB})] != "dev-A2" {
+		t.Fatalf("scopeA deviants = %v", a)
+	}
+	// Scope isolation: scopeB's same key holds its own value, never scopeA's.
+	b := collect("scopeB")
+	if len(b) != 1 || b[string([]byte{0x01, 0xAA})] != "dev-B1" {
+		t.Fatalf("scopeB deviants = %v (scope bleed?)", b)
+	}
+	// RangeDeviantScopes enumerates exactly the two scopes that have records.
+	seen := map[contract.ScopeKey]bool{}
+	if err := s.RangeDeviantScopes(func(sc contract.ScopeKey) error { seen[sc] = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !seen["scopeA"] || !seen["scopeB"] || len(seen) != 2 {
+		t.Fatalf("RangeDeviantScopes = %v", seen)
+	}
+
+	// A Delete entry removes the key (a reaper eviction) in the batched write.
+	del := []DeviantWrite{{Scope: "scopeA", Key: []byte{0x01, 0xBB}, Delete: true}}
+	if err := s.PutBucketsAndHeartbeat(nil, nil, del, now); err != nil {
+		t.Fatal(err)
+	}
+	a = collect("scopeA")
+	if len(a) != 1 || a[string([]byte{0x01, 0xAA})] != "dev-A1" {
+		t.Fatalf("after delete scopeA deviants = %v, want only dev-A1", a)
+	}
+
+	// An empty scope in a deviant write is refused (no unscoped state).
+	if err := s.PutBucketsAndHeartbeat(nil, nil, []DeviantWrite{{Scope: "", Key: []byte{0x01}, Blob: []byte("x")}}, now); err == nil {
+		t.Fatal("empty scope in deviant write accepted")
+	}
+}
+
+// Back-compat: a store created BEFORE bktDeviants existed (no deviants bucket on
+// disk, schema_version == 1) must still open cleanly — CreateBucketIfNotExists is
+// tolerant and SchemaVersion is UNCHANGED, so a multi-week live baseline.db is not
+// invalidated. We simulate the old store by opening, deleting the deviants bucket,
+// and reopening; the reopen must succeed, report the SAME SchemaVersion, and the
+// pre-existing baseline data must survive.
+func TestOpenBackCompatWithoutDeviantsBucket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-deviants.db")
+
+	s, ver, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ver != SchemaVersion {
+		t.Fatalf("fresh store schema = %d, want %d", ver, SchemaVersion)
+	}
+	if err := s.PutBucket("scopeA", "b1", []byte("legacy-baseline")); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a pre-deviants store: delete the deviants bucket that Open created.
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket(bktDeviants) != nil {
+			return tx.DeleteBucket(bktDeviants)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen: must succeed, SAME schema (no bump), baseline intact, and the deviants
+	// bucket recreated tolerantly.
+	s2, ver2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen of legacy (pre-deviants) store failed: %v", err)
+	}
+	defer s2.Close()
+	if ver2 != SchemaVersion {
+		t.Fatalf("legacy reopen schema = %d, want %d (must NOT bump)", ver2, SchemaVersion)
+	}
+	blob, ok, err := s2.GetBucket("scopeA", "b1")
+	if err != nil || !ok || string(blob) != "legacy-baseline" {
+		t.Fatalf("legacy baseline lost on reopen: ok=%v blob=%q err=%v", ok, blob, err)
+	}
+	if err := s2.PutBucketsAndHeartbeat(nil, nil, []DeviantWrite{
+		{Scope: "scopeA", Key: []byte{0x01, 0x01}, Blob: []byte("d")},
+	}, time.Now()); err != nil {
+		t.Fatalf("deviant write after legacy reopen failed: %v", err)
 	}
 }
 
@@ -375,7 +491,7 @@ func TestOpenBackCompatWithoutTopologyBucket(t *testing.T) {
 	// Topology now usable (the bucket was recreated on open).
 	if err := s2.PutBucketsAndHeartbeat(nil, []TopologyWrite{
 		{Scope: "scopeA", Key: []byte{0x01, 0x01}, Blob: []byte("e")},
-	}, time.Now()); err != nil {
+	}, nil, time.Now()); err != nil {
 		t.Fatalf("topology write after legacy reopen failed: %v", err)
 	}
 }
