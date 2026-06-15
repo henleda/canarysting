@@ -500,54 +500,72 @@ body { min-height: 100%; }
  * ========================================================================== */
 
 /* The persistent honesty fence. Always visible above the graph. */
-.topo-caption { font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--ink-dim);
-  background: rgba(255,206,58,0.05); border: 1px solid rgba(255,206,58,0.22); border-left: 2px solid var(--canary);
-  border-radius: 4px; padding: 10px 14px; margin-bottom: 16px; }
+.topo-caption { font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--ink-dim);
+  background: rgba(255,206,58,0.045); border: 1px solid rgba(255,206,58,0.2); border-left: 3px solid var(--canary);
+  border-radius: 5px; padding: 11px 15px; margin-bottom: 18px; }
 .topo-caption-badge { display: inline-block; font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--canary); border: 1px solid rgba(255,206,58,0.4); border-radius: 2px; padding: 1px 6px;
   margin-right: 10px; vertical-align: 1px; }
 
-.topo-wrap { width: 100%; overflow-x: auto; }
-.topo-svg { width: 100%; min-width: 760px; height: auto; display: block; }
+.topo-wrap { width: 100%; overflow-x: auto;
+  background: radial-gradient(ellipse 60% 80% at 38% 50%, rgba(95,129,153,0.05), transparent 70%);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px 4px; }
+.topo-svg { width: 100%; min-width: 880px; height: auto; display: block; }
 
-/* Column headers + the dashed negative-space boundary. */
-.topo-col-h { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-  fill: var(--ink-faint); }
+/* Column headers + the header baseline + the per-column sub-line. */
+.topo-col-h { font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+  fill: var(--ink-dim); font-weight: 600; }
 .topo-col-h-decoy { fill: var(--canary-deep); }
-.topo-negspace-line { stroke: var(--canary-deep); stroke-width: 1; stroke-dasharray: 3 7; opacity: 0.35; }
+.topo-col-sub { font-family: var(--mono); font-size: 7.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  fill: var(--ink-faint); }
+.topo-col-sub-decoy { fill: var(--canary-deep); opacity: 0.75; }
+.topo-header-rule { stroke: var(--line-2); stroke-width: 1; }
+
+/* The decoy ring's negative-space band + its dashed left boundary. The band is a
+   faint canary wash so the ring reads as a region the legit mesh never serves. */
+.topo-ring-band { fill: rgba(255,206,58,0.028); stroke: rgba(255,206,58,0.16); stroke-width: 1;
+  stroke-dasharray: 2 6; }
+.topo-negspace-line { stroke: var(--canary-deep); stroke-width: 1; stroke-dasharray: 3 7; opacity: 0.4; }
 
 /* Edges. Learned = solid observe blue; live/deviant = faint dashed; touch = bright red. */
 .topo-edge { stroke-linecap: round; }
-.topo-edge-learned { stroke: var(--observe); opacity: 0.55; }
-.topo-edge-live { stroke: var(--contain); opacity: 0.5; stroke-dasharray: 5 5; }
-.topo-edge-touch { stroke: var(--sting); opacity: 0.95; filter: drop-shadow(0 0 6px rgba(255,77,96,0.65));
+.topo-edge-learned { stroke: var(--observe); opacity: 0.5; }
+.topo-edge-live { stroke: var(--contain); opacity: 0.55; stroke-dasharray: 5 5; }
+.topo-edge-touch { stroke: var(--sting); opacity: 0.95; filter: drop-shadow(0 0 7px rgba(255,77,96,0.7));
   animation: topo-touch-pulse 1.8s ease-in-out infinite; }
-@keyframes topo-touch-pulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.55; } }
+@keyframes topo-touch-pulse { 0%,100% { opacity: 0.95; } 50% { opacity: 0.5; } }
 
-/* Nodes. */
-.topo-node-c { stroke-width: 1.5; }
-.topo-node-c-service { fill: rgba(95,129,153,0.18); stroke: var(--observe); }
-.topo-node-c-caller { fill: rgba(234,240,245,0.06); stroke: var(--ink-dim); }
+/* Nodes. Soft drop-shadow lifts the circles off the edge mesh; a hover deepens it. */
+.topo-node-c { stroke-width: 1.5; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45)); transition: filter 120ms ease; }
+.topo-node:hover .topo-node-c { filter: drop-shadow(0 0 5px rgba(95,129,153,0.55)); }
+.topo-node-c-service { fill: rgba(95,129,153,0.2); stroke: var(--observe); }
+.topo-node-c-caller { fill: rgba(234,240,245,0.05); stroke: var(--ink-dim); }
 /* ingress gateway (kind external): a declared, trusted entry point — neutral steel,
    NOT the alarm-red reserved for unknown/attacker nodes. */
-.topo-node-c-external { fill: rgba(95,129,153,0.12); stroke: var(--observe); }
-.topo-node-c-unknown { fill: rgba(255,77,96,0.08); stroke: var(--sting); }
-.topo-node-c-decoy { fill: rgba(255,206,58,0.06); stroke: var(--canary); stroke-dasharray: 3 4; }
-.topo-node-label { font-family: var(--mono); font-size: 11px; fill: var(--ink); dominant-baseline: middle; }
-.topo-node-sub { font-family: var(--mono); font-size: 8.5px; fill: var(--ink-faint); dominant-baseline: middle; }
+.topo-node-c-external { fill: rgba(95,129,153,0.14); stroke: var(--observe); stroke-width: 2; }
+.topo-node-c-unknown { fill: rgba(255,77,96,0.1); stroke: var(--sting); }
+.topo-node-c-decoy { fill: rgba(255,206,58,0.05); stroke: var(--canary); stroke-dasharray: 3 4; }
+/* Labels carry a painted halo (stroke under fill) so they stay readable over edges. */
+.topo-node-label { font-family: var(--mono); font-size: 11px; fill: var(--ink); dominant-baseline: middle;
+  paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+.topo-node-sub { font-family: var(--mono); font-size: 8.5px; fill: var(--ink-faint); dominant-baseline: middle;
+  paint-order: stroke; stroke: var(--bg); stroke-width: 2.5px; stroke-linejoin: round; }
 .topo-node-decoy .topo-node-label { fill: var(--canary); }
-.topo-node-external .topo-node-label { fill: var(--observe); }
+.topo-node-external .topo-node-label { fill: var(--observe); font-weight: 600; }
 .topo-node-unknown .topo-node-label { fill: var(--sting); }
 
 /* Legend below the graph. */
-.topo-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; padding-top: 12px;
+.topo-legend { display: flex; flex-wrap: wrap; gap: 14px 22px; margin-top: 14px; padding-top: 13px;
   border-top: 1px solid var(--line); font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
-.topo-legend-item { display: inline-flex; align-items: center; gap: 7px; }
-.topo-swatch { width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; display: inline-block; }
+.topo-legend-item { display: inline-flex; align-items: center; gap: 8px; }
+.topo-legend-label { color: var(--ink); letter-spacing: 0.04em; }
+.topo-legend-count { color: var(--ink-faint); }
+.topo-swatch { width: 20px; height: 0; border-top-width: 3px; border-top-style: solid; display: inline-block;
+  flex: none; }
 .topo-swatch-learned { border-top-color: var(--observe); }
 .topo-swatch-live { border-top-style: dashed; border-top-color: var(--contain); }
-.topo-swatch-touch { border-top-color: var(--sting); box-shadow: 0 0 6px rgba(255,77,96,0.6); }
-.topo-swatch-decoy { width: 12px; height: 12px; border-top: 0; border: 1.5px dashed var(--canary);
+.topo-swatch-touch { border-top-color: var(--sting); box-shadow: 0 0 7px rgba(255,77,96,0.65); }
+.topo-swatch-decoy { width: 13px; height: 13px; border-top: 0; border: 1.5px dashed var(--canary);
   border-radius: 50%; background: rgba(255,206,58,0.06); }
 
 .topo-empty { font-family: var(--mono); font-size: 12px; padding: 40px 0; text-align: center; }
@@ -600,3 +618,62 @@ body { min-height: 100%; }
 
 .deviant-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 9px;
   font-family: var(--mono); font-size: 9.5px; }
+
+/* --- Drill-down: the fingerprint header is the expand control. --------------- */
+/* The fingerprint becomes a real <button>; strip the native chrome but keep the
+   inline-flex layout the span had, and give it a clear focus ring (a11y). */
+.deviant-fp-toggle { appearance: none; background: none; border: none; margin: 0; padding: 2px 0;
+  cursor: pointer; text-align: left; color: inherit; }
+.deviant-fp-toggle:focus-visible { outline: 1px solid var(--observe); outline-offset: 3px; border-radius: 2px; }
+.deviant-caret { color: var(--ink-faint); font-size: 10px; width: 10px; display: inline-block; }
+.deviant-fp-toggle:hover .deviant-caret { color: var(--ink-dim); }
+
+/* --- The expanded detail panel (built entirely from the row; no new fetch). --- */
+.deviant-detail { margin: 12px 0 4px; padding: 12px 14px; background: var(--panel);
+  border: 1px solid var(--line); border-left: 2px solid var(--observe); border-radius: 4px;
+  display: flex; flex-direction: column; gap: 14px; }
+
+/* Resolved SRC -> DST identity row. */
+.deviant-detail-ends { display: flex; align-items: stretch; gap: 12px; flex-wrap: wrap; }
+.deviant-detail-arrow { align-self: center; color: var(--ink-faint); font-family: var(--mono); }
+.deviant-detail-ep { flex: 1 1 200px; min-width: 180px; background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 3px; padding: 8px 10px; }
+.deviant-detail-ep-unknown { border-color: rgba(255,77,96,0.4); }
+.deviant-detail-ep-role { font-family: var(--mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-faint); margin-bottom: 5px; }
+.deviant-detail-ep-id { display: flex; align-items: baseline; gap: 6px; }
+.deviant-detail-ep-label { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.deviant-detail-ep-unknown .deviant-detail-ep-label { color: var(--sting); }
+.deviant-detail-ep-addr { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-top: 4px; }
+.deviant-detail-ep-port { color: var(--canary); }
+
+/* Plain-English 5-dim novelty breakdown. */
+.deviant-detail-h { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint); margin-bottom: 8px; }
+.deviant-detail-dims { display: flex; flex-direction: column; gap: 9px; }
+.deviant-detail-dim { display: flex; flex-direction: column; gap: 3px; }
+.deviant-detail-dim-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font-family: var(--mono); font-size: 10px; }
+.deviant-detail-dim-label { color: var(--ink-dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.deviant-detail-dim-val { color: var(--ink); }
+.deviant-detail-dim-peak .deviant-detail-dim-label,
+.deviant-detail-dim-peak .deviant-detail-dim-val { color: var(--canary); }
+.deviant-detail-dim-track { height: 4px; background: var(--line-2); border-radius: 2px; overflow: hidden; }
+.deviant-detail-dim-fill { display: block; height: 100%; background: var(--observe); border-radius: 2px; }
+.deviant-detail-dim-peak .deviant-detail-dim-fill { background: var(--canary); }
+.deviant-detail-dim-meaning { font-size: 10px; color: var(--ink-faint); }
+
+/* Peak / recurrence / score key-value rows. */
+.deviant-detail-meta { display: flex; flex-direction: column; gap: 6px; }
+.deviant-detail-kv { display: flex; gap: 12px; align-items: baseline; font-family: var(--mono); font-size: 10.5px; }
+.deviant-detail-k { flex: 0 0 92px; color: var(--ink-faint); letter-spacing: 0.08em; text-transform: uppercase;
+  font-size: 8.5px; }
+.deviant-detail-v { color: var(--ink); }
+.deviant-detail-note { color: var(--ink-faint); }
+
+/* Honesty note: L4-only fingerprint, no L7 path captured here. */
+.deviant-detail-honesty { font-family: var(--sans); font-size: 11px; line-height: 1.55; color: var(--ink-dim);
+  border-top: 1px solid var(--line); padding-top: 10px; }
+.deviant-detail-honesty .pill-observe { margin-right: 8px; }
+.deviant-detail-honesty code { font-family: var(--mono); font-size: 10px; color: var(--canary); }
+.deviant-detail-honesty strong { color: var(--ink); font-weight: 600; }
