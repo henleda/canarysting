@@ -33,6 +33,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/topology/identity"
 )
 
@@ -75,6 +76,13 @@ type DeviantRow struct {
 	Src DeviantEndpoint `json:"src"`
 	Dst DeviantEndpoint `json:"dst"`
 
+	// SrcFamiliarity is the hunting headline keyed on the SRC (initiator) identity:
+	// "unfamiliar" when the SRC resolves UNKNOWN (an identity the operator never
+	// registered — e.g. a fresh careful-mover or recon node, the prime hunting lead),
+	// "known" when it resolves to a declared caller/external/etc. It drives the
+	// unfamiliar-first ranking (see buildDeviants) and the page's unfamiliar/known chip.
+	SrcFamiliarity string `json:"src_familiarity"`
+
 	// The 5 baseline novelty dimensions at capture, floats in [0,1].
 	IdentityNovelty  float64 `json:"identity_novelty"`
 	AdjacencyNovelty float64 `json:"adjacency_novelty"`
@@ -99,12 +107,57 @@ func (s *Source) handleDeviants(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.buildDeviants())
 }
 
+// srcTier ranks a deviant row by the FAMILIARITY of its SRC (initiator) identity, so
+// the genuine hunting leads top the list. It keys on the resolved SRC kind token
+// (NodeKind.String()):
+//
+//	tier 0 — UNFAMILIAR ("unknown"): an identity the operator never registered (a
+//	         fresh careful-mover, recon node) — the prime hunting target.
+//	tier 1 — declared CALLER ("caller"): a known host that deviates is a lower-priority
+//	         but honest lead — demoted below the unfamiliar.
+//	tier 2 — everything else (e.g. "external"): a legit off-mesh peer — demoted.
+//	tier 3 — declared SERVICE ("service"): a mesh service INITIATING a genuinely-novel
+//	         east-west flow. Every row here already cleared the engine's novelty floor
+//	         AGAINST that service's own learned baseline, so it is NOT "the system
+//	         talking to itself" (that is low-novelty and never captured once the scope
+//	         is live) — it is exactly a compromised-service / lateral-movement pivot.
+//	         So it is KEPT (ranked last, lowest priority), NOT dropped: hiding it would
+//	         silently bury the highest-value east-west lead.
+//
+// No SRC kind is dropped — the surface is exhaustive of the captured log (capped at
+// maxDeviantRows for display), just ranked unfamiliar-first.
+func srcTier(srcKind string) int {
+	switch srcKind {
+	case identity.KindUnknown.String():
+		return 0
+	case identity.KindCaller.String():
+		return 1
+	case identity.KindService.String():
+		return 3
+	default:
+		return 2
+	}
+}
+
 // buildDeviants assembles the DeviantsView from the live in-memory deviant log and
-// the node resolver. It is total: a nil aggregator yields an empty list, a nil
-// resolver degrades every endpoint to its IP label, and the rows are RANKED by
-// HitCount desc, then PeakValue desc, then LastSeen desc — so a recurring
+// the node resolver into an UNFAMILIAR-FIRST hunting surface. It is total: a nil
+// aggregator yields an empty list, a nil resolver degrades every endpoint to its IP
+// label.
+//
+// RANKING: rows are ranked UNFAMILIAR-SRC FIRST (KindUnknown — the careful-mover /
+// recon lead), then declared callers, then others (srcTier); WITHIN a tier the prior
+// HitCount desc -> PeakValue desc -> LastSeen desc order holds — so a recurring
 // careful-mover (whose per-hit novelty may DECAY as it teaches the baseline) stays
-// pinned at the top by its growing hit-count. Capped at maxDeviantRows.
+// pinned at the top of its tier by its growing hit-count.
+//
+// NO row is dropped: every captured deviant is shown (capped at maxDeviantRows for
+// display), just RANKED unfamiliar-first. A declared SERVICE source is demoted to the
+// lowest tier (srcTier 3) rather than dropped — by the time a row reaches here it has
+// already cleared the engine's novelty floor against that service's own learned
+// baseline (the mesh's normal east-west is low-novelty and is never captured once the
+// scope is live), so a service-initiated row is a genuine lateral-movement lead, not
+// "the system talking to itself" — hiding it would bury the highest-value east-west
+// signal. The caption frames the surface as ranked-by-unfamiliarity (views/deviants.go).
 func (s *Source) buildDeviants() DeviantsView {
 	view := DeviantsView{
 		Scope:        string(s.Scope),
@@ -120,9 +173,18 @@ func (s *Source) buildDeviants() DeviantsView {
 		return view
 	}
 
-	snap := s.Aggregator.DeviantSnapshot(s.Scope)
-	rows := make([]DeviantRow, 0, len(snap.Records))
-	for _, r := range snap.Records {
+	view.Rows = rankDeviantRows(s.Aggregator.DeviantSnapshot(s.Scope).Records, resolver)
+	return view
+}
+
+// rankDeviantRows resolves each captured deviant record's src/dst identity, builds the
+// wire rows, and ranks them UNFAMILIAR-SRC FIRST (srcTier) with the prior
+// HitCount->PeakValue->LastSeen tiebreak within a tier, capped at maxDeviantRows. It
+// is extracted from buildDeviants so the tiering / familiarity / drop-vs-demote logic
+// is unit-testable with synthetic records (the Source.Aggregator is a concrete type).
+func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *identity.Resolver) []DeviantRow {
+	rows := make([]DeviantRow, 0, len(records))
+	for _, r := range records {
 		srcIP := addrFrom(r.SrcIP)
 		dstIP := addrFrom(r.DstIP)
 		// Resolve the SRC as an initiator (port 0 — its egress side) and the DST as a
@@ -131,6 +193,13 @@ func (s *Source) buildDeviants() DeviantsView {
 		// identity" signal, not an error.
 		srcNode := resolver.Resolve(srcIP, 0, "", "")
 		dstNode := resolver.Resolve(dstIP, r.DstPort, "", "")
+		// All sources are KEPT and tier-ranked (srcTier): unfamiliar first, a declared
+		// SERVICE source demoted last (a genuinely-novel service-initiated flow is a
+		// lateral-movement lead, not noise — see srcTier). Decoy never appears as a SRC.
+		familiarity := "known"
+		if srcNode.Kind == identity.KindUnknown {
+			familiarity = "unfamiliar"
+		}
 		rows = append(rows, DeviantRow{
 			Src: DeviantEndpoint{
 				Label: srcNode.Label,
@@ -144,6 +213,7 @@ func (s *Source) buildDeviants() DeviantsView {
 				Addr:  addrString(dstIP),
 				Port:  r.DstPort,
 			},
+			SrcFamiliarity:   familiarity,
 			IdentityNovelty:  r.IdentityNovelty,
 			AdjacencyNovelty: r.AdjacencyNovelty,
 			PortNovelty:      r.PortNovelty,
@@ -158,10 +228,16 @@ func (s *Source) buildDeviants() DeviantsView {
 		})
 	}
 
-	// Rank: recurring deviants first (HitCount), then by how anomalous (PeakValue),
-	// then most-recent (LastSeen). sort.SliceStable so equal rows keep map-order
+	// Rank UNFAMILIAR-SRC FIRST (srcTier asc): the careful-mover / recon lead tops the
+	// list, then declared callers, then others, then demoted mesh services — so the
+	// genuine hunting targets stay on top. WITHIN a tier keep the prior order:
+	// recurring deviants first (HitCount desc), then how anomalous (PeakValue desc),
+	// then most-recent (LastSeen desc). sort.SliceStable so equal rows keep map-order
 	// stability across the (already-nondeterministic) snapshot.
 	sort.SliceStable(rows, func(i, j int) bool {
+		if ti, tj := srcTier(rows[i].Src.Kind), srcTier(rows[j].Src.Kind); ti != tj {
+			return ti < tj
+		}
 		if rows[i].HitCount != rows[j].HitCount {
 			return rows[i].HitCount > rows[j].HitCount
 		}
@@ -173,8 +249,7 @@ func (s *Source) buildDeviants() DeviantsView {
 	if len(rows) > maxDeviantRows {
 		rows = rows[:maxDeviantRows]
 	}
-	view.Rows = rows
-	return view
+	return rows
 }
 
 // addrString renders a netip.Addr as its string, or "" for an invalid address (an

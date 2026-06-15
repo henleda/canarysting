@@ -112,6 +112,15 @@ type AggStats struct {
 	// DeviantsRehydrateSkipped is the count of persisted deviant blobs that failed
 	// to decode on rehydrate (lost local-rich detail; the baseline is unaffected).
 	DeviantsRehydrateSkipped uint64
+	// DeviantsSkippedNotLive is the count of completed flows whose F2 deviant capture
+	// was SKIPPED because the scope was not yet baseline-LIVE (cold re-learn / warm-up).
+	// This is the maturity gate that keeps warm-up noise out of the hunt log: during
+	// the cold re-learn nothing is captured (everything reads novel against an
+	// unlearned baseline), so the cap is never pressured by high-hit-count noise that
+	// would otherwise evict the genuine slow movers. The baseline fold for these flows
+	// still ran (this counter does not affect scoring); it only records how many
+	// deviant captures the maturity gate suppressed.
+	DeviantsSkippedNotLive uint64
 	// TopologyEphemeralSkipped is the count of completed flows whose F1 topology
 	// fold was SKIPPED because the DstPort was ephemeral (>= ephemeralPortFloor):
 	// the CLIENT/INITIATOR half of an all-ends-observed connection (its local port
@@ -138,10 +147,18 @@ type Aggregator struct {
 	deviantTTL time.Duration
 	armedSet   armedSet
 
-	mu             sync.RWMutex
-	aggregates     map[contract.ScopeKey]map[string]*bucketAggregate
-	live           map[uint64]*liveFlow // open cookies: attribution, awaiting close
-	folded         map[uint64]bool      // cookies already folded, lingering until LRU-evicted
+	mu         sync.RWMutex
+	aggregates map[contract.ScopeKey]map[string]*bucketAggregate
+	live       map[uint64]*liveFlow // open cookies: attribution, awaiting close
+	folded     map[uint64]bool      // cookies already folded, lingering until LRU-evicted
+	// scopeLive mirrors the per-scope baseline-LIVE gate the fold loop computes (the
+	// SAME bool passed to a.gates.SetLive). It is a PASSIVE read-only mirror — never a
+	// scoring/gating input (Rule 8) — consulted only by captureDeviant as a maturity
+	// gate so warm-up/cold-re-learn flows are not logged as deviants. Guarded by a.mu
+	// (written in foldLocked's gate loop + forced false in Rehydrate; read in
+	// captureDeviant) exactly like the other fold-path maps; distinct from `live`
+	// above (open cookies), which is unrelated.
+	scopeLive      map[contract.ScopeKey]bool
 	lastFold       map[contract.ScopeKey]time.Time
 	freshFolds     map[contract.ScopeKey]uint64          // completed folds since this process started
 	recoveryQuorum map[contract.ScopeKey]uint64          // freshFolds target before re-live after a coverage gap
@@ -196,6 +213,7 @@ func New(cfg Config) *Aggregator {
 		aggregates:     map[contract.ScopeKey]map[string]*bucketAggregate{},
 		live:           map[uint64]*liveFlow{},
 		folded:         map[uint64]bool{},
+		scopeLive:      map[contract.ScopeKey]bool{},
 		lastFold:       map[contract.ScopeKey]time.Time{},
 		freshFolds:     map[contract.ScopeKey]uint64{},
 		recoveryQuorum: map[contract.ScopeKey]uint64{},
@@ -282,6 +300,7 @@ func (a *Aggregator) Rehydrate() {
 		a.aggregates[sc] = buckets
 		a.lastFold[sc] = time.Time{} // not fresh until a real fold
 		a.gates.SetLive(sc, false)   // force STALE
+		a.scopeLive[sc] = false      // mirror STALE: a rehydrated scope captures no deviants until a fresh fold re-lives it
 		if largeGap {
 			// freshFolds[sc] is 0 at startup, so this is folds-since-gap. The target
 			// is scope-wide (MinFlowsPerBucket per the MinSufficientBuckets a scope
@@ -445,6 +464,11 @@ func (a *Aggregator) foldLocked(now time.Time) ([]persist.BucketWrite, []persist
 			a.gates.SetBucketSufficient(sc, bucketKey, sufficient[bucketKey])
 		}
 		a.gates.SetLive(sc, live)
+		// Retain the live signal for the deviant maturity gate (captureDeviant). This
+		// stores the SAME bool just passed to SetLive (post-recoveryQuorum override),
+		// under the a.mu write lock held since the top of foldLocked. It is a passive
+		// mirror only — it never feeds scoring/arming (Rule 8).
+		a.scopeLive[sc] = live
 	}
 
 	// F1 topology reaper: age out stale edges/nodes (wall-clock TTL) on the fold
@@ -609,15 +633,37 @@ func (a *Aggregator) foldCompleted(lf *liveFlow, cookie uint64, fs observe.FlowS
 }
 
 // captureDeviant records a completed flow into the per-scope deviant log iff it is
-// DEVIANT (peak novelty >= deviantFloor) AND NON-ARMED (touched no canary). It is
-// called from foldCompleted under a.mu (the deviant map, like the topology map, is
-// only ever touched under the lock and never on the request hot path). The
-// derived features come from the same baseline aggregate the hashed fold just
-// updated, so the recorded novelty is exactly what the scorer would have seen.
+// in a baseline-LIVE scope (maturity) AND DEVIANT (peak novelty >= deviantFloor)
+// AND NON-ARMED (touched no canary). It is called from foldCompleted under a.mu
+// (the deviant map, like the topology map, is only ever touched under the lock and
+// never on the request hot path). The derived features come from the same baseline
+// aggregate the hashed fold just updated, so the recorded novelty is exactly what
+// the scorer would have seen.
 func (a *Aggregator) captureDeviant(lf *liveFlow, cookie uint64, fs observe.FlowStats, now time.Time) {
 	// Non-armed gate: a flow that touched a canary entered the response pipeline and
 	// is NOT a deviant-log entry (Rule 8). Keyed on the socket cookie (Rule 4).
 	if a.armedSet != nil && a.armedSet.armed(lf.scope, cookie) {
+		return
+	}
+	// Maturity gate (the real fix): capture only once the scope is baseline-LIVE.
+	// During the cold re-learn (post restart/migration, or a fresh window not yet
+	// live) EVERY flow reads novel against an unlearned baseline — the high-volume
+	// mesh + benign east-west included — so capturing then would log the
+	// baseline-of-normal itself as "deviants" and pressure the per-scope cap into
+	// evicting the genuine low-and-slow movers (lowest-HitCount eviction keeps the
+	// recurring warm-up noise, drops the careful mover). By the time the scope is
+	// live (a structurally mature baseline: fresh fold + enough sufficient buckets
+	// spanning enough calendar days), the mesh/benign traffic is LEARNED (low novelty,
+	// below deviantFloor, not captured) and only the genuinely anomalous slow mover /
+	// recon stays novel and IS captured. scopeLive mirrors the SAME bool the fold loop
+	// passes to SetLive (set on the PREVIOUS tick relative to this fold — intentional;
+	// see foldLocked). Rule 8 unaffected: this only narrows what we LOG, never arms.
+	// KNOWN INTERACTION (fail-safe direction): if a scope goes STALE during a quiet
+	// period (no fold within FreshnessTTL), it is not-live, so a slow-mover recurrence
+	// in that gap is WITHHELD until the scope re-lives — a cold/stale baseline can't
+	// reliably tell deviant from normal, so under-capturing then is the safe choice.
+	if !a.scopeLive[lf.scope] {
+		a.stats.DeviantsSkippedNotLive++
 		return
 	}
 	// Derive the novelty dims against the scope/bucket baseline this flow folded

@@ -533,6 +533,10 @@ export interface DeviantEndpoint {
 export interface DeviantRow {
   src: DeviantEndpoint;
   dst: DeviantEndpoint;
+  // src_familiarity keys on the SRC identity: 'unfamiliar' (SRC resolved UNKNOWN — a
+  // fresh careful-mover / recon lead, ranked first) | 'known' (resolved to a declared
+  // caller/external). Mesh-internal service SRCs are filtered out of this view.
+  src_familiarity: 'unfamiliar' | 'known' | string;
   identity_novelty: number; // [0,1]
   adjacency_novelty: number;
   port_novelty: number;

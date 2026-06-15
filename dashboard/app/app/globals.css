@@ -570,8 +570,16 @@ body { min-height: 100%; }
 .deviant-list { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line);
   border-radius: 4px; overflow: hidden; }
 .deviant-card { background: var(--bg-2); padding: 12px 14px; }
+/* An UNFAMILIAR-source row (unregistered identity — the hunting lead) is ranked first
+   and gets a left accent so the careful-mover stays prominent. */
+.deviant-card-unfamiliar { box-shadow: inset 3px 0 0 var(--sting); }
 .deviant-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .deviant-fp { display: inline-flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 12px; }
+/* The src-familiarity chip: 'unfamiliar' (red, hunting lead) vs 'known' (faint). */
+.deviant-fam { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  border: 1px solid var(--line-2); border-radius: 2px; padding: 1px 5px; color: var(--ink-faint); }
+.deviant-fam-unfamiliar { color: var(--sting); border-color: rgba(255,77,96,0.4); }
+.deviant-fam-known { color: var(--ink-faint); }
 .deviant-arrow { color: var(--ink-faint); }
 .deviant-ep { display: inline-flex; align-items: baseline; gap: 6px; }
 .deviant-ep-kind { font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);
