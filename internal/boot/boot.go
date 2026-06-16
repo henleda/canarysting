@@ -22,7 +22,9 @@ package boot
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -598,6 +600,124 @@ func (b *Built) auditOperatorAction(action string, id OperatorIdentity, reason s
 		posture["expires_at"] = st.ExpiresAt.UTC().Format(time.RFC3339)
 	} else if st.Engaged {
 		posture["expires_at"] = "indefinite"
+	}
+	return b.Audit.Append(audit.OperatorAction{
+		Scope:   b.BoundaryScope,
+		Action:  action,
+		Posture: posture,
+		Now:     now,
+	})
+}
+
+// --- DEVIANT ACK/SUPPRESS (operator triage overlay) -------------------------
+//
+// These three methods are the engine-side seam the token-gated admin endpoint
+// (cmd/staged-range) calls for the operator ACK/SUPPRESS of a DEVIANT recurrence
+// pattern. They mirror EngageKillSwitch/ReviveKillSwitch: apply the INTENT FIRST
+// (write/delete the per-scope triage overlay row), THEN audit into the boundary
+// scope's tamper-evident chain — so the toggle and its audit can never drift apart,
+// and the action takes effect even if the audit append later errors.
+//
+// RULE 8 (load-bearing): the triage overlay is a DISPLAY-ONLY store. It is NOT a
+// scoring.BenignExcluder and NOT an observebaseline.MaliciousSet — it is never read
+// on the verdict path. Suppressing or acking a deviant changes ONLY what a human
+// SEES on the hunting page; a suppressed mover that later touches a canary STILL
+// scores base>0, still base×M, still flows through Submit to a Decide'd tier, and
+// STILL ARMS. (The deviant being suppressed touched NO canary by construction — it
+// is not in the response pipeline at all.)
+//
+// keyBytes is the RAW canonical deviantKey bytes (the admin decodes them from the
+// hex wire form). srcAddr is the attributed initiator address recorded for
+// DISPLAY/attribution only (never the join key). The audit Action is a NEW string
+// and the deviant key rides Posture["deviant_key"] (NOT SocketCookie — a deviant is
+// keyed by its behavioral deviantKey, not a per-connection cookie).
+
+// SuppressDeviant marks a deviant recurrence pattern as KNOWN-BENIGN (hidden from the
+// default ranked list, still counted + viewable behind the toggle). It writes the
+// overlay row first, then audits "deviant_suppress". Returns the resulting state
+// string ("suppressed") and any audit error (the overlay write itself is returned as
+// the error if it fails — a failed intent must not report success).
+func (b *Built) SuppressDeviant(now time.Time, keyBytes []byte, id OperatorIdentity, reason, srcAddr string) (string, error) {
+	if err := b.putDeviantTriage(keyBytes, persist.TriageSuppressed, id.Name, reason, srcAddr, now); err != nil {
+		return "", err
+	}
+	return persist.TriageSuppressed, b.auditDeviantAction("deviant_suppress", keyBytes, id, reason, now)
+}
+
+// AckDeviant marks a deviant recurrence pattern as SEEN-BUT-KEEP-SHOWING (stays in
+// the default list, badged + demoted within its group, never hidden). ack is a
+// MUTATING action (it writes an overlay row + an audit entry), so the admin gates it
+// on RoleOperator exactly like suppress. It writes the overlay row first, then audits
+// "deviant_ack". Returns the resulting state string ("acked").
+func (b *Built) AckDeviant(now time.Time, keyBytes []byte, id OperatorIdentity, reason, srcAddr string) (string, error) {
+	if err := b.putDeviantTriage(keyBytes, persist.TriageAcked, id.Name, reason, srcAddr, now); err != nil {
+		return "", err
+	}
+	return persist.TriageAcked, b.auditDeviantAction("deviant_ack", keyBytes, id, reason, now)
+}
+
+// UnsuppressDeviant CLEARS any triage state on a deviant recurrence pattern (deletes
+// the overlay row; absent => normal). It is the un-suppress / un-ack path. It deletes
+// the row first, then audits "deviant_unsuppress". Returns the resulting state string
+// ("normal"). Idempotent: clearing an already-normal pattern is a success.
+func (b *Built) UnsuppressDeviant(now time.Time, keyBytes []byte, id OperatorIdentity, reason string) (string, error) {
+	if b.Persist == nil {
+		return "", errors.New("boot: no durable store; deviant triage unavailable")
+	}
+	if len(keyBytes) == 0 {
+		return "", errors.New("boot: empty deviant key")
+	}
+	if err := b.Persist.DeleteDeviantTriage(b.BoundaryScope, keyBytes); err != nil {
+		return "", err
+	}
+	return "normal", b.auditDeviantAction("deviant_unsuppress", keyBytes, id, reason, now)
+}
+
+// putDeviantTriage is the shared overlay writer for SuppressDeviant/AckDeviant. It
+// refuses with no durable store or an empty key/scope (the action cannot persist, so
+// it must not silently report success).
+func (b *Built) putDeviantTriage(keyBytes []byte, state, by, why, srcAddr string, now time.Time) error {
+	if b.Persist == nil {
+		return errors.New("boot: no durable store; deviant triage unavailable")
+	}
+	if len(keyBytes) == 0 {
+		return errors.New("boot: empty deviant key")
+	}
+	return b.Persist.PutDeviantTriage(b.BoundaryScope, keyBytes, persist.DeviantTriageRecord{
+		State:   state,
+		By:      by,
+		When:    now,
+		Why:     why,
+		SrcAddr: srcAddr,
+	})
+}
+
+// auditDeviantAction appends one operator-action record for a deviant ACK/SUPPRESS
+// into the boundary scope's tamper-evident chain — a SIBLING of auditOperatorAction
+// (same no-op guard, same additive role/auth_via Posture keys, same Append into
+// BoundaryScope), differing only in the Action string ("deviant_suppress" /
+// "deviant_unsuppress" / "deviant_ack") and that the deviant identity rides
+// Posture["deviant_key"] (the HEX of the canonical deviantKey) rather than the
+// SocketCookie field — a deviant is keyed by its behavioral deviantKey, not a
+// per-connection cookie. The additive Posture keys are safe by the same argument as
+// auditOperatorAction: Hash is over each record's own sorted Posture, so new keys
+// never invalidate on-disk records. This rides the SAME per-scope hash chain as the
+// kill-switch toggles, so the chain is one timeline of decisions AND operator
+// actions.
+func (b *Built) auditDeviantAction(action string, keyBytes []byte, id OperatorIdentity, reason string, now time.Time) error {
+	if b.Audit == nil || b.BoundaryScope == "" {
+		return nil
+	}
+	posture := map[string]string{
+		"operator":    id.Name,
+		"reason":      reason,
+		"deviant_key": hex.EncodeToString(keyBytes),
+	}
+	if id.Role != "" {
+		posture["role"] = id.Role
+	}
+	if id.AuthVia != "" {
+		posture["auth_via"] = id.AuthVia
 	}
 	return b.Audit.Append(audit.OperatorAction{
 		Scope:   b.BoundaryScope,

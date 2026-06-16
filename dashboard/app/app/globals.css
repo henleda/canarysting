@@ -585,6 +585,24 @@ body { min-height: 100%; }
   text-transform: uppercase; color: var(--canary); border: 1px solid rgba(255,206,58,0.4);
   border-radius: 2px; padding: 1px 6px; vertical-align: 1px; }
 
+/* VOLUME/TRIAGE summary chip — total / suppressed / acked / per-day roll-up next to the
+   header pills. Follows the .pill-observe idiom (mono, bordered) with the --canary count
+   accent. Read-only disclosure: the suppressed count is the honesty fence. */
+.deviant-summary { display: inline-block; font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--canary); border: 1px solid rgba(255,206,58,0.3); background: rgba(255,206,58,0.05);
+  border-radius: 100px; padding: 2px 10px; vertical-align: 1px; }
+
+/* The view-suppressed toggle bar — sits above the deviant list. Mono, faint, bordered;
+   the active state lifts to --canary. Disabled when there is nothing suppressed to view. */
+.deviant-toolbar { display: flex; justify-content: flex-end; margin: 10px 0 6px; }
+.deviant-toggle { appearance: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-faint); background: none; border: 1px solid var(--line-2);
+  border-radius: 2px; padding: 3px 9px; cursor: pointer; }
+.deviant-toggle:hover:not(:disabled) { color: var(--ink-dim); border-color: var(--line-2); }
+.deviant-toggle-on { color: var(--canary); border-color: rgba(255,206,58,0.4); background: rgba(255,206,58,0.05); }
+.deviant-toggle:disabled { opacity: 0.4; cursor: default; }
+.deviant-toggle:focus-visible { outline: 1px solid var(--observe); outline-offset: 2px; }
+
 .deviant-list { display: flex; flex-direction: column; gap: 1px; background: var(--line); border: 1px solid var(--line);
   border-radius: 4px; overflow: hidden; }
 .deviant-card { background: var(--bg-2); padding: 12px 14px; }
@@ -598,6 +616,16 @@ body { min-height: 100%; }
   border: 1px solid var(--line-2); border-radius: 2px; padding: 1px 5px; color: var(--ink-faint); }
 .deviant-fam-unfamiliar { color: var(--sting); border-color: rgba(255,77,96,0.4); }
 .deviant-fam-known { color: var(--ink-faint); }
+/* Operator-applied triage badge (READ-ONLY) — follows the .deviant-fam mono-uppercase-
+   bordered idiom. 'acked' is faint (seen, kept); 'suppressed' is dimmer still (only
+   visible in the toggled-on view). --sting is reserved for the alert/unfamiliar accent
+   and deliberately NOT used here — triage is a benign disposition, not an alert. */
+.deviant-triage { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  border: 1px solid var(--line-2); border-radius: 2px; padding: 1px 5px; }
+.deviant-triage-acked { color: var(--ink-faint); border-color: var(--line-2); }
+.deviant-triage-suppressed { color: var(--ink-dim); border-color: var(--line-2); background: rgba(255,255,255,0.02); }
+/* An acked row stays in the list but reads quieter so the live leads stay prominent. */
+.deviant-card-acked { opacity: 0.78; }
 .deviant-arrow { color: var(--ink-faint); }
 .deviant-ep { display: inline-flex; align-items: baseline; gap: 6px; }
 .deviant-ep-kind { font-size: 8.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint);

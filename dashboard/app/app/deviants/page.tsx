@@ -27,7 +27,7 @@ import type { DeviantsView, DeviantRow, DeviantEndpoint } from '@/lib/types';
 // Byte-identical fallback if the backend ever omits the pre-rendered caption (it
 // should not) — kept in lockstep with views/deviants.go deviantsCaption.
 const FALLBACK_CAPTION =
-  "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).";
+  "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Rows an operator has marked KNOWN-BENIGN are SUPPRESSED — hidden from this default list but still counted in the summary and viewable via the toggle (suppression is a display filter only; it NEVER stops detection, scoring, or arming — a suppressed mover that later touches a canary still arms). Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).";
 
 export default function DeviantsPage() {
   const { snapshot, status } = useOverview();
@@ -38,9 +38,29 @@ export default function DeviantsPage() {
   const live = usePolling<DeviantsView>(deviantsURL(), 99999, { intervalMs: 30000 });
   const view: DeviantsView | null = useFixture ? fixtureDeviants : live.data;
 
+  // view-suppressed toggle (default OFF). When on, suppressed rows (shipped inline by the
+  // backend — NO extra fetch) are concatenated after the default list. The dashboard is
+  // READ-ONLY: this only changes what is SHOWN, it never writes triage state.
+  const [showSuppressed, setShowSuppressed] = useState(false);
+
   const caption = view?.caption || FALLBACK_CAPTION;
   const simulated = view?.simulated ?? false;
-  const rows = view?.rows ?? [];
+  // Crash-safe everywhere: a Go-nil slice/struct serializes as null, so optional-chain
+  // every field and default to [] / 0. Never assume the new overlay fields are present.
+  const defaultRows = view?.rows ?? [];
+  const suppressedRows = view?.suppressed ?? [];
+  const summary = view?.summary;
+  // The DEFAULT list (acked included, suppressed excluded); concat the suppressed rows
+  // only when the toggle is on. The backend already owns hide-by-default + ranking.
+  const rows = showSuppressed ? [...defaultRows, ...suppressedRows] : defaultRows;
+
+  // Summary counts — fall back to derived/zero values so the chip renders crash-safe even
+  // if the backend omits `summary` (older payload) or ships a null.
+  const suppressedCount = summary?.suppressed ?? suppressedRows.length;
+  const ackedCount = summary?.acked ?? defaultRows.filter((r) => r?.triage_state === 'acked').length;
+  const totalCount = summary?.total ?? defaultRows.length + suppressedRows.length;
+  const perDay = summary?.per_day ?? 0;
+  const perDayLabel = Number.isFinite(perDay) && perDay > 0 ? `~${perDay.toFixed(1)}/day` : '—/day';
 
   return (
     <div className="app-console">
@@ -64,6 +84,17 @@ export default function DeviantsPage() {
                 ⚠ simulated
               </span>
             )}
+            {/* VOLUME/TRIAGE summary chip: total deviants, operator-suppressed count
+                (known-benign, hidden but counted — the honesty disclosure), acked count,
+                and the recurrence rate. Read-only roll-up; no action. */}
+            <span
+              className="deviant-summary"
+              style={{ marginLeft: 8 }}
+              title="volume + operator-triage roll-up (suppressed = hidden from this list but counted; never un-detected)"
+            >
+              {totalCount.toLocaleString('en-US')} deviants · {suppressedCount.toLocaleString('en-US')} suppressed ·{' '}
+              {ackedCount.toLocaleString('en-US')} acked · {perDayLabel}
+            </span>
           </h3>
 
           {/* The persistent HONESTY fence. Render verbatim, always — these are logged
@@ -80,16 +111,37 @@ export default function DeviantsPage() {
             </div>
           )}
 
+          {/* TOGGLE: view operator-suppressed (known-benign) rows. Default OFF. Disabled
+              when there are none to view. Read-only — reveals rows already on the wire. */}
+          <div className="deviant-toolbar">
+            <button
+              type="button"
+              className={`deviant-toggle${showSuppressed ? ' deviant-toggle-on' : ''}`}
+              aria-pressed={showSuppressed}
+              disabled={suppressedCount === 0}
+              onClick={() => setShowSuppressed((v) => !v)}
+              title={
+                suppressedCount === 0
+                  ? 'no operator-suppressed (known-benign) deviants to view'
+                  : 'show / hide operator-suppressed (known-benign) deviants — display only'
+              }
+            >
+              {showSuppressed ? 'hide suppressed' : `view suppressed (${suppressedCount.toLocaleString('en-US')})`}
+            </button>
+          </div>
+
           {rows.length > 0 ? (
             <div className="deviant-list">
               {rows.map((r, i) => (
-                <DeviantRowCard key={`${r.src.addr}-${r.dst.addr}-${r.dst.port}-${i}`} r={r} />
+                <DeviantRowCard key={`${r.key || `${r.src?.addr}-${r.dst?.addr}-${r.dst?.port}`}-${i}`} r={r} />
               ))}
             </div>
           ) : (
             <div className="topo-empty faint">
               {!useFixture && live.loading
                 ? 'loading deviants…'
+                : suppressedCount > 0
+                ? `no shown deviants in this scope — but +${suppressedCount.toLocaleString('en-US')} operator-suppressed (known-benign) hidden by default. Toggle "view suppressed" above to inspect them.`
                 : 'no baseline deviants in this scope yet — every observed flow looks normal, or none has crossed the deviation floor.'}
             </div>
           )}
@@ -120,9 +172,15 @@ function DeviantRowCard({ r }: { r: DeviantRow }) {
   // registered — the careful-mover / recon lead) is ranked first and flagged. A
   // KNOWN source that deviates is a lower-priority, honest lead.
   const unfamiliar = r.src_familiarity === 'unfamiliar';
+  // The operator-applied OVERLAY state, READ-ONLY (display only — the dashboard never
+  // writes it; suppress/ack happen via canaryctl / the operator-admin surface). 'acked'
+  // = seen-but-keep-showing (faint badge); 'suppressed' = known-benign (only rendered
+  // here at all when the view-suppressed toggle is on, so its badge is shown then).
+  const acked = r.triage_state === 'acked';
+  const suppressed = r.triage_state === 'suppressed';
   const [open, setOpen] = useState(false);
   return (
-    <div className={`deviant-card${unfamiliar ? ' deviant-card-unfamiliar' : ''}`}>
+    <div className={`deviant-card${unfamiliar ? ' deviant-card-unfamiliar' : ''}${acked ? ' deviant-card-acked' : ''}`}>
       <div className="deviant-head">
         {/* The fingerprint is the expand control: a real <button> so it is keyboard-
             toggleable (Enter/Space) and screen-reader-announced via aria-expanded. */}
@@ -142,6 +200,24 @@ function DeviantRowCard({ r }: { r: DeviantRow }) {
           >
             {unfamiliar ? 'unfamiliar' : 'known'}
           </span>
+          {/* READ-ONLY triage badge. No action buttons — suppress/ack is performed via
+              canaryctl / the operator-admin surface, never from the dashboard. */}
+          {acked && (
+            <span
+              className="deviant-triage deviant-triage-acked"
+              title="operator acked — seen-but-keep-showing; stays in the list, demoted within its group (display only)"
+            >
+              acked
+            </span>
+          )}
+          {suppressed && (
+            <span
+              className="deviant-triage deviant-triage-suppressed"
+              title="operator-suppressed — known-benign; hidden from the default list but still counted and detected (display only, never un-armed)"
+            >
+              suppressed
+            </span>
+          )}
           <Endpoint e={r.src} role="from" />
           <span className="deviant-arrow">→</span>
           <Endpoint e={r.dst} role="to" />

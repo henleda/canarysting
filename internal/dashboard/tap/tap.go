@@ -107,6 +107,16 @@ type Source struct {
 	// observing the disarm cannot arm anything.
 	KillSwitch *killswitch.KillSwitch
 
+	// Triage is the READ-ONLY operator ACK/SUPPRESS overlay reader (satisfied by
+	// *persist.Store). It is read ONLY on the display side to JOIN triage state onto
+	// each deviant row (acked/suppressed by canonical deviantKey). NIL-TOLERANT: when
+	// nil (DB-less engine, or older wiring) every deviant row reads triage_state=""
+	// (normal). RULE 8 (display-only fence): the tap takes only the READ surface (no
+	// Put/Delete) — the only write path to the overlay is the token-gated admin
+	// endpoint, and nothing on the verdict path consults the overlay. RULE 9: the
+	// overlay is local; nothing here feeds the cross-customer egress path.
+	Triage DeviantTriageReader
+
 	// ledger holds the M9 attacker's live real-cost meter — the one (small,
 	// in-memory) write surface on the tap (D5). Lazily initialized in Handler.
 	ledger *ledgerStore

@@ -486,7 +486,7 @@ export const fixtureDeviants: DeviantsView = {
   staged_labels: true,
   simulated: true,
   caption:
-    "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).",
+    "These flows DEVIATED from the learned baseline — an unfamiliar identity, a new adjacency, a volume or cadence shift — but touched NO canary, so NO response was armed (Rule 8). They are logged for threat-hunting, never actioned, and are NOT confirmed adversaries. The list is ranked by UNFAMILIARITY: unregistered movers first (the prime hunting leads), then known callers, with mesh services that initiated a novel flow last; the platform's own management-plane traffic — loopback (127.0.0.0/8) and the box talking to itself — is demoted to the bottom, never dropped. Rows an operator has marked KNOWN-BENIGN are SUPPRESSED — hidden from this default list but still counted in the summary and viewable via the toggle (suppression is a display filter only; it NEVER stops detection, scoring, or arming — a suppressed mover that later touches a canary still arms). Identities are resolved from the operator registry where named; the rest fall back to raw IP. Local to this deployment; addresses never cross a boundary (Rule 9).",
   simulated_note:
     'Demo posture: synthetic-peer cross-customer context is simulated. The deviant flows shown are real local observations.',
   rows: [
@@ -506,6 +506,8 @@ export const fixtureDeviants: DeviantsView = {
       first_seen: '2026-06-09T11:02:30Z',
       last_seen: '2026-06-09T13:57:48Z',
       score: 0,
+      key: '0102000a14016800001f42000142',
+      triage_state: '',
     },
     {
       // New-identity burst: another unregistered identity probing auth.
@@ -523,9 +525,12 @@ export const fixtureDeviants: DeviantsView = {
       first_seen: '2026-06-09T13:46:10Z',
       last_seen: '2026-06-09T13:55:02Z',
       score: 0,
+      key: '0102000a14cf6800011f43000142',
+      triage_state: '',
     },
     {
-      // Volume-spike: a KNOWN caller moving far more data than baseline.
+      // ACKED sample: a KNOWN caller moving more data than baseline that an operator has
+      // SEEN (acked) — it stays in the default list, badged + demoted within its group.
       src: { label: 'etl-scheduler', kind: 'caller', addr: '10.20.1.108', port: 0 },
       dst: { label: 'db-replica', kind: 'service', addr: '127.0.1.10', port: 8010 },
       src_familiarity: 'known',
@@ -540,8 +545,37 @@ export const fixtureDeviants: DeviantsView = {
       first_seen: '2026-06-09T13:20:00Z',
       last_seen: '2026-06-09T13:51:36Z',
       score: 0,
+      key: '0103000a146c6800011f4a000103',
+      triage_state: 'acked',
     },
   ],
+  // SUPPRESSED sample: a KNOWN-BENIGN cadence blip an operator marked known-benign — a
+  // backup agent's nightly off-rhythm sweep. Hidden from the default list but counted in
+  // the summary and shown when the view-suppressed toggle is on. Suppression is display
+  // only: were this mover to ever touch a canary it would still arm (Rule 8 unchanged).
+  suppressed: [
+    {
+      src: { label: 'backup-agent', kind: 'caller', addr: '10.20.1.66', port: 0 },
+      dst: { label: 'object-store', kind: 'service', addr: '127.0.1.20', port: 8020 },
+      src_familiarity: 'known',
+      identity_novelty: 0.06,
+      adjacency_novelty: 0.09,
+      port_novelty: 0.04,
+      volume_deviation: 0.31,
+      cadence_deviation: 0.62,
+      peak_dim: 'cadence deviation',
+      peak_value: 0.62,
+      hit_count: 18,
+      first_seen: '2026-06-09T02:00:00Z',
+      last_seen: '2026-06-09T13:40:00Z',
+      score: 0,
+      key: '0104000a14426800011f54000104',
+      triage_state: 'suppressed',
+    },
+  ],
+  // Volume/triage roll-up. total = shown(3) + suppressed(1) = 4; acked(1) is inside shown.
+  // per_day is the recurrence rate over the wall-clock span.
+  summary: { total: 4, shown: 3, suppressed: 1, acked: 1, per_day: 14.7 },
 };
 
 export const fixtureReconTimeline: ReconTimeline = {
