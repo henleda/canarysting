@@ -98,6 +98,15 @@ Attrition burns the *attacker's* compute. It must not burn the *defender's*. Eve
 - A kill switch the operator and the engine can trip.
 Treat unbounded generation as a bug, not a feature.
 
+> Note: there are TWO distinct "kill" mechanisms — do not conflate them. (1) The
+> attrition **`Governor`** (`internal/sting/attrition/governor.go`) is the resource
+> governor's own trip: it bounds attrition's compute and halts/declines attrition
+> streams under host pressure. It does NOT gate the async kernel jail. (2) The operator
+> **enforcement DISARM kill-switch** (`internal/sting/killswitch`, slice B1) is the
+> deployment-wide, timed, audited "stop the stings" lever: it floors every emitted
+> verdict's tier at the engine, halting BOTH attrition and the kernel jail downstream.
+> The operator-facing kill-switch is the killswitch package, not the Governor.
+
 ## Driven by the verdict, attributed by socket cookie
 
 - Sting actions key off the engine's tier verdict delivered over the contract.

@@ -29,6 +29,7 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
+	"github.com/canarysting/canarysting/internal/sting/killswitch"
 	"github.com/canarysting/canarysting/internal/topology/identity"
 )
 
@@ -97,6 +98,15 @@ type Source struct {
 	SimulatedPeers bool
 	Now            func() time.Time // injectable clock (nil => time.Now)
 
+	// KillSwitch is the SLICE-B1 deployment-wide enforcement DISARM (read-only here —
+	// the tap NEVER mutates it; the only write surface is the token-gated admin
+	// endpoint). Nil-tolerant: when nil the status section reports a disengaged
+	// zero value, so an engine built without a kill-switch (or an older tap wiring)
+	// degrades gracefully. It lets the IR/dashboard show "ENFORCEMENT HALTED by
+	// <operator>, expires <t>" without any contract change (additive field). RULE 8:
+	// observing the disarm cannot arm anything.
+	KillSwitch *killswitch.KillSwitch
+
 	// ledger holds the M9 attacker's live real-cost meter — the one (small,
 	// in-memory) write surface on the tap (D5). Lazily initialized in Handler.
 	ledger *ledgerStore
@@ -119,7 +129,12 @@ type State struct {
 	CrossCustomer CrossCustomerState       `json:"cross_customer"`
 	ReconLive     []ReconLiveFlow          `json:"recon_live"`
 	Bystanders    []BystanderFlow          `json:"bystanders"`
-	At            time.Time                `json:"at"`
+	// KillSwitch is the SLICE-B1 read-only enforcement-disarm status (engaged /
+	// operator / reason / expiry). The dashboard renders "ENFORCEMENT HALTED by
+	// <operator>, expires <t>" from it. Zero/disengaged when the switch is nil or not
+	// engaged. Additive field — no contract change.
+	KillSwitch killswitch.Status `json:"kill_switch"`
+	At         time.Time         `json:"at"`
 }
 
 // ReconLiveFlow is one currently-live flow that looks anomalous from the learned
@@ -201,6 +216,10 @@ func (s *Source) Handler() http.Handler {
 func (s *Source) handleState(w http.ResponseWriter, _ *http.Request) {
 	now := s.now()
 	st := State{Scope: string(s.Scope), At: now}
+	// SLICE B1: the read-only enforcement-disarm status. Status() is nil-receiver
+	// safe (returns a disengaged zero value), and its lazy auto-expire is evaluated
+	// against the tap's own `now`, so an expired timed engagement reads as disengaged.
+	st.KillSwitch = s.KillSwitch.Status(now)
 	if s.Calib != nil {
 		st.Calibration = s.Calib.State(s.Scope)
 	}

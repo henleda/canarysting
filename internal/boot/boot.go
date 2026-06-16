@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -49,6 +50,7 @@ import (
 	"github.com/canarysting/canarysting/internal/intelligence/sharpen"
 	"github.com/canarysting/canarysting/internal/intelligence/siem"
 	"github.com/canarysting/canarysting/internal/intelligence/transport"
+	"github.com/canarysting/canarysting/internal/sting/killswitch"
 )
 
 // Options configures the composition.
@@ -56,6 +58,12 @@ type Options struct {
 	Boundary   string        // operator scope boundary; empty => refuse to start
 	Window     time.Duration // scoring correlation window
 	Aggressive bool          // demo/eval: minimum per-tier confidence (single-touch escalation)
+	// Now overrides the TRUSTED engine-side wall clock the kill-switch is evaluated
+	// against (the emit-seam floor and the engage/revive timestamps). nil => time.Now.
+	// This is the ENGINE'S OWN clock; the disarm window must NEVER be gated on an
+	// adapter/request-supplied timestamp (which a skewed or hostile adapter could set
+	// past the expiry to slip a verdict through an active halt). Injected only by tests.
+	Now func() time.Time
 	// DemoEscalation is a DEMO-ONLY middle escalation band (not single-touch
 	// -aggressive, not the production default): a flow TAGS on touch 1, CONTAINS (the
 	// inline attrition pump begins — tarpit/maze/poison) around touch ~3, and JAILS
@@ -155,6 +163,29 @@ type Built struct {
 	Ledger          *network.Ledger               // D6 cross-scope SeenInScopes ledger; nil if no DB
 	SharedSet       *sharedset.Store              // D6 cross-customer consumer (detection context); nil if no DB
 
+	// KillSwitch is the SLICE-B1 deployment-wide operator ENFORCEMENT DISARM. It is
+	// ALWAYS constructed (never nil) and starts DISENGAGED — its presence is byte-
+	// neutral until an operator engages it via the token-gated admin endpoint. When
+	// engaged it makes capturingEngine.Submit floor every emitted verdict's tier to
+	// TierObserve, halting BOTH attrition and the async kernel jail downstream (see
+	// the Submit seam comment). The admin endpoint (cmd/staged-range) and the read-
+	// only dashboard tap reach it through this handle. RULE 8: it only ever REDUCES
+	// enforcement; it cannot arm anything. Prefer EngageKillSwitch/ReviveKillSwitch
+	// (which also audit the action) over touching this directly.
+	KillSwitch *killswitch.KillSwitch
+
+	// BoundaryScope is the deployment's resolved scope boundary (opts.Boundary). The
+	// kill-switch is deployment-WIDE; the audit chain is PER-SCOPE — so an
+	// engage/revive is audited into THIS boundary scope's chain (the documented
+	// choice: a single-box deployment has one boundary scope, and that chain is the
+	// operator's tamper-evident timeline). nil-safe consumers tolerate "".
+	BoundaryScope contract.ScopeKey
+
+	// now is the TRUSTED engine-side clock (opts.Now or time.Now). The kill-switch
+	// floor (killSwitchEngine) and the engage/revive audit timestamps both read it, so
+	// the disarm window is ONE coherent clock domain — never the adapter's wire clock.
+	now func() time.Time
+
 	observer observe.Observer
 }
 
@@ -189,12 +220,27 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		Calibrated: func(s contract.ScopeKey) bool { return calib.State(s).Calibrated },
 	})
 
+	// The trusted engine-side clock for the kill-switch (opts.Now or time.Now). Both
+	// the emit-seam floor and the engage/revive timestamps read THIS, never the
+	// adapter's wire clock.
+	clock := opts.Now
+	if clock == nil {
+		clock = time.Now
+	}
+
 	b := &Built{
 		Intake:   feedback.NewIntake(calib),
 		Calib:    calib,
 		Baseline: base,
 		Resolver: resolver,
-		observer: observer,
+		// SLICE B1: the deployment-wide enforcement DISARM. Always present, starts
+		// disengaged (byte-neutral until an operator engages it). It is evaluated by the
+		// killSwitchEngine floor against the TRUSTED engine clock (clock), NOT any event
+		// timestamp — see the killSwitchEngine doc.
+		KillSwitch:    killswitch.New(clock),
+		BoundaryScope: contract.ScopeKey(opts.Boundary),
+		now:           clock,
+		observer:      observer,
 	}
 
 	// Durability (bbolt) is optional. When present it backs the per-scope
@@ -422,6 +468,12 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	} else {
 		b.Engine = eng
 	}
+	// SLICE B1 — wrap the engine in the kill-switch floor UNCONDITIONALLY (independent
+	// of the DB / capturing layer), so the operator's enforcement DISARM is effective in
+	// EVERY configuration. It is the OUTERMOST engine layer; the inner engine has already
+	// captured the REAL verdict (when a capturing layer is present) — this layer floors
+	// only the EMITTED copy, against the trusted engine clock (b.now). See killSwitchEngine.
+	b.Engine = &killSwitchEngine{inner: b.Engine, ks: b.KillSwitch, now: b.now}
 	return b, nil
 }
 
@@ -441,6 +493,116 @@ func (b *Built) StartSIEMEmitter(ctx context.Context) {
 	if b.SIEM != nil {
 		b.SIEM.Run(ctx)
 	}
+}
+
+// EngageKillSwitch trips the deployment-wide enforcement DISARM as of now (d<=0 =>
+// indefinite, until revived) and APPENDS a tamper-evident operator-action record
+// into the boundary scope's audit chain — the SAME chain the engine's decisions
+// ride, so the chain is one timeline of decisions AND operator actions. It is the
+// seam the token-gated admin endpoint (cmd/staged-range) calls, so the toggle and
+// its audit can never drift apart. operator/reason are recorded for the audit
+// trail. The kill-switch is engaged FIRST (the safety action must take effect even
+// if the audit append later errors — fail toward LESS enforcement), then audited;
+// an audit error is RETURNED so the caller surfaces it (the chain is integrity-
+// bearing). Returns the resulting Status. RULE 8: this only disarms enforcement.
+func (b *Built) EngageKillSwitch(now time.Time, d time.Duration, operator, reason string) (killswitch.Status, error) {
+	st := b.KillSwitch.Engage(now, d, operator, reason)
+	err := b.auditOperatorAction("kill_switch_engage", operator, reason, st, now)
+	return st, err
+}
+
+// ReviveKillSwitch clears the disarm as of now and audits the operator action into
+// the boundary scope's chain (mirror of EngageKillSwitch). Revive runs first (it is
+// idempotent and only ever REDUCES the disarm's effect — i.e. restores normal
+// enforcement), then the audit append; an audit error is returned. Returns the
+// resulting (disengaged) Status.
+func (b *Built) ReviveKillSwitch(now time.Time, operator, reason string) (killswitch.Status, error) {
+	st := b.KillSwitch.Revive(now, operator, reason)
+	err := b.auditOperatorAction("kill_switch_revive", operator, reason, st, now)
+	return st, err
+}
+
+// auditOperatorAction appends one operator-action record for a kill-switch toggle
+// into the boundary scope's tamper-evident chain. It is a no-op (nil) when there is
+// no audit store (no DB) or no boundary scope — the kill-switch itself still works;
+// only the durable audit trail is unavailable, which the caller may log. The
+// operator/reason and the resulting engaged/expiry posture are recorded as Posture
+// facts (never fabricated — they are exactly what was applied).
+func (b *Built) auditOperatorAction(action, operator, reason string, st killswitch.Status, now time.Time) error {
+	if b.Audit == nil || b.BoundaryScope == "" {
+		return nil
+	}
+	posture := map[string]string{
+		"operator": operator,
+		"reason":   reason,
+		"engaged":  strconv.FormatBool(st.Engaged),
+	}
+	if !st.ExpiresAt.IsZero() {
+		posture["expires_at"] = st.ExpiresAt.UTC().Format(time.RFC3339)
+	} else if st.Engaged {
+		posture["expires_at"] = "indefinite"
+	}
+	return b.Audit.Append(audit.OperatorAction{
+		Scope:   b.BoundaryScope,
+		Action:  action,
+		Posture: posture,
+		Now:     now,
+	})
+}
+
+// killSwitchEngine is the OUTERMOST engine layer: the operator KILL-SWITCH floor. It
+// wraps the engine UNCONDITIONALLY (with or without a DB/capturing layer), so the
+// operator's enforcement DISARM is effective in EVERY configuration — never a switch
+// that reports HALTED while a DB-less engine keeps enforcing. The inner engine (the
+// capturing layer when present) has already recorded the REAL verdict into the
+// durable/audit stores; this layer only floors the EMITTED copy returned to the gRPC
+// caller (the adapter). It NEVER mutates the inner verdict, so the audit chain attests
+// what the engine REALLY decided; the kill-switch is a separately-audited operator
+// action, not a rewrite of history.
+//
+// WHY flooring the emitted tier halts BOTH responses: enforcement is strictly
+// DOWNSTREAM of the emitted tier, and BOTH paths key on it:
+//   - ASYNC kernel jail (cmd/envoy-adapter enforceVerdict): acts only when
+//     ActionForTier(v.Tier) returns an action (Tier>=Contain). At TierObserve it
+//     returns !ok, so the adapter takes the DE-ESCALATION branch and RELEASES any
+//     containment the cookie had — lifting an in-flight jail, not just preventing a
+//     new one. (The attrition Governor gates attrition only and would NOT stop this
+//     async kernel dispatch — which is why the kill-switch floors the EMITTED tier
+//     rather than relying on the Governor.)
+//   - INLINE attrition pump (adapters/envoy responseWithAttrition): reached only when
+//     v.Tier > TierTag; at TierObserve it returns the plain CONTINUE and never opens.
+//
+// CLOCK: Active is evaluated against the TRUSTED engine clock (now, = opts.Now or
+// time.Now), NEVER the event/request timestamp — a skewed or hostile adapter must not
+// be able to date a touch past the expiry to slip a verdict through an active halt.
+//
+// We floor ONLY v.Tier (the sole enforcement driver alongside v.Mode and
+// v.Flow.SocketCookie): Mode, Score, Calibrated, Scope, and the whole Flow (esp. the
+// SocketCookie) are PRESERVED so the adapter's async Release targets the correct
+// socket.
+//
+// HONEST RESIDUAL: a cookie ALREADY jailed in the kernel that receives NO further
+// verdict gets no floored verdict to trigger the Release — it lingers jailed until the
+// socket closes (sock_release deletes the entry). The kill-switch disarms FUTURE
+// verdicts deployment-wide and de-escalates any flow that touches a canary again; it
+// is not a kernel-map flush. A full active-jail flush is a B2 follow-on.
+type killSwitchEngine struct {
+	inner contract.Engine
+	ks    *killswitch.KillSwitch
+	now   func() time.Time
+}
+
+func (e *killSwitchEngine) Submit(ev contract.SignalEvent) (contract.Verdict, error) {
+	v, err := e.inner.Submit(ev)
+	if err != nil {
+		return v, err
+	}
+	if e.ks.Active(e.now()) {
+		floored := v
+		floored.Tier = contract.TierObserve
+		return floored, nil
+	}
+	return v, nil
 }
 
 // Close shuts down: it closes the observer and the durable store. Durability is
@@ -609,6 +771,11 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 		}
 		e.mu.Unlock()
 	}
+
+	// The operator KILL-SWITCH floor is applied by the killSwitchEngine wrapper that
+	// sits OUTSIDE this capturing layer (see killSwitchEngine), so this Submit always
+	// returns the REAL verdict v — exactly what every capture call above recorded. The
+	// floor never rewrites history; it only floors the EMITTED copy.
 	return v, err
 }
 

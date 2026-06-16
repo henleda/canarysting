@@ -75,7 +75,18 @@ func main() {
 		auditHMACKey    = flag.String("audit-hmac-key", "", "SLICE-A audit chain: path to an HMAC key FILE (read at boot, held OUTSIDE baseline.db, like /etc/canarysting/anthropic.key) that KEYS the tamper-evident audit chain with HMAC-SHA256 — a file-only attacker with DB write access but WITHOUT this key cannot forge a chain Verify accepts (edit/removal/reorder/tail-truncate-then-rewrite-head all detected). EMPTY (default) => the UNKEYED sha256 chain, which catches accidental corruption + naive edits ONLY, not a knowledgeable DB-write adversary; whole-scope erasure is undetected in either mode (needs an external witness; roadmap). Do not commit a key.")
 		demoFloor       = flag.Bool("demo-data-floor", false, "DEMO ONLY: relax the baseline data floor's calendar-DAY-SPAN gates (MinCalendarDays 7->2, MinDaysPerBucket 3->1, MinSufficientBuckets 4->1) so the multiplier goes live before the production 7-calendar-day floor. The genuine VOLUME/POPULATION gates (MinFlowsPerBucket=100, MinIdentitiesPerBucket=2, MinP2Samples=50) are UNCHANGED — the baseline is still real, just accrued over fewer days. Logs loudly; NEVER for production.")
 
-		tapAddr      = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
+		tapAddr = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
+
+		// SLICE B1 operator KILL-SWITCH admin (token-gated, loopback-only, OFF by
+		// default). The deployment-wide enforcement DISARM: engaging it floors every
+		// emitted verdict to observe so the adapter halts BOTH attrition and the async
+		// kernel jail and releases existing containment. Requires a bearer-token FILE
+		// (held outside baseline.db, like -audit-hmac-key); with no token file the
+		// endpoint refuses to start (never an unauthenticated kill-switch). Engage/revive
+		// are recorded into the tamper-evident audit chain. Real per-identity RBAC/mTLS is
+		// the B2 follow-on.
+		ksAdminAddr  = flag.String("killswitch-admin-addr", "", "if set, serve the token-gated operator KILL-SWITCH admin (POST /killswitch/engage|revive, GET /killswitch) at this LOOPBACK address. Requires -killswitch-token-file. OFF by default; loopback-only in B1.")
+		ksTokenFile  = flag.String("killswitch-token-file", "", "path to the bearer-token FILE that gates the kill-switch admin (held OUTSIDE baseline.db, like -audit-hmac-key). REQUIRED to enable -killswitch-admin-addr; an empty/missing file refuses to start (no unauthenticated kill-switch).")
 		simPeersDemo = flag.Bool("sim-peers-demo", false, "DEMO ONLY: mark the consumed cross-customer patterns as SIMULATED (cmd/sim-peers) so the dashboard discloses they came from synthetic peers we operate, not real customers. Auto-detected too if a <shared-spool>.simulated marker is present, so a forgotten flag can't silently present simulated data as real.")
 		topoIdents   = flag.String("topology-identities", "", "F1 learned-topology: JSON operator-declared node-identity map (IP/CIDR/port -> name) used to LABEL the topology nodes on /raw/topology (internal/topology/identity). Operator metadata, NOT an engine verdict; the engine knows only hashed adjacency. Nil-tolerant: with no file the topology nodes fall back to IP labels and staged_labels=false. Demo: deploy/m7-window/topology-identities.json.")
 
@@ -219,11 +230,38 @@ func main() {
 			// fallback, so the rendered decoys can never silently diverge from the
 			// canary types actually in play. cmd/envoy-adapter wires this too.
 			Catalog: catalog.Default(),
+			// SLICE B1: surface the deployment-wide enforcement-disarm status read-only
+			// (the dashboard renders "ENFORCEMENT HALTED by <op>"). The tap NEVER mutates
+			// it — the only write path is the token-gated admin endpoint above.
+			KillSwitch: built.KillSwitch,
 		}
 		go func() {
 			log.Printf("staged-range: dashboard tap on %s", *tapAddr)
 			if err := http.ListenAndServe(*tapAddr, src.Handler()); err != nil {
 				log.Printf("staged-range: dashboard tap: %v", err)
+			}
+		}()
+	}
+
+	// SLICE B1: the token-gated operator KILL-SWITCH admin (loopback-only). OFF unless
+	// -killswitch-admin-addr is set; when set it REQUIRES -killswitch-token-file and a
+	// loopback bind, else it refuses to start (fail-closed — never an unauthenticated
+	// or off-box kill-switch). A bind/auth misconfig is fatal so the operator learns at
+	// boot, not on the first failed engage. The handler couples each engage/revive to
+	// the tamper-evident audit chain via boot.Built.
+	if *ksAdminAddr != "" {
+		// Validate the bind + token BEFORE backgrounding so a misconfig is a clean boot
+		// failure (not a goroutine that dies silently). serveKillSwitchAdmin re-checks,
+		// but constructing the admin here surfaces the token error synchronously.
+		if _, err := newKillSwitchAdmin(built, *ksTokenFile); err != nil {
+			log.Fatalf("staged-range: %v", err)
+		}
+		if err := requireLoopback(*ksAdminAddr); err != nil {
+			log.Fatalf("staged-range: %v", err)
+		}
+		go func() {
+			if err := serveKillSwitchAdmin(*ksAdminAddr, *ksTokenFile, built); err != nil {
+				log.Printf("staged-range: killswitch admin: %v", err)
 			}
 		}()
 	}
