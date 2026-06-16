@@ -36,6 +36,15 @@ StateDirectory=canarysting
 #   AUDIT_HMAC_FLAG=-audit-hmac-key /etc/canarysting/audit-hmac.key
 # Then a file-only attacker who edits/removes/reorders/truncates records without the key
 # cannot produce a chain Verify accepts. Left OFF here so the default window is unkeyed.
+# $KILLSWITCH_FLAG enables the SLICE-B1/B2 token-gated operator KILL-SWITCH admin endpoint
+# (the engine-side enforcement DISARM is ALWAYS wired; this only exposes the control
+# surface so canaryctl/an operator can engage/revive it). Empty (the default) -> no admin
+# endpoint, no way to engage (byte-unchanged posture). To enable, set in m7.env e.g.
+#   KILLSWITCH_FLAG=-killswitch-admin-addr 127.0.0.1:9610 -killswitch-token-file /etc/canarysting/killswitch.key
+# The addr MUST be loopback (the endpoint refuses a non-loopback bind in B1; mTLS for a
+# remote operator is B2) and the token file is a shared bearer secret held OUTSIDE
+# baseline.db (mode 0600, NOT committed). Fail-closed: with the flag set but no/empty
+# token file the engine refuses to start the endpoint.
 ExecStart=/opt/canarysting/bin/staged-range \
   -scope-boundary ${SCOPE} \
   -grpc-addr 127.0.0.1:50052 \
@@ -53,6 +62,7 @@ ExecStart=/opt/canarysting/bin/staged-range \
   $SHARED_SPOOL_FLAG \
   $SIEM_FLAG \
   $AUDIT_HMAC_FLAG \
+  $KILLSWITCH_FLAG \
   -i-am-running-a-staged-range
 Restart=always
 RestartSec=3
