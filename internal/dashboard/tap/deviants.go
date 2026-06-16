@@ -33,9 +33,21 @@ import (
 	"sort"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
+	"github.com/canarysting/canarysting/internal/engine/persist"
 	"github.com/canarysting/canarysting/internal/topology/identity"
 )
+
+// DeviantTriageReader is the NARROW read-only view of the operator ACK/SUPPRESS
+// overlay the tap needs to JOIN triage state onto each surfaced deviant row. It is
+// satisfied by *persist.Store. The tap takes this READ-ONLY surface (no Put/Delete)
+// so the display side can never accidentally MUTATE triage state — the only write
+// path is the token-gated admin endpoint (Rule 8 / display-only fence). It is read
+// ONLY here on the display side; nothing on the verdict path consults it.
+type DeviantTriageReader interface {
+	RangeDeviantTriage(scope contract.ScopeKey, fn func(key []byte, rec persist.DeviantTriageRecord) error) error
+}
 
 // maxDeviantRows caps the surfaced hunting list so a port-sweep / source-spoof that
 // manufactured many distinct deviant records cannot flood the page. The engine
@@ -75,6 +87,21 @@ type DeviantEndpoint struct {
 type DeviantRow struct {
 	Src DeviantEndpoint `json:"src"`
 	Dst DeviantEndpoint `json:"dst"`
+
+	// Key is the canonical deviant RECURRENCE KEY (deviantKey bytes) hex-encoded — the
+	// JOIN identity to the operator triage overlay AND the value canaryctl deviant -key
+	// consumes. It comes straight from observebaseline.DeviantFlowRecordView.Key (the
+	// hex of the record's authoritative map key), so the operator can copy it from a
+	// row to suppress/ack the pattern. Local-rich (it encodes raw addr bytes), so it
+	// stays in the deployment (Rule 9) like the rest of this surface.
+	Key string `json:"key"`
+
+	// TriageState is the operator triage overlay state joined onto this row: ""
+	// (normal, no overlay row) | "acked" (seen-but-keep-showing) | "suppressed"
+	// (known-benign-hidden-by-default). The tap is a PASS-THROUGH that ranks/demotes —
+	// it does NOT filter suppressed rows out; the BACKEND owns hide-by-default and the
+	// view-suppressed toggle, so the suppressed rows remain available here for it.
+	TriageState string `json:"triage_state"`
 
 	// SrcFamiliarity is the hunting headline keyed on the SRC (initiator) identity:
 	// "unfamiliar" when the SRC resolves UNKNOWN (an identity the operator never
@@ -173,8 +200,32 @@ func (s *Source) buildDeviants() DeviantsView {
 		return view
 	}
 
-	view.Rows = rankDeviantRows(s.Aggregator.DeviantSnapshot(s.Scope).Records, resolver)
+	// Load the per-scope operator triage overlay (acked|suppressed by canonical
+	// deviantKey) so each row can be badged/partitioned downstream. NIL-TOLERANT: a
+	// nil Triage reader (older wiring, or a DB-less engine) yields an empty overlay —
+	// every row reads triage_state="" (normal). The overlay is read ONLY here on the
+	// display side (Rule 8 / display-only fence). The map is keyed by the HEX of the
+	// deviantKey so it joins to DeviantFlowRecordView.Key byte-for-byte.
+	overlay := s.loadTriageOverlay()
+	view.Rows = rankDeviantRows(s.Aggregator.DeviantSnapshot(s.Scope).Records, resolver, overlay)
 	return view
+}
+
+// loadTriageOverlay reads the per-scope ACK/SUPPRESS overlay into a map keyed by the
+// HEX deviantKey -> state ("acked"|"suppressed"). Nil-tolerant (nil reader => empty
+// map). A range error degrades to whatever was loaded so far (the surface stays
+// total — a transient overlay read fault must not 500 the hunting page; rows simply
+// read normal). LOCAL + DISPLAY-ONLY (Rule 8/9).
+func (s *Source) loadTriageOverlay() map[string]string {
+	out := map[string]string{}
+	if s.Triage == nil {
+		return out
+	}
+	_ = s.Triage.RangeDeviantTriage(s.Scope, func(key []byte, rec persist.DeviantTriageRecord) error {
+		out[hexKey(key)] = rec.State
+		return nil
+	})
+	return out
 }
 
 // rankDeviantRows resolves each captured deviant record's src/dst identity, builds the
@@ -182,7 +233,7 @@ func (s *Source) buildDeviants() DeviantsView {
 // HitCount->PeakValue->LastSeen tiebreak within a tier, capped at maxDeviantRows. It
 // is extracted from buildDeviants so the tiering / familiarity / drop-vs-demote logic
 // is unit-testable with synthetic records (the Source.Aggregator is a concrete type).
-func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *identity.Resolver) []DeviantRow {
+func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *identity.Resolver, overlay map[string]string) []DeviantRow {
 	rows := make([]DeviantRow, 0, len(records))
 	for _, r := range records {
 		srcIP := addrFrom(r.SrcIP)
@@ -213,6 +264,11 @@ func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *
 				Addr:  addrString(dstIP),
 				Port:  r.DstPort,
 			},
+			// Key is the row's canonical recurrence key (already hex on the view); join
+			// the operator triage overlay by it (absent => "" normal). The tap does NOT
+			// drop suppressed rows — it surfaces the state and lets the backend hide.
+			Key:              r.Key,
+			TriageState:      overlay[r.Key],
 			SrcFamiliarity:   familiarity,
 			IdentityNovelty:  r.IdentityNovelty,
 			AdjacencyNovelty: r.AdjacencyNovelty,
@@ -250,6 +306,19 @@ func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *
 		rows = rows[:maxDeviantRows]
 	}
 	return rows
+}
+
+// hexKey renders the raw overlay key bytes as lowercase hex — the ONE pinned
+// encoding shared with DeviantFlowRecordView.Key / the admin route, so the overlay
+// map join is byte-for-byte aligned with the row Key.
+func hexKey(b []byte) string {
+	const hexdigits = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, c := range b {
+		out[i*2] = hexdigits[c>>4]
+		out[i*2+1] = hexdigits[c&0x0f]
+	}
+	return string(out)
 }
 
 // addrString renders a netip.Addr as its string, or "" for an invalid address (an

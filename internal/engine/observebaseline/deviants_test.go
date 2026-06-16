@@ -602,3 +602,67 @@ func TestDeviantSnapshotIsCopy(t *testing.T) {
 		}
 	}
 }
+
+// DeviantSnapshot populates Key with the HEX of the record's CANONICAL recurrence
+// key — the join identity for the operator triage overlay and the canaryctl -key
+// argument. The key must equal the hex of deviantKey() over the same inputs, and it
+// must be STABLE across a recapture (the HitCount bump under the SAME key) AND across
+// a destroy-then-recreate under the same identity (the overlay is keyed by this, so a
+// suppressed-then-reaped-then-recurring pattern stays joined).
+func TestDeviantSnapshotKeyStableAcrossRecapture(t *testing.T) {
+	r := newFakeReader()
+	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
+	agg := New(Config{
+		Reader: r, Gates: newRecordGates(), Resolver: fakeResolver{scope: testScope},
+		Bucketer: baseline.WindowBucketer, Floor: testFloor(), Now: func() time.Time { return now },
+	})
+	accrueBenign(t, agg, r, now)
+
+	// First capture of a never-seen identity (.199).
+	completeFlow(agg, r, 3000, flowFromIPs(199, 1, 1400, 12, 2_000_000), now)
+	snap := agg.DeviantSnapshot(testScope)
+	if len(snap.Records) != 1 {
+		t.Fatalf("want 1 record, got %d", len(snap.Records))
+	}
+	key1 := snap.Records[0].Key
+	if key1 == "" {
+		t.Fatal("DeviantSnapshot did not populate Key")
+	}
+	// The Key is the hex of the canonical deviantKey: re-deriving it from the view
+	// fields (DeviantKeyHex) yields the SAME string (the record map key == deviantKey).
+	if got := DeviantKeyHex(snap.Records[0]); got != key1 {
+		t.Fatalf("Key %q != DeviantKeyHex(view) %q — re-derivation diverges from the stored key", key1, got)
+	}
+
+	// RECAPTURE: the SAME pattern recurs (different cookie). It bumps HitCount on the
+	// SAME record under the SAME key — the snapshot Key must be byte-identical.
+	completeFlow(agg, r, 3001, flowFromIPs(199, 1, 1400, 12, 2_000_000), now.Add(time.Minute))
+	snap = agg.DeviantSnapshot(testScope)
+	if len(snap.Records) != 1 {
+		t.Fatalf("recapture forked into %d records, want 1 (same key)", len(snap.Records))
+	}
+	if snap.Records[0].HitCount != 2 {
+		t.Fatalf("HitCount = %d, want 2 after recapture", snap.Records[0].HitCount)
+	}
+	if snap.Records[0].Key != key1 {
+		t.Fatalf("Key changed across recapture: %q -> %q", key1, snap.Records[0].Key)
+	}
+
+	// DESTROY + RECREATE INVARIANT: the Key is a pure function of the (identity, peak
+	// dim) — it is NOT derived from HitCount/FirstSeen/Score, which DO change when a
+	// record is destroyed and re-created with HitCount=1. So a record re-created under
+	// the same identity yields the identical Key string. We prove this property
+	// directly (rather than fighting the baseline, which has by now learned .199 down
+	// below the deviant floor): re-derive the key from a HitCount=1 / zero-Score copy
+	// of the same view and confirm it is byte-identical. This is exactly why the
+	// overlay (keyed by this string) stays joined to a reaped-then-recurring pattern —
+	// see persist.TestDeviantTriageSurvivesRecordChurn for the store-side proof.
+	fresh := snap.Records[0]
+	fresh.HitCount = 1
+	fresh.Score = 0
+	fresh.FirstSeen = now.Add(99 * time.Hour)
+	fresh.LastSeen = now.Add(99 * time.Hour)
+	if got := DeviantKeyHex(fresh); got != key1 {
+		t.Fatalf("Key is NOT invariant to HitCount/Score/timestamps: %q != %q (a reaped-then-recreated record would lose its overlay)", got, key1)
+	}
+}

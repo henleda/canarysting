@@ -82,7 +82,13 @@ func Open(path string) (*Store, int, error) {
 		// create is a no-op when present, a fresh empty bucket when absent). An absent
 		// per-scope head then seeds from genesis on the first audit append for that
 		// scope after upgrade.
-		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktL7Touches, bktAuditChain, bktMeta} {
+		// bktDeviantTriage (the operator ACK/SUPPRESS overlay on the deviant log,
+		// local-only, DISPLAY-SIDE-only) is added the SAME tolerant way and for the
+		// same reason: a live M7 baseline.db that predates it must keep opening (NO
+		// SchemaVersion bump — the create is a no-op when present, a fresh empty bucket
+		// when absent). The overlay is a SEPARATE store from bktDeviants and its
+		// lifecycle is decoupled (see persist/triage.go).
+		for _, name := range [][]byte{bktBaseline, bktMalicious, bktEvents, bktTopology, bktDeviants, bktL7Touches, bktAuditChain, bktDeviantTriage, bktMeta} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}

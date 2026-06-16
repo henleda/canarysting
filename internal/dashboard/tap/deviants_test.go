@@ -38,7 +38,7 @@ func TestRankDeviantRowsDemotesServiceKeepsAllTiers(t *testing.T) {
 		devRec("10.20.1.101", 100, 0.5), // caller (reporting-worker) — tier 1
 		devRec("10.20.1.104", 5, 0.7),   // unknown (careful-mover) — LOWEST hit, must rank FIRST
 	}
-	rows := rankDeviantRows(recs, res)
+	rows := rankDeviantRows(recs, res, nil)
 	if len(rows) != 3 {
 		t.Fatalf("want 3 rows (service DEMOTED, not dropped), got %d", len(rows))
 	}
@@ -60,7 +60,7 @@ func TestRankDeviantRowsWithinTierTiebreakByHitCount(t *testing.T) {
 		devRec("10.20.1.104", 3, 0.6),  // unknown, low hit
 		devRec("10.20.1.105", 40, 0.6), // unknown, high hit (both tier 0)
 	}
-	rows := rankDeviantRows(recs, res)
+	rows := rankDeviantRows(recs, res, nil)
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows, got %d", len(rows))
 	}

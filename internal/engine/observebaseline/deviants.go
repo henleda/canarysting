@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"time"
 
 	"github.com/canarysting/canarysting/bpf/observe"
@@ -213,6 +214,75 @@ func deviantKey(fs observe.FlowStats, peak peakDimCode) string {
 	return string(b)
 }
 
+// peakDimFromNovelty returns the strongest baseline-deviation dimension CODE given
+// the 5 stored novelty values, with the EXACT same comparison order and tie-break as
+// peakNoveltyDim (Identity, then Adjacency, Port, Volume, Cadence on strict >). It is
+// the read-side re-derivation: a DeviantFlowRecordView carries the 5 dim values but
+// not the peak CODE, and the canonical key needs the code. Because the fold path
+// stored the record under deviantKey(fs, peakNoveltyDim(feat).code) using these same
+// dim values (PeakNovelty is exactly the winning value, PeakLabel its label), this
+// re-derivation reproduces the SAME code the record was stored under, so the key it
+// builds joins to the overlay byte-for-byte.
+func peakDimFromNovelty(identity, adjacency, port, volume, cadence float64) peakDimCode {
+	best, code := identity, dimIdentity
+	if adjacency > best {
+		best, code = adjacency, dimAdjacency
+	}
+	if port > best {
+		best, code = port, dimPort
+	}
+	if volume > best {
+		best, code = volume, dimVolume
+	}
+	if cadence > best {
+		_, code = cadence, dimCadence
+	}
+	return code
+}
+
+// deviantKeyBytesFromView rebuilds the canonical recurrence key (raw bytes) for a
+// decoded view, re-deriving the peak dim from its stored novelty values. It mirrors
+// deviantKey's layout exactly: [0x01][family BE u16][srcAddr][dstAddr][dstPort BE
+// u16][peakDim u8]. The view's SrcIP/DstIP are family-length slices (4 or 16 bytes).
+func deviantKeyBytesFromView(v DeviantFlowRecordView) []byte {
+	peak := peakDimFromNovelty(v.IdentityNovelty, v.AdjacencyNovelty, v.PortNovelty, v.VolumeDeviation, v.CadenceDeviation)
+	n := addrLen(v.Family)
+	b := make([]byte, 0, 1+2+n+n+2+1)
+	b = append(b, deviantKind)
+	var fam [2]byte
+	binary.BigEndian.PutUint16(fam[:], v.Family)
+	b = append(b, fam[:]...)
+	b = appendAddrSlice(b, v.SrcIP, n)
+	b = appendAddrSlice(b, v.DstIP, n)
+	var port [2]byte
+	binary.BigEndian.PutUint16(port[:], v.DstPort)
+	b = append(b, port[:]...)
+	b = append(b, byte(peak))
+	return b
+}
+
+// appendAddrSlice appends exactly n bytes of the address slice (zero-padding a short
+// slice, truncating a long one) so a malformed snapshot slice can never make the key
+// a different length than deviantKey produced. n is addrLen(family).
+func appendAddrSlice(b []byte, addr []byte, n int) []byte {
+	for i := 0; i < n; i++ {
+		if i < len(addr) {
+			b = append(b, addr[i])
+		} else {
+			b = append(b, 0)
+		}
+	}
+	return b
+}
+
+// DeviantKeyHex is the lowercase-hex encoding of the canonical recurrence key for a
+// decoded view — the ONE pinned wire/display/CLI encoding of the deviant identity.
+// It is exported so the tap can also recompute or validate it if needed; it is
+// populated onto DeviantFlowRecordView.Key in DeviantSnapshot.
+func DeviantKeyHex(v DeviantFlowRecordView) string {
+	return hex.EncodeToString(deviantKeyBytesFromView(v))
+}
+
 // --- folding ---------------------------------------------------------------
 
 // fold upserts one DEVIANT, NON-ARMED completed flow into the log, stamping
@@ -361,6 +431,18 @@ type DeviantFlowRecordView struct {
 	DstPort uint16
 	Family  uint16
 
+	// Key is the canonical deviant RECURRENCE KEY (the deviantKey bytes) encoded as
+	// lowercase HEX. It is the STABLE join identity the operator triage overlay is
+	// keyed by AND the value canaryctl deviant -key consumes. It is surfaced here (it
+	// is NOT on the DeviantFlowRecord — the record's identity is implicit in its map
+	// key) so the display side can join to the overlay and so an operator can copy a
+	// row's key to suppress/ack it. Hex (not base64) is the ONE pinned encoding used
+	// identically here, on the tap/backend wire, in the dashboard display, and in the
+	// admin route decode (the key contains binary address bytes, so it must be
+	// encoded). Derived from the same deviantKey()/peakNoveltyDim() inputs the record
+	// was stored under — the peak dim is re-derived from the 5 stored novelty values.
+	Key string
+
 	SocketCookie uint64
 
 	IdentityNovelty  float64
@@ -397,9 +479,9 @@ func (a *Aggregator) DeviantSnapshot(sc contract.ScopeKey) DeviantSnap {
 		return DeviantSnap{}
 	}
 	out := make([]DeviantFlowRecordView, 0, len(dv.records))
-	for _, r := range dv.records {
+	for key, r := range dv.records {
 		n := addrLen(r.Family)
-		out = append(out, DeviantFlowRecordView{
+		view := DeviantFlowRecordView{
 			SrcIP:            append([]byte(nil), r.SrcIP[:n]...),
 			DstIP:            append([]byte(nil), r.DstIP[:n]...),
 			SrcPort:          r.SrcPort,
@@ -417,7 +499,13 @@ func (a *Aggregator) DeviantSnapshot(sc contract.ScopeKey) DeviantSnap {
 			FirstSeen:        r.FirstSeen,
 			LastSeen:         r.LastSeen,
 			HitCount:         r.HitCount,
-		})
+		}
+		// Key is the canonical recurrence key the record is stored under, hex-encoded.
+		// The map key IS the raw deviantKey string (the authoritative identity — exactly
+		// what the overlay joins on), so hex-encode it directly rather than re-deriving
+		// from the dims; this is byte-for-byte the deviantKey() the fold path wrote.
+		view.Key = hex.EncodeToString([]byte(key))
+		out = append(out, view)
 	}
 	return DeviantSnap{Records: out}
 }

@@ -576,10 +576,36 @@ export interface DeviantRow {
   first_seen: string; // RFC3339
   last_seen: string; // RFC3339
   score: number; // engine suspicion score at capture (0 on the fold seam)
+  // key is the canonical deviant RECURRENCE KEY (the deviantKey() bytes, hex-encoded
+  // on the wire). It is the stable join identity AND the `canaryctl deviant -key`
+  // argument; the DeviantFlowRecord itself is mutated/destroyed/re-created, so this is
+  // the only durable handle. Read-only on the dashboard.
+  key: string;
+  // triage_state is the operator-applied OVERLAY state (a display-only record keyed by
+  // (scope, key), NEVER on the verdict path — suppress/ack changes only what a human
+  // SEES, never detection/scoring/arming). "" (normal) | "acked" (seen-but-keep-showing,
+  // badged + demoted) | "suppressed" (known-benign, hidden from the default list but
+  // still counted in the summary and viewable behind the toggle). The dashboard does
+  // NOT write this — suppress/ack happen via canaryctl / the operator-admin surface.
+  triage_state: '' | 'acked' | 'suppressed' | string;
+}
+
+// DeviantSummary is the volume/triage roll-up over the kept-after-shapeless set. It is
+// what keeps the page HONEST: suppressed rows are hidden from the default list but the
+// `suppressed` count discloses they exist (operator-hidden-but-counted, not dropped).
+export interface DeviantSummary {
+  total: number; // all kept-after-shapeless deviants (shown + suppressed)
+  shown: number; // len(rows) — the default-visible set (acked included)
+  suppressed: number; // count hidden by default (operator-suppressed, known-benign)
+  acked: number; // count badged + demoted but still shown
+  per_day: number; // deviant recurrence rate over the wall-clock span (deviants/day)
 }
 
 // DeviantsView is the GET /api/deviants payload. caption is the persistent honesty
-// fence; simulated_note is set only when simulated is true.
+// fence; simulated_note is set only when simulated is true. rows is the DEFAULT visible
+// set (suppressed excluded, acked included-but-demoted); suppressed carries the hidden
+// rows inline so the view-suppressed toggle needs no second fetch; summary is the
+// volume/triage roll-up rendered as the chip.
 export interface DeviantsView {
   scope: string;
   staged_labels: boolean;
@@ -587,4 +613,6 @@ export interface DeviantsView {
   caption: string; // the persistent honesty fence to render verbatim
   simulated_note: string; // ⚠ note when simulated; "" otherwise
   rows: DeviantRow[];
+  suppressed: DeviantRow[]; // hidden-by-default rows (triage_state==='suppressed')
+  summary: DeviantSummary;
 }

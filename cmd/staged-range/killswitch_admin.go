@@ -188,6 +188,26 @@ type reviveRequest struct {
 	Reason string `json:"reason"`
 }
 
+// deviantTriageRequest is the POST /deviant/{suppress,unsuppress,ack} body. Key is
+// the canonical deviant recurrence key, HEX-encoded on the wire (the ONE pinned
+// encoding — the same hex DeviantSnapshot/tap/backend/dashboard use, so the
+// operator's copied key matches the overlay key byte-for-byte). Reason is recorded
+// into the tamper-evident audit chain. (unsuppress ignores any Reason beyond
+// recording it.)
+type deviantTriageRequest struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
+// deviantTriageResponse is the small JSON body returned by the deviant routes,
+// written via the writeKSJSON-style writer. State is "suppressed" | "acked" |
+// "normal" (the resulting overlay state).
+type deviantTriageResponse struct {
+	Key   string `json:"key"`
+	State string `json:"state"`
+	Scope string `json:"scope"`
+}
+
 // Handler returns the admin mux. Routes:
 //
 //	POST /killswitch/engage  {duration_seconds, reason}  -> engage + audit, Status JSON
@@ -201,7 +221,107 @@ func (a *killSwitchAdmin) Handler() http.Handler {
 	mux.HandleFunc("/killswitch/engage", a.handleEngage)
 	mux.HandleFunc("/killswitch/revive", a.handleRevive)
 	mux.HandleFunc("/killswitch", a.handleStatus)
+	// DEVIANT ACK/SUPPRESS (operator triage of a deviant hunting-log PATTERN). All
+	// three are MUTATING (each writes/clears a per-scope triage overlay row + an audit
+	// entry), so all three require the SAME RoleOperator gate as engage/revive. The
+	// dashboard stays READ-ONLY — it never hits these; an operator drives them via
+	// canaryctl or a direct admin POST behind this loopback+RBAC+audit surface.
+	mux.HandleFunc("/deviant/suppress", a.handleDeviantSuppress)
+	mux.HandleFunc("/deviant/unsuppress", a.handleDeviantUnsuppress)
+	mux.HandleFunc("/deviant/ack", a.handleDeviantAck)
 	return mux
+}
+
+// deviantAction is the kind of triage a deviant handler performs. It selects which
+// boot.Built seam runs (suppress/ack write a row; unsuppress clears it).
+type deviantAction int
+
+const (
+	deviantSuppress deviantAction = iota
+	deviantUnsuppress
+	deviantAck
+)
+
+func (a *killSwitchAdmin) handleDeviantSuppress(w http.ResponseWriter, r *http.Request) {
+	a.handleDeviant(w, r, deviantSuppress)
+}
+
+func (a *killSwitchAdmin) handleDeviantUnsuppress(w http.ResponseWriter, r *http.Request) {
+	a.handleDeviant(w, r, deviantUnsuppress)
+}
+
+func (a *killSwitchAdmin) handleDeviantAck(w http.ResponseWriter, r *http.Request) {
+	a.handleDeviant(w, r, deviantAck)
+}
+
+// handleDeviant is the shared body of the three deviant triage routes. It rejects
+// non-POST first (mirror handleEngage), then applies the EXACT mutating-action RBAC
+// gate (resolve => 401 if unknown token, 403 if the valid principal lacks the
+// operator role), decodes the body with the same 4 KiB MaxBytesReader guard, decodes
+// the HEX key, builds the verified-or-advisory identity (identityFor), calls the
+// matching boot.Built seam (which applies intent then audits), and responds with the
+// small deviantTriageResponse via the writeKSJSON-style writer. Neither the 401 nor
+// the 403 is audited (an unauthenticated probe / role-denied is not an operator
+// action); only the successful, authenticated mutating action is audited inside the
+// boot seam.
+func (a *killSwitchAdmin) handleDeviant(w http.ResponseWriter, r *http.Request, action deviantAction) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	p, ok := a.resolve(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if p.Role != principals.RoleOperator {
+		http.Error(w, "forbidden: role lacks deviant-triage capability", http.StatusForbidden)
+		return
+	}
+	var req deviantTriageRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		http.Error(w, "bad request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(req.Key))
+	if err != nil || len(keyBytes) == 0 {
+		http.Error(w, "bad request: \"key\" must be the hex-encoded canonical deviant key (non-empty)", http.StatusBadRequest)
+		return
+	}
+	id := a.identityFor(r, p)
+	now := time.Now()
+	var state string
+	var verb string
+	switch action {
+	case deviantSuppress:
+		verb = "SUPPRESSED"
+		state, err = a.built.SuppressDeviant(now, keyBytes, id, req.Reason, "")
+	case deviantUnsuppress:
+		verb = "UNSUPPRESSED (cleared)"
+		state, err = a.built.UnsuppressDeviant(now, keyBytes, id, req.Reason)
+	case deviantAck:
+		verb = "ACKED"
+		state, err = a.built.AckDeviant(now, keyBytes, id, req.Reason, "")
+	}
+	if err != nil {
+		// Distinguish an INTENT failure (the overlay write/delete itself failed — state
+		// is "") from an audit-only failure (the overlay change applied, only the
+		// tamper-evidence append errored — state is set, mirroring handleEngage).
+		if state == "" {
+			http.Error(w, "deviant triage failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("killswitch-admin: deviant %s by %q but audit append FAILED (tamper-evidence gap): key=%s reason=%q: %v", verb, id.Name, req.Key, req.Reason, err)
+		writeDeviantJSON(w, deviantTriageResponse{Key: req.Key, State: state, Scope: string(a.built.BoundaryScope)})
+		return
+	}
+	log.Printf("killswitch-admin: deviant %s by %q (auth_via=%s, reason=%q) key=%s", verb, id.Name, id.AuthVia, req.Reason, req.Key)
+	writeDeviantJSON(w, deviantTriageResponse{Key: req.Key, State: state, Scope: string(a.built.BoundaryScope)})
+}
+
+func writeDeviantJSON(w http.ResponseWriter, resp deviantTriageResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (a *killSwitchAdmin) handleEngage(w http.ResponseWriter, r *http.Request) {

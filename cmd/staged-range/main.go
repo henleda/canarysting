@@ -239,6 +239,16 @@ func main() {
 			// it — the only write path is the token-gated admin endpoint above.
 			KillSwitch: built.KillSwitch,
 		}
+		// DEVIANT ACK/SUPPRESS: the READ-ONLY operator triage overlay so the deviants
+		// surface can join+badge acked/suppressed state per row. Set ONLY when a durable
+		// store exists — assigning a typed-nil *persist.Store into the interface would
+		// make the field non-nil-interface-over-nil-pointer (s.Triage != nil but a nil
+		// receiver), which would panic in RangeDeviantTriage. Leaving it the nil
+		// interface keeps the tap's nil-tolerant path (every row reads normal). The tap
+		// only READS it; the only write path is the token-gated admin endpoint above.
+		if built.Persist != nil {
+			src.Triage = built.Persist
+		}
 		go func() {
 			log.Printf("staged-range: dashboard tap on %s", *tapAddr)
 			if err := http.ListenAndServe(*tapAddr, src.Handler()); err != nil {
