@@ -231,6 +231,33 @@ require the full multi-node control plane and must be **decoupled** from it (gap
   for the *identity/L7* fields — the audit record is only as defensible as the
   enriched record under it.
 
+  > **Shipped (slice A + external-witness anchor):** the per-action chain is a
+  > **per-scope, hash-chained, append-only** log (`internal/intelligence/audit`), keyed
+  > with HMAC-SHA256 when `-audit-hmac-key` is set (tamper-EVIDENT against a file-only
+  > attacker lacking the key), exportable as an IR-handoff case report (`Export`) with a
+  > recomputed `Verify` verdict, carrying **"bytes of real data crossed = 0"** as a
+  > provable field. Two residuals are **in-band undetectable** even keyed — (a)
+  > truncate-to-a-valid-prefix + head-rewrite and (b) whole-scope erasure — because a
+  > fresh store sees a consistent-but-incomplete state with nothing left to recompute
+  > against. These are now closed **at the SOC, not in-engine**: the engine PUBLISHES a
+  > per-scope **external-witness anchor** (the audit chain's high-water-mark — head hash,
+  > record count, latest seq, algo/keyed markers) to the operator's OWN SIEM on a coarse
+  > cadence, as an add-only `audit-anchor` SIEM event (schema v2; the new fields are
+  > omitempty so a v1 touch event is byte-identical except `schema_version`). The SOC
+  > holds the last-seen anchor and **compares** it against the live chain (`Verify` /
+  > `Export` / the next anchor): a scope that is now empty, shorter (latest-seq
+  > regressed), or different-headed than the witness it last saw is a **provable**
+  > deletion/truncation. This is **publish-then-detect-AT-the-SOC, NOT in-engine
+  > auto-detection** — the SIEM path is one-way (the engine never reads it back, never
+  > alarms on its own), and it is **not** proof against an attacker who *also* controls
+  > the operator's SIEM endpoint and can forge/suppress anchors or rewrite the SOC's
+  > stored anchor history (same-box-plus-SIEM-control is out of scope). The anchor is
+  > **LOCAL operator metadata** on the operator's own SIEM path (rule 9) — chain
+  > metadata about their own deployment, never the cross-customer feed. Coarse cadence
+  > means anything appended after the last anchor and then erased is below the witness's
+  > resolution (the SOC detects relative to the last-seen high-water-mark, not the
+  > instantaneous tip).
+
 - **Verifiable, timed, RBAC-gated kill-switch + basic audited command palette.** The
   primitive exists — `Governor.Kill()` / `Governor.Revive()` in
   `internal/sting/attrition/governor.go` — but it has **zero external callers**, no

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/intelligence/audit"
 	"github.com/canarysting/canarysting/internal/intelligence/l7events"
 )
 
@@ -44,6 +45,23 @@ type Source interface {
 	Reap(now time.Time) int
 }
 
+// AuditWitnessSource is the narrow READ-ONLY view the drain needs to publish the
+// EXTERNAL-WITNESS anchor (the per-scope audit-chain high-water-mark). It mirrors the
+// Source pattern: a narrow interface keeps the drain testable with an in-process fake
+// and documents that the publisher is READ-ONLY against the audit store — it never
+// calls Verify/Export/append, only the cheap HighWaterMark tuple. *audit.Store
+// satisfies it (Scopes + HighWaterMark).
+//
+// It imports the audit package only for the HighWaterMark return type. That edge is
+// leak-safe: audit's only internal imports are contract + engine/persist (no
+// intelligence/network), so siem -> audit -> {contract, persist} keeps
+// importguard_test.go (siem MUST NOT import network) green. The anchor is LOCAL
+// operator data (rule 9): it rides this local SIEM path, never the cross-customer feed.
+type AuditWitnessSource interface {
+	Scopes() []contract.ScopeKey
+	HighWaterMark(contract.ScopeKey) (audit.HighWaterMark, bool)
+}
+
 // Config wires one emitter. Sink and Source are required; Interval defaults to
 // DefaultInterval when zero. ExtraScopes lets the caller guarantee at least the
 // boundary scope is drained even before any record exists in it (Snapshot of an empty
@@ -54,6 +72,12 @@ type Config struct {
 	Sink        Emitter
 	Interval    time.Duration
 	ExtraScopes []contract.ScopeKey
+	// AuditSrc, when non-nil, enables the EXTERNAL-WITNESS anchor: the drain publishes
+	// each scope's audit-chain high-water-mark on a COARSE cadence (anchorInterval, like
+	// the reap — NOT every tick, NOT on the verdict hot path). nil => no anchor work
+	// (the live posture is byte-unchanged). It is the operator's OWN local audit
+	// metadata on the operator's OWN SIEM path (rule 9), never the cross-customer feed.
+	AuditSrc AuditWitnessSource
 	// Now overrides the clock (tests); nil => time.Now.
 	Now func() time.Time
 	// ReapEnabled drives l7events.Reap(now) on each tick (the slice-2 emitter is the
@@ -82,6 +106,16 @@ const maxRetries = 2
 // ~30d), so the full-store scan under the Capture lock runs ~hourly, not every tick.
 const reapInterval = time.Hour
 
+// anchorInterval is how often the drain publishes the per-scope external-witness
+// anchor (the audit-chain high-water-mark). It is COARSE (hourly, like the reap) by
+// design: a witness only needs to be fresh-ish — the residuals (truncate-to-valid-
+// prefix / whole-scope-erasure) are detected by COMPARISON at the SOC against the
+// last-seen high-water-mark, not by anchor frequency. The rule-8 trade-off: anything
+// appended after the last anchor and then erased is below the witness's resolution; if
+// a tighter bound is wanted, lower this — but NEVER put the publish on the verdict hot
+// path. Reading the head/count is a read-only stat, off the decision path entirely.
+const anchorInterval = time.Hour
+
 // cursorEntry is the per-record emit cursor: the (HitCount, LastSeen) last emitted for
 // an EventID. A record re-emits when its EventID is unseen OR its recurrence advanced
 // (so a repeat touch on the same key emits an UPDATE, not a silent drop and not a dup).
@@ -100,6 +134,12 @@ type Drainer struct {
 	now         func() time.Time
 	reap        bool
 	lastReap    time.Time // last time the TTL reap ran (coarse cadence; see reapInterval)
+
+	// auditSrc is the optional external-witness source; nil => no anchor publish.
+	// lastAnchor tracks the coarse anchor cadence (sibling to lastReap; see
+	// anchorInterval). Both are touched only from Run's single goroutine (no lock).
+	auditSrc   AuditWitnessSource
+	lastAnchor time.Time
 
 	// cursor is keyed by EventID -> last-emitted recurrence. It lives in the emitter
 	// (the store stays the authoritative read side). It is only touched from Run's
@@ -131,6 +171,7 @@ func New(cfg Config) *Drainer {
 		extraScopes: cfg.ExtraScopes,
 		now:         now,
 		reap:        cfg.ReapEnabled,
+		auditSrc:    cfg.AuditSrc,
 		cursor:      map[string]cursorEntry{},
 	}
 }
@@ -178,6 +219,29 @@ func (d *Drainer) drainOnce(ctx context.Context) {
 		_ = d.src.Reap(now)
 		d.lastReap = now
 	}
+	if d.auditSrc != nil && now.Sub(d.lastAnchor) >= anchorInterval {
+		// EXTERNAL-WITNESS anchor: publish each scope's audit-chain high-water-mark on
+		// the SAME one-way emit path (bounded retry + drop-on-outage), on a COARSE
+		// cadence (anchorInterval, like the reap — NOT every tick). Rule 8: this runs
+		// only on the hourly tick inside the background drain, off the verdict hot path
+		// entirely; reading the head/count is a read-only stat. Iterate d.auditScopes()
+		// — the AUDIT store's OWN scope set (union ExtraScopes), NOT the l7events touch
+		// scopes — so the witness covers EVERY chain, including a scope that has audit
+		// records but has emitted no SIEM touch (otherwise such a chain would never be
+		// anchored, the exact coverage gap the witness exists to prevent). HighWaterMark
+		// returns ok=false for an empty/genesis scope, so an un-chained scope is harmlessly
+		// skipped. nil auditSrc (no audit store / no DB) skips all of this, so the live
+		// posture is byte-unchanged until the witness is wired.
+		for _, sc := range d.auditScopes() {
+			hwm, ok := d.auditSrc.HighWaterMark(sc)
+			if !ok {
+				continue
+			}
+			hwm.Timestamp = now // stamp the publish wall-clock (the store owns no clock)
+			d.emit(ctx, FromHighWaterMark(hwm))
+		}
+		d.lastAnchor = now
+	}
 	// live collects every EventID currently retained in the store this tick, so the
 	// cursor can be pruned to the live set below — otherwise it would grow without
 	// bound (one entry per distinct touch EVER emitted), defeating the store's own
@@ -203,15 +267,43 @@ func (d *Drainer) drainOnce(ctx context.Context) {
 	}
 }
 
+// auditScopes is the union of the AUDIT store's OWN scopes and any configured
+// ExtraScopes (deduped) — the set the external-witness anchor must cover. It is keyed
+// off the audit store, NOT the l7events touch scopes scopes() uses, so a scope that has
+// an audit chain but has produced no SIEM touch still gets an anchor (the witness must
+// cover every chain). nil auditSrc => only ExtraScopes (each skipped by HighWaterMark
+// until it has a chain).
+func (d *Drainer) auditScopes() []contract.ScopeKey {
+	seen := map[contract.ScopeKey]bool{}
+	var out []contract.ScopeKey
+	if d.auditSrc != nil {
+		for _, sc := range d.auditSrc.Scopes() {
+			if sc != "" && !seen[sc] {
+				seen[sc] = true
+				out = append(out, sc)
+			}
+		}
+	}
+	for _, sc := range d.extraScopes {
+		if sc != "" && !seen[sc] {
+			seen[sc] = true
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
 // scopes is the union of the store's live scopes and any configured ExtraScopes
 // (deduped), so the boundary scope is always drained even before it holds a record.
 func (d *Drainer) scopes() []contract.ScopeKey {
 	seen := map[contract.ScopeKey]bool{}
 	var out []contract.ScopeKey
-	for _, sc := range d.src.Scopes() {
-		if !seen[sc] {
-			seen[sc] = true
-			out = append(out, sc)
+	if d.src != nil {
+		for _, sc := range d.src.Scopes() {
+			if !seen[sc] {
+				seen[sc] = true
+				out = append(out, sc)
+			}
 		}
 	}
 	for _, sc := range d.extraScopes {

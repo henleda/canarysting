@@ -278,6 +278,25 @@ func FormatCEF(ev SiemEvent) string {
 	ext = append(ext, "cn2Label=bytes_real_data_crossed")
 	ext = append(ext, "cn2="+strconv.FormatInt(ev.BytesRealDataCrossed, 10))
 
+	// Audit-anchor fields (v2, ADD-ONLY) — present ONLY on an EventTypeAuditAnchor
+	// event, omitted otherwise (the add() empty-guard drops the head hash / algo for a
+	// touch, and the count/seq blocks are gated on the event_type so a touch's zero
+	// audit counts are not emitted as spurious extension lines). This keeps the CEF
+	// view in lockstep with the JSON wire: a missed add() here would silently drop the
+	// anchor fields in the CEF view even though JSON carries them.
+	if ev.EventType == EventTypeAuditAnchor {
+		add("cs6Label", "audit_head_hash")
+		add("cs6", ev.AuditHeadHash)
+		add("cs7Label", "audit_algo")
+		add("cs7", ev.AuditAlgo)
+		ext = append(ext, "cn3Label=audit_record_count")
+		ext = append(ext, "cn3="+strconv.Itoa(ev.AuditRecordCount))
+		ext = append(ext, "cn4Label=audit_latest_seq")
+		ext = append(ext, "cn4="+strconv.FormatUint(ev.AuditLatestSeq, 10))
+		ext = append(ext, "cs8Label=audit_keyed")
+		ext = append(ext, "cs8="+strconv.FormatBool(ev.AuditKeyed))
+	}
+
 	return header + "|" + strings.Join(ext, " ")
 }
 

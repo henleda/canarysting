@@ -650,6 +650,52 @@ func (s *Store) GetAuditHead(scope contract.ScopeKey) (head []byte, ok bool, err
 	return head, ok, err
 }
 
+// AuditChainStat returns one scope's audit-chain HIGH-WATER-MARK cheaply: the chain
+// head, the record count, and the latest seq — WITHOUT decoding any record. It is a
+// single read transaction that reads the per-scope head (like GetAuditHead), the
+// records sub-bucket's KeyN (its record count, O(1) from bbolt's bucket stats), and
+// the sub-bucket's monotonic Sequence (the last NextSequence value handed out — the
+// latest assigned seq). ok=false when the scope has no chain yet (no head and no
+// records), so the caller skips an empty/genesis scope.
+//
+// It is the read accessor the external-witness anchor rides on: the witness publishes
+// (head, count, latestSeq) per scope to the operator's SIEM so the SOC can later
+// compare the live chain against the last-seen high-water-mark (whole-scope erasure /
+// truncate-to-valid-prefix are detectable AT THE SOC by that comparison; see
+// audit.Store.HighWaterMark and docs). It adds NO bucket, NO key, NO schema field —
+// it only reads layout AppendAuditAndHead already wrote, so persist.SchemaVersion is
+// unchanged.
+//
+// INTEGRITY COUPLING: count and latestSeq are returned independently and are equal
+// ONLY because the audit chain is APPEND-ONLY (AppendAuditAndHead never deletes a
+// record and assigns a contiguous 1-based seq via NextSequence). If a future TTL/cap
+// reaper is ever added to the audit chain, count and latestSeq will DIVERGE and the
+// SOC-side truncation signal must use latestSeq (monotonic) — never count. bbolt's
+// Sequence() persists the high-water sequence even if records were deleted, so it
+// stays the right monotonic truncation signal under a hypothetical future reaper.
+func (s *Store) AuditChainStat(scope contract.ScopeKey) (head []byte, count int, latestSeq uint64, ok bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		sb, e := scopeSub(tx, bktAuditChain, scope, false)
+		if e != nil || sb == nil {
+			return e
+		}
+		if h := sb.Get(auditHeadKey); h != nil {
+			head = append([]byte(nil), h...)
+			ok = true
+		}
+		recs := sb.Bucket(auditRecordsSub)
+		if recs != nil {
+			count = recs.Stats().KeyN
+			latestSeq = recs.Sequence()
+			if count > 0 {
+				ok = true
+			}
+		}
+		return nil
+	})
+	return head, count, latestSeq, ok, err
+}
+
 // RangeAuditChain calls fn for every (seq, blob) in scope's chain in ascending
 // seq order (chain order, oldest first) — the order Verify/Export walk. blob must
 // not be retained past the call (it points into the read transaction).

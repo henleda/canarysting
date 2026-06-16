@@ -73,8 +73,16 @@
 //	Detecting either needs an EXTERNAL witness — a per-scope head / high-water-mark
 //	periodically published to the SIEM emitter or a WORM sink, so a later "scope is
 //	empty / shorter than the witness saw N records" is a provable deletion. That
-//	witness is ROADMAP (see Verify); this package does NOT claim to detect (a) or (b).
-//	Cross-scope relocation is NOT in this residual set — it is now detected (above).
+//	witness is now PUBLISHED: HighWaterMark exposes the per-scope (head, count,
+//	latestSeq, algo/keyed) tuple, and the SIEM Drainer publishes it per scope on a
+//	coarse cadence as an EventTypeAuditAnchor event to the operator's OWN SIEM. The
+//	ENGINE still does NOT detect (a)/(b) IN-BAND — the SIEM is one-way (rule 8), so a
+//	fresh Store has nothing in-band left to recompute against. (a)/(b) are closed AT
+//	THE SOC by COMPARISON: the SOC holds the last-published anchor and flags a live
+//	chain that is empty / shorter (latestSeq regressed) / different-headed than the
+//	witness it last saw. This is publish-then-detect-at-SOC, NOT in-engine auto-
+//	detection, and NOT proof against an attacker who also controls the SOC's anchor
+//	history. Cross-scope relocation is NOT in this residual set — it is detected (above).
 //
 //	UNKEYED (HMACKey nil): detects only ACCIDENTAL corruption and NAIVE edits that
 //	do not re-run the public chain. It is NOT tamper-evident against a knowledgeable
@@ -427,6 +435,100 @@ func NewWithConfig(store *persist.Store, cfg Config) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// HighWaterMark is the per-scope EXTERNAL-WITNESS tuple: the cheap chain metadata an
+// off-box witness needs to later detect the two in-band-undetectable residuals (a)
+// truncate-to-a-valid-prefix and (b) whole-scope erasure (see the package THREAT
+// MODEL and Verify). It carries NO record content / NO touch PII — only the chain
+// head, the record count, the latest seq, the link-function markers, and the publish
+// wall-clock. It is LOCAL operator data (rule 9): it describes the operator's OWN
+// chain and rides the operator's OWN local SIEM path, never the cross-customer feed.
+//
+// INTEGRITY ASSUMPTION (documented coupling): LatestSeq == Count holds for an intact,
+// never-reaped chain — Verify asserts the seq is contiguous-from-1 and nothing ever
+// deletes an audit record (the chain is append-only). If a future TTL/cap reaper is
+// ever added to the audit chain, LatestSeq (monotonic) is the truncation signal the
+// SOC must compare on, NOT Count. See persist.AuditChainStat for the same note.
+type HighWaterMark struct {
+	// Scope is the rule-5 resolved scope label this witness describes.
+	Scope contract.ScopeKey
+	// Head is the chain head hash (the Hash of the latest record). Hex-encoded on the
+	// SIEM wire by the projector.
+	Head []byte
+	// Count is the number of records in the chain.
+	Count int
+	// LatestSeq is the latest (highest) per-scope seq assigned. For an intact,
+	// never-reaped chain this equals Count; it is the monotonic truncation signal.
+	LatestSeq uint64
+	// Algo is the link-function marker (AlgoSHA256 or AlgoHMACSHA256) — store-wide.
+	Algo string
+	// Keyed reports whether the chain is HMAC-keyed — store-wide.
+	Keyed bool
+	// Timestamp is the publish wall-clock (set by the publisher, not the store).
+	Timestamp time.Time
+}
+
+// HighWaterMark returns the per-scope witness tuple cheaply (effectively O(1)): Head,
+// Keyed, and Algo come straight from in-memory store state (the head mirror + the
+// store mode), and only Count + LatestSeq are read — without decoding any record —
+// from the durable persist.AuditChainStat (a single read tx) or, in the no-DB mode,
+// from the in-memory chain (len + last record's Seq). ok=false for an unknown/empty/
+// genesis scope (no head, no records) so the publisher skips it — a scope with no
+// chain has no witness to publish yet.
+//
+// Timestamp is left ZERO here; the publisher stamps the publish wall-clock (the store
+// does not own a clock). This is a READ-ONLY accessor (rule 8): it never arms, scores,
+// or feeds back into a verdict — it only surfaces chain metadata for the off-box
+// witness publish.
+func (s *Store) HighWaterMark(scope contract.ScopeKey) (HighWaterMark, bool) {
+	if s == nil || scope == "" {
+		// nil-receiver safe: a typed-nil *Store assigned to an AuditWitnessSource
+		// interface is a non-nil interface, so the SIEM drain's guard would still call
+		// here — return ok=false rather than panic.
+		return HighWaterMark{}, false
+	}
+	hwm := HighWaterMark{
+		Scope: scope,
+		Algo:  s.algoName(),
+		Keyed: s.Keyed(),
+	}
+	head, ok := s.headFor(scope)
+	if ok {
+		hwm.Head = append([]byte(nil), head...)
+	}
+
+	if s.store == nil {
+		// No-DB / in-memory mode: read Count + LatestSeq directly off the in-memory
+		// chain. Never touches a nil DB.
+		s.mu.Lock()
+		mc := s.mem[scope]
+		if mc == nil || len(mc.records) == 0 {
+			s.mu.Unlock()
+			return HighWaterMark{}, false
+		}
+		hwm.Count = len(mc.records)
+		hwm.LatestSeq = mc.records[len(mc.records)-1].Seq
+		s.mu.Unlock()
+		return hwm, true
+	}
+
+	// Durable mode: read Head + Count + LatestSeq from the SAME single persist read tx
+	// (AuditChainStat, no gob decode). Use the tx's OWN head (ph) — NOT the in-memory
+	// mirror read at the top — so the published tuple is ONE consistent snapshot: a
+	// mirror head from one instant paired with a count from a later tx could skew under a
+	// concurrent append and raise a spurious SOC alarm. AuditChainStat copies ph out of
+	// the tx, so it is safe to retain.
+	ph, count, latestSeq, pok, err := s.store.AuditChainStat(scope)
+	if err != nil || !pok || count == 0 {
+		return HighWaterMark{}, false
+	}
+	hwm.Count = count
+	hwm.LatestSeq = latestSeq
+	if ph != nil {
+		hwm.Head = ph
+	}
+	return hwm, true
 }
 
 // Keyed reports whether this Store keys its chain with the HMAC anchor. Surfaced so
@@ -801,8 +903,14 @@ func (s *Store) chainRecords(scope contract.ScopeKey) ([]*AuditRecord, error) {
 //	      is left to recompute, so Verify reports a fresh/empty scope as Intact.
 //	Detecting either requires an EXTERNAL witness — a per-scope head / high-water-mark
 //	periodically published to the SIEM emitter or a WORM sink, so a later "scope empty
-//	or shorter than the witness saw N records" is provable. ROADMAP, not provided here.
-//	(Cross-scope relocation is NOT a residual — it is now detected; see check (0).)
+//	or shorter than the witness saw N records" is provable. That witness is now
+//	PUBLISHED (HighWaterMark + the SIEM Drainer's coarse per-scope EventTypeAuditAnchor),
+//	so (a)/(b) are detectable AT THE SOC by comparing the live chain (Verify/Export or
+//	the next anchor) against the last-seen anchor. Verify itself still does NOT detect
+//	(a)/(b) IN-BAND — its job is to recompute the surviving chain and SURFACE the live
+//	count/head so the SOC has the live side to compare; the SIEM is one-way (rule 8),
+//	the engine never alarms on its own. (Cross-scope relocation is NOT a residual — it
+//	is detected; see check (0).)
 //
 // FIX 2: if a scope holds RECORDS but the store has NO tracked head for it, that is
 // itself reported as a BREAK (not Intact, not skipped) — once a chain has records an

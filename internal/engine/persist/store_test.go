@@ -495,3 +495,54 @@ func TestOpenBackCompatWithoutTopologyBucket(t *testing.T) {
 		t.Fatalf("topology write after legacy reopen failed: %v", err)
 	}
 }
+
+// TestAuditChainStat: the cheap high-water-mark accessor returns the right head,
+// record count, and latest seq for a known chain — without decoding any record — and
+// ok=false for a scope with no chain. It is the read the external-witness anchor rides.
+func TestAuditChainStat(t *testing.T) {
+	s := openTemp(t)
+
+	// Empty scope: nothing to witness.
+	if _, count, latest, ok, err := s.AuditChainStat("scope-a"); err != nil || ok || count != 0 || latest != 0 {
+		t.Fatalf("empty scope stat = (count=%d latest=%d ok=%v err=%v), want all zero/false", count, latest, ok, err)
+	}
+
+	// Append 3 records via the public chain-advance API; the head we set is the last
+	// newHead, the count is 3, the latest seq is 3 (1-based contiguous).
+	var lastHead []byte
+	for i := 0; i < 3; i++ {
+		head := []byte{byte(0xA0 + i), byte(i)}
+		seq, err := s.AppendAuditAndHead("scope-a", func(prevHead []byte, seq uint64) (recordBlob, newHead []byte, err error) {
+			return []byte("blob"), head, nil
+		})
+		if err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+		if seq != uint64(i+1) {
+			t.Fatalf("append %d returned seq %d, want %d", i, seq, i+1)
+		}
+		lastHead = head
+	}
+
+	head, count, latest, ok, err := s.AuditChainStat("scope-a")
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !ok {
+		t.Fatal("stat ok=false for a populated chain")
+	}
+	if count != 3 {
+		t.Fatalf("count = %d, want 3", count)
+	}
+	if latest != 3 {
+		t.Fatalf("latestSeq = %d, want 3", latest)
+	}
+	if string(head) != string(lastHead) {
+		t.Fatalf("head = %x, want %x (the last newHead written)", head, lastHead)
+	}
+
+	// A second scope is isolated (rule 5): its stat is independent / empty.
+	if _, count, _, ok, _ := s.AuditChainStat("scope-b"); ok || count != 0 {
+		t.Fatalf("scope-b stat leaked scope-a state: count=%d ok=%v", count, ok)
+	}
+}

@@ -1300,3 +1300,130 @@ func TestDurableReopenContinuesKeyedChain(t *testing.T) {
 		t.Fatalf("rehydrated keyed chain must continue + validate (4 records, keyed): %+v", vr)
 	}
 }
+
+// --- EXTERNAL-WITNESS high-water-mark accessor ------------------------------
+
+// TestHighWaterMarkDurableReflectsChain: the durable HighWaterMark returns the right
+// head/count/latestSeq for a known chain — and the head equals the chain's last
+// record's Hash (the witness tuple the SOC compares against).
+func TestHighWaterMarkDurableReflectsChain(t *testing.T) {
+	s, _ := openDurable(t)
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	const n = 5
+	for i := uint64(1); i <= n; i++ {
+		if err := s.Capture(decision("scope-a", i, contract.TierContain, "GET", "/p", "1.2.3.4:1", "", now.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatalf("capture %d: %v", i, err)
+		}
+	}
+	hwm, ok := s.HighWaterMark("scope-a")
+	if !ok {
+		t.Fatal("HighWaterMark(scope-a) ok=false for a populated chain")
+	}
+	if hwm.Count != n {
+		t.Fatalf("Count = %d, want %d", hwm.Count, n)
+	}
+	if hwm.LatestSeq != n {
+		t.Fatalf("LatestSeq = %d, want %d (append-only intact chain: latestSeq==count)", hwm.LatestSeq, n)
+	}
+	if hwm.Scope != "scope-a" {
+		t.Fatalf("Scope = %q, want scope-a", hwm.Scope)
+	}
+	if hwm.Keyed {
+		t.Fatalf("unkeyed store reported Keyed=true")
+	}
+	if hwm.Algo != AlgoSHA256 {
+		t.Fatalf("Algo = %q, want %q", hwm.Algo, AlgoSHA256)
+	}
+	// Head must equal the chain's last-record Hash (the in-memory mirror) and the
+	// store's tracked head.
+	recs, err := s.chainRecords("scope-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := recs[len(recs)-1]
+	if !bytes.Equal(hwm.Head, last.Hash) {
+		t.Fatalf("Head %x != last record Hash %x", hwm.Head, last.Hash)
+	}
+	headTracked, _ := s.headFor("scope-a")
+	if !bytes.Equal(hwm.Head, headTracked) {
+		t.Fatalf("Head %x != tracked head %x", hwm.Head, headTracked)
+	}
+	// An unknown / empty scope has no witness yet.
+	if _, ok := s.HighWaterMark("nope"); ok {
+		t.Fatal("HighWaterMark(unknown scope) ok=true, want false (no chain => nothing to witness)")
+	}
+	if _, ok := s.HighWaterMark(""); ok {
+		t.Fatal("HighWaterMark(\"\") ok=true, want false")
+	}
+}
+
+// TestHighWaterMarkInMemoryReflectsChain: the no-DB path reads Count/LatestSeq off the
+// in-memory chain and never touches a nil DB.
+func TestHighWaterMarkInMemoryReflectsChain(t *testing.T) {
+	s := New(nil) // in-memory, no DB
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	for i := uint64(1); i <= 3; i++ {
+		if err := s.Capture(decision("s", i, contract.TierContain, "GET", "/p", "1.2.3.4:1", "", now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hwm, ok := s.HighWaterMark("s")
+	if !ok || hwm.Count != 3 || hwm.LatestSeq != 3 {
+		t.Fatalf("in-memory HighWaterMark = %+v ok=%v, want count=3 latestSeq=3", hwm, ok)
+	}
+	recs, _ := s.chainRecords("s")
+	if !bytes.Equal(hwm.Head, recs[2].Hash) {
+		t.Fatalf("in-memory Head %x != last record Hash %x", hwm.Head, recs[2].Hash)
+	}
+	if _, ok := s.HighWaterMark("never-touched"); ok {
+		t.Fatal("in-memory HighWaterMark(empty scope) ok=true, want false")
+	}
+}
+
+// TestHighWaterMarkKeyedMarkers: a keyed store reports Keyed=true + the hmac algo, so
+// the published anchor states the threat model the chain was built under.
+func TestHighWaterMarkKeyedMarkers(t *testing.T) {
+	s, err := NewWithConfig(nil, Config{HMACKey: []byte("k")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	if err := s.Capture(decision("s", 1, contract.TierJail, "POST", "/p", "1.2.3.4:1", "", now)); err != nil {
+		t.Fatal(err)
+	}
+	hwm, ok := s.HighWaterMark("s")
+	if !ok || !hwm.Keyed || hwm.Algo != AlgoHMACSHA256 {
+		t.Fatalf("keyed HighWaterMark = %+v ok=%v, want Keyed=true algo=%q", hwm, ok, AlgoHMACSHA256)
+	}
+}
+
+// TestHighWaterMarkTracksTruncationSignal: after a chain grows, the LatestSeq advances
+// monotonically — the signal the SOC compares against the last-seen anchor. (Erasure /
+// truncation is detected OFF-BOX by comparing a later, smaller/absent high-water-mark
+// to the witness the SOC already holds; this asserts the live side that the SOC reads.)
+func TestHighWaterMarkTracksTruncationSignal(t *testing.T) {
+	s, _ := openDurable(t)
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	if err := s.Capture(decision("scope-a", 1, contract.TierContain, "GET", "/p", "1.2.3.4:1", "", now)); err != nil {
+		t.Fatal(err)
+	}
+	hwm1, _ := s.HighWaterMark("scope-a")
+	if hwm1.LatestSeq != 1 || hwm1.Count != 1 {
+		t.Fatalf("after 1 record: %+v, want count=1 latestSeq=1", hwm1)
+	}
+	for i := uint64(2); i <= 4; i++ {
+		if err := s.Capture(decision("scope-a", i, contract.TierContain, "GET", "/p", "1.2.3.4:1", "", now.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hwm2, _ := s.HighWaterMark("scope-a")
+	if hwm2.LatestSeq != 4 || hwm2.Count != 4 {
+		t.Fatalf("after 4 records: %+v, want count=4 latestSeq=4", hwm2)
+	}
+	if hwm2.LatestSeq <= hwm1.LatestSeq {
+		t.Fatalf("LatestSeq did not advance: %d -> %d", hwm1.LatestSeq, hwm2.LatestSeq)
+	}
+	if bytes.Equal(hwm1.Head, hwm2.Head) {
+		t.Fatal("Head did not change as the chain grew (the head is the per-scope tip)")
+	}
+}
