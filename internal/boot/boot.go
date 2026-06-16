@@ -292,9 +292,12 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 		// it detects accidental corruption + naive edits ONLY, NOT a knowledgeable DB-
 		// write adversary (who can recompute the public chain). In BOTH modes WHOLE-SCOPE
 		// erasure (and the truncate-AND-rewrite-head-to-a-valid-prefix residual) is
-		// undetected — that needs an external high-water-mark/witness (periodic head
-		// publication to the SIEM/WORM); roadmap, not claimed here. See the audit package
-		// doc. NewWithConfig surfaces a rehydrate read error (FIX 2 — integrity-bearing,
+		// undetectable IN-BAND (from the chain alone) — but is now detectable AT THE SOC
+		// via the EXTERNAL-WITNESS anchor: the SIEM emitter publishes each scope's
+		// high-water-mark (head/count/latest-seq) off-box on a coarse cadence (wired below
+		// as the Drainer AuditSrc), and the SOC compares the last-seen anchor against the
+		// live chain. Detection is AT THE SOC, not in-engine (the SIEM is one-way push).
+		// See the audit package doc. NewWithConfig surfaces a rehydrate read error (FIX 2 — integrity-bearing,
 		// so a failure to read the persisted heads is boot-fatal, never swallowed).
 		var auditKey []byte
 		if opts.AuditHMACKeyPath != "" {
@@ -330,6 +333,17 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 				Interval:    opts.SIEMInterval,
 				ExtraScopes: []contract.ScopeKey{contract.ScopeKey(opts.Boundary)},
 				ReapEnabled: true, // the slice-2 emitter owns the 30d TTL reap (l7events store.go)
+				// EXTERNAL-WITNESS anchor: publish each scope's audit-chain high-water-mark on
+				// a coarse cadence to the operator's OWN SIEM, so the SOC can detect whole-scope
+				// erasure / truncate-to-valid-prefix by comparing the last-seen anchor against
+				// the live chain (publish-then-detect-AT-SOC, NOT in-engine; the SIEM is one-way).
+				// This block only runs WITH a DB, so b.Audit is a real (non-nil) *audit.Store
+				// here and the anchor guard runs; HighWaterMark returns ok=false for an empty
+				// scope (the runtime null-safety net). (Go typed-nil trap: a nil *audit.Store
+				// assigned to AuditWitnessSource would be a NON-nil interface — that case does
+				// not arise here, and HighWaterMark is nil-receiver-safe regardless.) The anchor
+				// is LOCAL operator metadata (rule 9), never the cross-customer feed.
+				AuditSrc: b.Audit,
 			})
 		}
 		// D5-Phase-2: the confirmed-malicious profile store reads flow events from the

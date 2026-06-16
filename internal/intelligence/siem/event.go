@@ -1,9 +1,12 @@
 package siem
 
 import (
+	"encoding/hex"
+	"strconv"
 	"time"
 
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/intelligence/audit"
 	"github.com/canarysting/canarysting/internal/intelligence/l7events"
 )
 
@@ -16,7 +19,16 @@ import (
 // never changes meaning. A SOC parser written against v1 keeps working against a
 // later emitter. Bump SchemaVersion only when fields are ADDED, and document the
 // addition — never to repurpose.
-const SchemaVersion = 1
+//
+// v1 -> v2 (audit-anchor, ADD-ONLY): appended the five audit_* fields below and the
+// EventTypeAuditAnchor event_type, for the external-witness anchor (a per-scope audit-
+// chain high-water-mark published to the operator's OWN SIEM). NO v1 field was removed
+// or repurposed and NO JSON tag changed meaning, so a v1 canary-touch event is byte-
+// identical except schema_version=2 (the new fields are omitempty and zero for a
+// touch). A SOC parser MUST range-check the version (>=1), not exact-match ==1.
+// persist.SchemaVersion (the durable baseline format) is a DIFFERENT, independent
+// version and is UNCHANGED.
+const SchemaVersion = 2
 
 // EventTypeCanaryTouch is the base event type: a decoy was touched and the engine
 // took a (sub-jail) action.
@@ -31,6 +43,23 @@ const EventTypeCanaryTouch = "canary-touch"
 // `action` field is the tier-derived engine decision, not a confirmed effect. Derived
 // from the verdict tier, never a second signal.
 const EventTypeKernelJail = "kernel-jail"
+
+// EventTypeAuditAnchor is the EXTERNAL-WITNESS anchor (v2, ADD-ONLY): a periodic per-
+// scope publish of the tamper-evident audit chain's HIGH-WATER-MARK (head hash +
+// record count + latest seq + algo/keyed markers) to the operator's OWN SIEM. It is a
+// THIRD discriminator value on the existing EventType field — a v1 SOC parser that
+// branches on event_type simply sees a new type and ignores it; nothing existing is
+// repurposed. It carries NO touch PII (no src/path/SPIFFE/tier/score/cookie) — only
+// chain metadata about the operator's own deployment.
+//
+// It exists so the SOC can detect the two residuals the engine CANNOT detect in-band
+// (truncate-to-a-valid-prefix + whole-scope-erasure; see internal/intelligence/audit
+// THREAT MODEL): the SOC holds the last-published anchor and compares it against the
+// live chain (a later "scope empty, or shorter / different head than the witness saw
+// N records" is a provable deletion/truncation). This is PUBLISH-then-detect-AT-SOC,
+// NOT in-engine auto-detection — the SIEM emitter is one-way; the engine never reads
+// it back (rule 8).
+const EventTypeAuditAnchor = "audit-anchor"
 
 // SiemEvent is the canonical, stable, versioned serialization of one EnrichedTouchRecord
 // + the engine verdict it drove, mapped onto the fields the record CAN fill today.
@@ -96,6 +125,27 @@ type SiemEvent struct {
 	// real data (the decoy is fake by construction). Always 0; emitted explicitly so a
 	// SOC reads the fact rather than inferring it. Not omitempty — the 0 is load-bearing.
 	BytesRealDataCrossed int64 `json:"bytes_real_data_crossed"`
+
+	// --- audit-anchor fields (v2, ADD-ONLY) ----------------------------------
+	//
+	// These five fields are ONLY set on an EventTypeAuditAnchor event (the external-
+	// witness anchor). They are omitempty, so a canary-touch / kernel-jail event drops
+	// them entirely (byte-identical to v1 except schema_version=2). They carry the per-
+	// scope audit-chain high-water-mark — chain metadata about the operator's OWN
+	// deployment, NOT touch PII. The rest of an anchor's tuple reuses the existing
+	// SchemaVersion / Scope / Timestamp v1 fields.
+
+	// AuditHeadHash is the hex of the chain head (the Hash of the latest record).
+	AuditHeadHash string `json:"audit_head_hash,omitempty"`
+	// AuditRecordCount is the number of records in the scope's chain.
+	AuditRecordCount int `json:"audit_record_count,omitempty"`
+	// AuditLatestSeq is the latest (highest) per-scope seq — the monotonic truncation
+	// signal the SOC compares against (regression => provable truncation).
+	AuditLatestSeq uint64 `json:"audit_latest_seq,omitempty"`
+	// AuditAlgo is the chain link function ("sha256" | "hmac-sha256").
+	AuditAlgo string `json:"audit_algo,omitempty"`
+	// AuditKeyed reports whether the chain is HMAC-keyed.
+	AuditKeyed bool `json:"audit_keyed,omitempty"`
 }
 
 // FromRecord maps an EnrichedTouchRecord onto the canonical SiemEvent. It is a pure
@@ -145,4 +195,34 @@ func eventTypeForTier(tier int) string {
 		return EventTypeKernelJail
 	}
 	return EventTypeCanaryTouch
+}
+
+// FromHighWaterMark is the pure projector for the external-witness anchor (sibling to
+// FromRecord). It maps a per-scope audit-chain high-water-mark onto an
+// EventTypeAuditAnchor SiemEvent: it sets the v2 audit_* fields (head hash hex-encoded,
+// count, latest seq, algo, keyed), reuses the existing SchemaVersion / Scope /
+// Timestamp v1 fields, and mints a DETERMINISTIC-but-distinguishable EventID
+// ("audit-anchor|<scope>|<latestSeq>") so the drop-on-outage log line (siem.go) reads
+// sanely and a SOC can dedup — successive hourly anchors for the same scope advance
+// the seq, so they are distinct events, never dedup'd into one.
+//
+// It leaves ALL touch-specific fields (src/path/SPIFFE/tier/score/socket_cookie/
+// canary_type/hit_count/first_seen) zero so JSON omitempty drops them — an anchor
+// carries NO touch PII, only chain metadata about the operator's OWN deployment.
+// BytesRealDataCrossed is intentionally left 0 (the load-bearing structural zero that
+// is always present on the wire). Rule 8: this is a pure read-side projection; it
+// arms nothing.
+func FromHighWaterMark(hwm audit.HighWaterMark) SiemEvent {
+	return SiemEvent{
+		SchemaVersion:    SchemaVersion,
+		EventID:          EventTypeAuditAnchor + "|" + string(hwm.Scope) + "|" + strconv.FormatUint(hwm.LatestSeq, 10),
+		EventType:        EventTypeAuditAnchor,
+		Scope:            string(hwm.Scope),
+		Timestamp:        hwm.Timestamp,
+		AuditHeadHash:    hex.EncodeToString(hwm.Head),
+		AuditRecordCount: hwm.Count,
+		AuditLatestSeq:   hwm.LatestSeq,
+		AuditAlgo:        hwm.Algo,
+		AuditKeyed:       hwm.Keyed,
+	}
 }
