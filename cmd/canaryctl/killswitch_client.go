@@ -193,6 +193,19 @@ func readToken(path string) string {
 	return tok
 }
 
+// adminURL builds the admin request URL from a bare host:port (mirroring the server
+// -killswitch-admin-addr flag) and a path. net/url needs a SCHEME: without one,
+// "127.0.0.1:9610/killswitch" parses with "127.0.0.1" mistaken for the scheme ("first
+// path segment in URL cannot contain colon"). We default to http (the B1 admin is
+// plaintext loopback) and honor an explicit http(s):// if the operator supplied one.
+func adminURL(addr, path string) string {
+	base := strings.TrimSpace(addr)
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	return strings.TrimRight(base, "/") + path
+}
+
 // doRequest performs one admin call and returns the decoded Status. It fail-closes
 // (log.Fatalf, binary-prefixed) on a missing address, a transport error, a non-2xx
 // response (surfacing the status line + body), or a decode error. It branches on the
@@ -202,7 +215,7 @@ func doRequest(method, addr, path, tok, operator string, body []byte, action str
 	if strings.TrimSpace(addr) == "" {
 		log.Fatalf("canaryctl: killswitch %s: -killswitch-admin-addr is REQUIRED (loopback host:port, e.g. 127.0.0.1:9090)", action)
 	}
-	url := strings.TrimRight(addr, "/") + path
+	url := adminURL(addr, path)
 
 	var reqBody *bytes.Reader
 	if body != nil {
