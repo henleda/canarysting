@@ -173,10 +173,11 @@ func TestKillSwitchTogglesAuditIntoChain(t *testing.T) {
 
 	// A real decision first (Jail), then engage + revive (both audited).
 	escalateToJail(t, built, 0xABCD, now)
-	if _, err := built.EngageKillSwitch(now.Add(time.Second), time.Hour, "ir", "incident"); err != nil {
+	idIR := boot.OperatorIdentity{Name: "ir", Role: "operator", AuthVia: "single-token"}
+	if _, err := built.EngageKillSwitch(now.Add(time.Second), time.Hour, idIR, "incident"); err != nil {
 		t.Fatalf("EngageKillSwitch audit: %v", err)
 	}
-	if _, err := built.ReviveKillSwitch(now.Add(2*time.Second), "ir", "resolved"); err != nil {
+	if _, err := built.ReviveKillSwitch(now.Add(2*time.Second), idIR, "resolved"); err != nil {
 		t.Fatalf("ReviveKillSwitch audit: %v", err)
 	}
 
@@ -200,6 +201,10 @@ func TestKillSwitchTogglesAuditIntoChain(t *testing.T) {
 			engages++
 			if r.Posture["operator"] != "ir" || r.Posture["reason"] != "incident" {
 				t.Fatalf("engage operator-action posture wrong: %+v", r.Posture)
+			}
+			// Additive RBAC posture keys: role + auth_via are threaded from the identity.
+			if r.Posture["role"] != "operator" || r.Posture["auth_via"] != "single-token" {
+				t.Fatalf("engage posture missing role/auth_via: %+v", r.Posture)
 			}
 		case r.Kind == audit.KindOperator && r.Action == "kill_switch_revive":
 			revives++

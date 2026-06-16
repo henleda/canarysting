@@ -102,7 +102,7 @@ Treat unbounded generation as a bug, not a feature.
 > attrition **`Governor`** (`internal/sting/attrition/governor.go`) is the resource
 > governor's own trip: it bounds attrition's compute and halts/declines attrition
 > streams under host pressure. It does NOT gate the async kernel jail. (2) The operator
-> **enforcement DISARM kill-switch** (`internal/sting/killswitch`, slice B1) is the
+> **enforcement DISARM kill-switch** (`internal/sting/killswitch`, slices B1+B2) is the
 > deployment-wide, timed, audited "stop the stings" lever: it floors every emitted
 > verdict's tier at the engine, halting BOTH attrition and the kernel jail downstream.
 > The operator-facing kill-switch is the killswitch package, not the Governor.

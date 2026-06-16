@@ -241,18 +241,25 @@ require the full multi-node control plane and must be **decoupled** from it (gap
   the **timed-kill proof** are the pilot-gating parts for the platform and regulated
   personas.
 
-  > **B1 shipped (slice B1):** a deployment-wide, **timed, auto-expiring** enforcement
+  > **Shipped (slices B1 + B2):** a deployment-wide, **timed, auto-expiring** enforcement
   > kill-switch (`internal/sting/killswitch`) is wired at the engine emit-seam — when
-  > engaged it floors every emitted verdict's tier to observe, which provably halts
-  > BOTH the inline attrition pump AND the async kernel jail downstream (enforcement is
-  > strictly downstream of the emitted tier), evaluated against the engine's own trusted
-  > clock. Every engage/revive is appended to the tamper-evident audit chain. A
-  > token-gated, loopback, fail-closed admin endpoint (`-killswitch-admin-addr` /
-  > `-killswitch-token-file`) operates it. **Honest gap → B2:** auth is a single shared
-  > operator secret (a bearer token), NOT per-identity RBAC/SSO, and the recorded
-  > operator is an advisory header; per-identity RBAC, mTLS for a remote operator, and a
-  > kernel-map flush for already-jailed silent cookies are the remaining B2 work. So
-  > "RBAC-gated" above remains the target, not yet the shipped state.
+  > engaged it floors every emitted verdict's tier to observe, which provably halts BOTH
+  > the inline attrition pump AND the async kernel jail downstream (enforcement is strictly
+  > downstream of the emitted tier), evaluated against the engine's own trusted clock.
+  > Every engage/revive is appended to the tamper-evident audit chain. A loopback-only,
+  > fail-closed admin endpoint (`-killswitch-admin-addr`) operates it, with `canaryctl
+  > killswitch engage|revive|status` (+ `-json`) as the operator/agent surface.
+  > **B2 per-identity RBAC SHIPPED:** `-killswitch-principals-file` carries a JSON
+  > directory of named operators, each with their own bearer token (stored as a
+  > `token_sha256`; the raw token is issued out of band) and a role (`viewer` = status
+  > only; `operator` = engage/revive/status). The admin resolves a **VERIFIED** identity
+  > from the presented token (constant-time hashed lookup) and records it in the audit —
+  > a caller **cannot** falsify the operator via a header. The legacy single
+  > `-killswitch-token-file` (advisory operator) still works (back-compat). **Remaining
+  > gap → further B2:** mTLS/SSO client identity (this is still a bearer-token secret, not
+  > a cert/federated identity) and a kernel-map flush for already-jailed *silent* cookies
+  > (a flow that re-touches a canary IS de-escalated). So "RBAC-gated" is now SHIPPED as
+  > per-identity **token** RBAC; mTLS/SSO remains the target.
 
 ## Safety evidence package + posture controls
 

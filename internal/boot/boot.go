@@ -495,19 +495,48 @@ func (b *Built) StartSIEMEmitter(ctx context.Context) {
 	}
 }
 
+// OperatorIdentity is the verified-or-advisory actor identity an admin handler
+// threads into a kill-switch toggle so the audit chain records WHO acted, WITH
+// WHAT ROLE, and HOW they were authenticated. It is an engine-side-only Go struct
+// (NO proto/contract/.proto change; persist.SchemaVersion unchanged) carried into
+// the audit Posture additively.
+//
+// AuthVia distinguishes the two auth modes so an audit reader can tell whether
+// Name is a VERIFIED identity (per-identity token RBAC: the operator was resolved
+// from their own bearer token, X-Operator ignored) or an ADVISORY one (legacy
+// single-shared-token mode: Name is the self-asserted X-Operator header, only as
+// trustworthy as B1 ever was). This is the explicit signal the risks note calls
+// for: a reader must never mistake an advisory operator for a verified one.
+type OperatorIdentity struct {
+	// Name is the operator recorded into Posture["operator"]. In principals mode it
+	// is the VERIFIED principal.Name (not spoofable via X-Operator); in single-token
+	// mode it is the advisory X-Operator value (back-compat with B1).
+	Name string
+	// Role is recorded into Posture["role"]. For a mutating action (engage/revive)
+	// this is always "operator" — a viewer is 403'd before reaching here and never
+	// produces a record — but it is carried explicitly so the audit chain attests
+	// the role the action was authorized under.
+	Role string
+	// AuthVia is recorded into Posture["auth_via"]: "principal" when resolved from
+	// the principals file (Name is VERIFIED) or "single-token" in legacy mode (Name
+	// is the ADVISORY X-Operator header).
+	AuthVia string
+}
+
 // EngageKillSwitch trips the deployment-wide enforcement DISARM as of now (d<=0 =>
 // indefinite, until revived) and APPENDS a tamper-evident operator-action record
 // into the boundary scope's audit chain — the SAME chain the engine's decisions
 // ride, so the chain is one timeline of decisions AND operator actions. It is the
 // seam the token-gated admin endpoint (cmd/staged-range) calls, so the toggle and
-// its audit can never drift apart. operator/reason are recorded for the audit
-// trail. The kill-switch is engaged FIRST (the safety action must take effect even
-// if the audit append later errors — fail toward LESS enforcement), then audited;
-// an audit error is RETURNED so the caller surfaces it (the chain is integrity-
-// bearing). Returns the resulting Status. RULE 8: this only disarms enforcement.
-func (b *Built) EngageKillSwitch(now time.Time, d time.Duration, operator, reason string) (killswitch.Status, error) {
-	st := b.KillSwitch.Engage(now, d, operator, reason)
-	err := b.auditOperatorAction("kill_switch_engage", operator, reason, st, now)
+// its audit can never drift apart. The verified-or-advisory identity (id) and
+// reason are recorded for the audit trail. The kill-switch is engaged FIRST (the
+// safety action must take effect even if the audit append later errors — fail
+// toward LESS enforcement), then audited; an audit error is RETURNED so the caller
+// surfaces it (the chain is integrity-bearing). Returns the resulting Status.
+// RULE 8: this only disarms enforcement.
+func (b *Built) EngageKillSwitch(now time.Time, d time.Duration, id OperatorIdentity, reason string) (killswitch.Status, error) {
+	st := b.KillSwitch.Engage(now, d, id.Name, reason)
+	err := b.auditOperatorAction("kill_switch_engage", id, reason, st, now)
 	return st, err
 }
 
@@ -516,9 +545,9 @@ func (b *Built) EngageKillSwitch(now time.Time, d time.Duration, operator, reaso
 // idempotent and only ever REDUCES the disarm's effect — i.e. restores normal
 // enforcement), then the audit append; an audit error is returned. Returns the
 // resulting (disengaged) Status.
-func (b *Built) ReviveKillSwitch(now time.Time, operator, reason string) (killswitch.Status, error) {
-	st := b.KillSwitch.Revive(now, operator, reason)
-	err := b.auditOperatorAction("kill_switch_revive", operator, reason, st, now)
+func (b *Built) ReviveKillSwitch(now time.Time, id OperatorIdentity, reason string) (killswitch.Status, error) {
+	st := b.KillSwitch.Revive(now, id.Name, reason)
+	err := b.auditOperatorAction("kill_switch_revive", id, reason, st, now)
 	return st, err
 }
 
@@ -526,16 +555,30 @@ func (b *Built) ReviveKillSwitch(now time.Time, operator, reason string) (killsw
 // into the boundary scope's tamper-evident chain. It is a no-op (nil) when there is
 // no audit store (no DB) or no boundary scope — the kill-switch itself still works;
 // only the durable audit trail is unavailable, which the caller may log. The
-// operator/reason and the resulting engaged/expiry posture are recorded as Posture
+// identity/reason and the resulting engaged/expiry posture are recorded as Posture
 // facts (never fabricated — they are exactly what was applied).
-func (b *Built) auditOperatorAction(action, operator, reason string, st killswitch.Status, now time.Time) error {
+//
+// The role + auth_via Posture keys are ADDITIVE: per the per-record chaining,
+// Hash is computed over each record's OWN Posture (canonicalPreimage marshals the
+// sorted map), so adding these keys changes only the preimage of NEW records;
+// every existing on-disk record keeps its original Posture and Hash and still
+// Verifies. role is only set when non-empty (so a legacy caller that supplied no
+// role — should not happen via the admin, but be defensive — does not write an
+// empty-string key).
+func (b *Built) auditOperatorAction(action string, id OperatorIdentity, reason string, st killswitch.Status, now time.Time) error {
 	if b.Audit == nil || b.BoundaryScope == "" {
 		return nil
 	}
 	posture := map[string]string{
-		"operator": operator,
+		"operator": id.Name,
 		"reason":   reason,
 		"engaged":  strconv.FormatBool(st.Engaged),
+	}
+	if id.Role != "" {
+		posture["role"] = id.Role
+	}
+	if id.AuthVia != "" {
+		posture["auth_via"] = id.AuthVia
 	}
 	if !st.ExpiresAt.IsZero() {
 		posture["expires_at"] = st.ExpiresAt.UTC().Format(time.RFC3339)
