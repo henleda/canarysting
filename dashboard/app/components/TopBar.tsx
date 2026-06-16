@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { utcClock } from '@/lib/format';
+import { utcClock, fmtUtc, isZeroTime } from '@/lib/format';
 import type { Overview } from '@/lib/types';
 import type { DataStatus } from '@/lib/useOverview';
 
@@ -46,6 +46,17 @@ export default function TopBar({ snapshot, status }: { snapshot: Overview | null
   const baseClass = baselineLive ? 'pill live' : 'pill';
   const baseText = baselineLive ? 'BASELINE LIVE' : 'BASELINE WARMING';
 
+  // Kill-switch pill: ONLY rendered when enforcement is halted. Gate purely on the
+  // authoritative `engaged` bit (safe-access — kill_switch may be absent on a
+  // partial payload). When disengaged/loading it is not rendered at all (the quiet
+  // armed posture stays uncluttered). Zero expires_at sentinel == INDEFINITE.
+  const ks = snapshot?.kill_switch;
+  const ksEngaged = ks?.engaged ?? false;
+  const ksOperator = ks?.operator || 'operator';
+  const ksIndefinite = isZeroTime(ks?.expires_at);
+  const ksExpiry = ksIndefinite ? 'INDEFINITE' : `expires ${fmtUtc(ks?.expires_at) || ks?.expires_at}`;
+  const ksText = `ENFORCEMENT HALTED · ${ksOperator} · ${ksExpiry}`;
+
   return (
     <header className="topbar">
       <div className="brand">
@@ -72,6 +83,12 @@ export default function TopBar({ snapshot, status }: { snapshot: Overview | null
         <span className="dot" />
         {baseText}
       </span>
+      {ksEngaged && (
+        <span className="pill halted">
+          <span className="dot" />
+          {ksText}
+        </span>
+      )}
       {status === 'stale' && (
         <span className="pill" style={{ borderColor: 'rgba(255,206,58,0.45)', color: 'var(--canary)' }}>
           <span className="dot" style={{ background: 'var(--canary)' }} />

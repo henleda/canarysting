@@ -677,3 +677,34 @@ body { min-height: 100%; }
 .deviant-detail-honesty .pill-observe { margin-right: 8px; }
 .deviant-detail-honesty code { font-family: var(--mono); font-size: 10px; color: var(--canary); }
 .deviant-detail-honesty strong { color: var(--ink); font-weight: 600; }
+
+/* ==========================================================================
+ * KILL-SWITCH (B1/B2) — deployment-wide enforcement-halted posture. ADDITIVE
+ * ONLY: a NEW .killswitch-banner block + a NEW .pill.halted variant. No
+ * signed-off class (.pill base, .sim-badge, .score, .funnel, .hero, .cell) is
+ * restyled — the .pill.halted rule only ADDS a danger tint on top of the base
+ * .pill, exactly like the .pill.ok / .pill.live recipe (:114-115). Tinted with
+ * the --sting red danger token. Both surfaces self-hide when disengaged (the
+ * components render nothing), so these styles are inert in the normal posture.
+ * ========================================================================== */
+
+/* TopBar pill — the persistent halted chip. Mirrors .pill.ok/.pill.live: only
+   recolors the border/text/dot of the base .pill (which it does not touch). */
+.pill.halted { border-color: rgba(255,77,96,0.55); color: var(--sting); background: rgba(255,77,96,0.08); }
+.pill.halted .dot { background: var(--sting); box-shadow: 0 0 9px var(--sting); animation: pulse 1.6s infinite; }
+
+/* The PRIMARY full-width banner. Structurally mirrors the .sim-badge disclosure
+   (:417-420) but scaled up to a deployment-wide alert: a left danger accent, a
+   --sting wash, and a clear headline + honest observe-only sub-line. */
+.killswitch-banner { background: linear-gradient(90deg, rgba(255,77,96,0.12), rgba(255,77,96,0.05));
+  border-top: 1px solid rgba(255,77,96,0.45); border-bottom: 1px solid rgba(255,77,96,0.45);
+  border-left: 4px solid var(--sting); padding: 12px 28px; display: flex; flex-direction: column; gap: 6px;
+  box-shadow: inset 0 0 40px rgba(255,77,96,0.07); }
+.killswitch-banner .ksb-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
+.killswitch-banner .ksb-mark { color: var(--sting); font-size: 14px; line-height: 1; }
+.killswitch-banner .ksb-headline { font-family: var(--display); font-weight: 800; font-size: 13.5px;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--sting); }
+.killswitch-banner .ksb-meta { font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; color: var(--ink-dim); }
+.killswitch-banner .ksb-meta b { color: var(--ink); }
+.killswitch-banner .ksb-sub { font-family: var(--sans); font-size: 11.5px; line-height: 1.55; color: var(--ink-dim); }
+.killswitch-banner .ksb-sub code { font-family: var(--mono); font-size: 10.5px; color: var(--canary); }

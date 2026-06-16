@@ -24,6 +24,19 @@ export const fixtureOverview: Overview = {
   simulated: true,
   calibration: { calibrated: true, evidence_seen: 50, evidence_floor: 50 },
 
+  // FIXTURE-ONLY sample (NEXT_PUBLIC_FIXTURE=1) — an ENGAGED kill-switch so the
+  // banner + topbar pill render in the pixel-fidelity check. In production this
+  // comes from the live tap; the normal armed posture is engaged:false (quiet).
+  // engaged_at/expires_at are real timestamps here (a 1-hour timed engagement);
+  // set expires_at to '0001-01-01T00:00:00Z' to exercise the INDEFINITE path.
+  kill_switch: {
+    engaged: true,
+    operator: 'ir-oncall',
+    reason: 'IR drill',
+    engaged_at: '2026-06-09T00:00:00Z',
+    expires_at: '2026-06-09T01:00:00Z',
+  },
+
   // Fleet band: distinct armed flows this window (snapshot, not cumulative).
   // Internally consistent with the cumulative-reach invariants: decoy_touched ==
   // distinct_count == distinct_active == fixtureFlowsList.total_count (3 = rows reaching

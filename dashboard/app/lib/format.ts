@@ -72,6 +72,32 @@ export function fmtAgo(iso: string, nowMs?: number): string {
   return `${hr}h ago`;
 }
 
+// isZeroTime: true for the Go zero-value time.Time sentinel that encoding/json
+// emits ('0001-01-01T00:00:00Z') for an unset time.Time STRUCT (omitempty does
+// not omit a struct). Also treats empty/missing as "not set". The kill_switch
+// engaged_at/expires_at fields use this to distinguish 'indefinite'/'not set'
+// from a real timestamp — Date.parse('0001-01-01T00:00:00Z') is finite, so a
+// naive relative-time render would print a huge "ago"; branch on this first.
+export function isZeroTime(iso?: string | null): boolean {
+  if (!iso) return true;
+  return iso.startsWith('0001-01-01T00:00:00');
+}
+
+// fmtUtc: an RFC3339 timestamp -> a compact UTC display ("2026-06-09 01:00 UTC").
+// Returns "" for the zero sentinel / empty / unparseable (caller renders a
+// fallback like "indefinite"). Cosmetic only — never gates posture.
+export function fmtUtc(iso?: string | null): string {
+  if (isZeroTime(iso)) return '';
+  const t = Date.parse(iso as string);
+  if (!Number.isFinite(t)) return '';
+  const d = new Date(t);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`
+  );
+}
+
 // utcClock: "HH:MM:SS UTC" for the live topbar clock (matches the prototype).
 export function utcClock(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');

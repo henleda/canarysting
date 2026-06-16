@@ -11,6 +11,29 @@ export interface CalibView {
   evidence_floor: number;
 }
 
+// KillSwitchView is the deployment-wide enforcement kill-switch posture (B1/B2).
+// 1:1 mirror of internal/sting/killswitch/killswitch.go:47-63 (Status struct) — the
+// SOURCE OF TRUTH for these json tags. The wire key everywhere is `kill_switch`.
+// READ-ONLY on the dashboard: rendered as a posture indicator, never controlled
+// here (engage/revive is canaryctl + the token-gated admin endpoint).
+//
+// AUTHORITATIVE BIT: gate purely on `engaged`. A timed engagement past its expiry
+// reports engaged=false on the very next tap poll while operator/reason may still
+// echo the last snapshot — never infer "engaged" from the presence of those fields.
+//
+// ZERO-TIME SENTINEL: engaged_at/expires_at carry Go `omitempty` tags but are
+// time.Time STRUCTS, so encoding/json does NOT actually omit them — they serialize
+// as '0001-01-01T00:00:00Z' when unset. They are marked optional below for safety,
+// but in practice arrive as the year-0001 sentinel string. Treat that sentinel as
+// 'not set' (engaged_at) / 'indefinite' (expires_at), never as a real timestamp.
+export interface KillSwitchView {
+  engaged: boolean; // authoritative halt bit — always present, never omitted
+  operator?: string; // who disarmed enforcement (X-Operator; "operator" default)
+  reason?: string; // free-text reason for the halt
+  engaged_at?: string; // RFC3339; '0001-01-01T00:00:00Z' sentinel == not set
+  expires_at?: string; // RFC3339; '0001-01-01T00:00:00Z' sentinel == INDEFINITE (until revived)
+}
+
 // FlowView is the currently-tracked attacker flow shown in the live panel.
 // Identity is the socket-cookie hex only (flow_id_hex like "0x118"); there are
 // no source IPs/roles in the data — source_label is empty for now.
@@ -283,6 +306,11 @@ export interface Overview {
   tap_reachable: boolean;
   calibration: CalibView;
   baseline_live: boolean;
+
+  // Deployment-wide enforcement kill-switch posture (read-only display field).
+  // Out-of-band on the dashboard JSON view only — never on the gRPC verdict
+  // contract. Gate all UI purely on kill_switch.engaged.
+  kill_switch: KillSwitchView;
 
   // Data-gated simulated disclosure: the whole demo is simdriver traffic, not a
   // live customer fleet. Gates the ⚠ sim-badge on the wall.

@@ -68,7 +68,10 @@ type TapState struct {
 	CrossCustomer CrossCustomerView        `json:"cross_customer"`
 	ReconLive     []ReconLiveFlowView      `json:"recon_live"`
 	Bystanders    []BystanderFlowView      `json:"bystanders"`
-	At            time.Time                `json:"at"`
+	// KillSwitch mirrors the tap's kill_switch block. WITHOUT this field b.fetchState()
+	// (json.Unmarshal into TapState) would silently drop the tap's kill_switch.
+	KillSwitch KillSwitchView `json:"kill_switch"`
+	At         time.Time      `json:"at"`
 }
 
 // ReconLiveFlowView mirrors the tap's recon_live entries: a currently-live flow
@@ -115,6 +118,33 @@ type BystanderView struct {
 	Note   string              `json:"note"`
 }
 
+// KillSwitchView mirrors the tap's kill_switch block: the SLICE-B1 deployment-wide
+// enforcement-DISARM read-only status (engaged / operator / reason / engaged_at /
+// expires_at). The backend NEVER imports the killswitch (or tap) package — this is a
+// pure local decode mirror, exactly like CrossCustomerView mirrors the tap's
+// cross_customer block. The dashboard renders "ENFORCEMENT HALTED by <operator>,
+// expires <t>" from it; it is purely a read-only display field — the write/control
+// path stays on canaryctl + the token-gated admin endpoint.
+//
+// SOURCE OF TRUTH / DRIFT GUARD: these fields and json tags are reused VERBATIM from
+// internal/sting/killswitch.Status (killswitch.go:47-63). If anyone edits those tags
+// later, this mirror and the tap will silently diverge (the backend does not import
+// the type, by design), so keep them 1:1 with that struct.
+//
+// ZERO-TIME SENTINEL: EngagedAt/ExpiresAt carry omitempty tags but are time.Time
+// STRUCTS, so encoding/json does NOT omit them — they serialize as
+// "0001-01-01T00:00:00Z" when unset. A zero ExpiresAt means INDEFINITE (until
+// revived); a zero EngagedAt means "not set". The UI must treat the 0001 sentinel
+// accordingly, and gate purely on Engaged (a timed engagement past its expiry reports
+// Engaged=false while operator/reason may still echo the last snapshot).
+type KillSwitchView struct {
+	Engaged   bool      `json:"engaged"`
+	Operator  string    `json:"operator,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	EngagedAt time.Time `json:"engaged_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
 // CrossCustomerView mirrors the tap's cross_customer block: the D6 consumer-side
 // signal — how many network-confirmed patterns are loaded into detection, the k
 // distinct-enrolled-scopes provenance, and whether the current adversary flow
@@ -141,6 +171,10 @@ type Overview struct {
 	TapReachable bool      `json:"tap_reachable"`
 	Calibration  CalibView `json:"calibration"`
 	BaselineLive bool      `json:"baseline_live"`
+	// KillSwitch is the SLICE-B1 read-only enforcement-DISARM posture, surfaced as a
+	// topbar pill + prominent banner. Pure passthrough of the tap's kill_switch (see
+	// KillSwitchView). Gate purely on Engaged; it is the authoritative halt bit.
+	KillSwitch KillSwitchView `json:"kill_switch"`
 
 	// Hero left: live escalation + tier ladder.
 	Escalation EscalationView `json:"escalation"`
@@ -466,6 +500,12 @@ func Derive(state TapState, events []intelligence.AdversaryInteractionEvent, now
 		TapReachable: true,
 		Calibration:  calib,
 		BaselineLive: state.Baseline.Live,
+		// KillSwitch: pure passthrough of the tap's read-only enforcement-DISARM status.
+		// The dashboard only displays it (read-only); engage/revive is canaryctl + the
+		// token-gated admin endpoint. Auto-expiry needs no code here — the backend
+		// re-polls the tap every 5s and re-runs Derive, so a lapsed timed kill-switch
+		// surfaces as engaged=false on the next tick.
+		KillSwitch: state.KillSwitch,
 		Escalation: EscalationView{
 			Flow:              flow,
 			TierLadder:        ladder,

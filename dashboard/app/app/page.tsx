@@ -3,6 +3,7 @@
 import { useOverview } from '@/lib/useOverview';
 import { fixtureOverview } from '@/lib/fixture';
 import TopBar from '@/components/TopBar';
+import KillSwitchBanner from '@/components/KillSwitchBanner';
 import FleetSafety from '@/components/FleetSafety';
 import KernelContainment from '@/components/KernelContainment';
 import BystanderHealth from '@/components/BystanderHealth';
@@ -24,6 +25,11 @@ export default function OperationsPage() {
   return (
     <div className="app">
       <TopBar snapshot={snapshot} status={effectiveStatus} />
+      {/* Deployment-wide enforcement kill-switch banner. PROMINENT + red when
+          engaged (DISARMED posture an IR/CISO viewer must not miss); self-hides
+          (returns null) when disengaged so the wall stays quiet. Read-only — the
+          engage/revive control is canaryctl + the token-gated admin endpoint. */}
+      <KillSwitchBanner snapshot={snapshot} />
       {/* Row 2 — THE FLEET WALL: "is the fleet safe?" answered full-width. The
           structural-zero claim (PrecisionFunnel) + the cumulative-reach distinct-flow
           funnel (observed › decoy-touched › contained › jailed). The old redundant
