@@ -35,13 +35,14 @@ func writeToken(t *testing.T, tok string) string {
 	return p
 }
 
-// No token file => refuse to construct (fail-closed: never an unauthenticated switch).
+// No token file AND no principals file => refuse to construct (fail-closed: never an
+// unauthenticated switch).
 func TestAdminRefusesWithoutToken(t *testing.T) {
-	if _, err := newKillSwitchAdmin(buildForAdmin(t), ""); err == nil {
-		t.Fatal("admin must refuse to start without a token file")
+	if _, err := newKillSwitchAdmin(buildForAdmin(t), "", ""); err == nil {
+		t.Fatal("admin must refuse to start without a token or principals file")
 	}
 	empty := writeToken(t, "   \n")
-	if _, err := newKillSwitchAdmin(buildForAdmin(t), empty); err == nil {
+	if _, err := newKillSwitchAdmin(buildForAdmin(t), empty, ""); err == nil {
 		t.Fatal("admin must refuse an empty token file")
 	}
 }
@@ -63,7 +64,7 @@ func TestAdminRequiresLoopback(t *testing.T) {
 // Requests without the bearer token get 401 and change nothing.
 func TestAdminUnauthorized(t *testing.T) {
 	built := buildForAdmin(t)
-	admin, err := newKillSwitchAdmin(built, writeToken(t, "s3cr3t"))
+	admin, err := newKillSwitchAdmin(built, writeToken(t, "s3cr3t"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +105,7 @@ func TestAdminUnauthorized(t *testing.T) {
 func TestAdminEngageStatusRevive(t *testing.T) {
 	built := buildForAdmin(t)
 	const tok = "operator-shared-secret"
-	admin, err := newKillSwitchAdmin(built, writeToken(t, tok))
+	admin, err := newKillSwitchAdmin(built, writeToken(t, tok), "")
 	if err != nil {
 		t.Fatal(err)
 	}
