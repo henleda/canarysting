@@ -241,6 +241,19 @@ require the full multi-node control plane and must be **decoupled** from it (gap
   the **timed-kill proof** are the pilot-gating parts for the platform and regulated
   personas.
 
+  > **B1 shipped (slice B1):** a deployment-wide, **timed, auto-expiring** enforcement
+  > kill-switch (`internal/sting/killswitch`) is wired at the engine emit-seam — when
+  > engaged it floors every emitted verdict's tier to observe, which provably halts
+  > BOTH the inline attrition pump AND the async kernel jail downstream (enforcement is
+  > strictly downstream of the emitted tier), evaluated against the engine's own trusted
+  > clock. Every engage/revive is appended to the tamper-evident audit chain. A
+  > token-gated, loopback, fail-closed admin endpoint (`-killswitch-admin-addr` /
+  > `-killswitch-token-file`) operates it. **Honest gap → B2:** auth is a single shared
+  > operator secret (a bearer token), NOT per-identity RBAC/SSO, and the recorded
+  > operator is an advisory header; per-identity RBAC, mTLS for a remote operator, and a
+  > kernel-map flush for already-jailed silent cookies are the remaining B2 work. So
+  > "RBAC-gated" above remains the target, not yet the shipped state.
+
 ## Safety evidence package + posture controls
 
 The skeptic and platform personas block on the *evidence*, not the design — the safe

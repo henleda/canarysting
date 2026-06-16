@@ -630,6 +630,43 @@ func TestAppendOperatorActionSharesChain(t *testing.T) {
 	}
 }
 
+// TestVerifyDetectsOperatorRecordTamper: an operator-action record (e.g. a kill-
+// switch toggle) is a first-class chain link, so editing one — here the recorded
+// Action label and a Posture fact — breaks Verify at that record's seq exactly like
+// a decision-record edit. This proves the kill-switch's engage/revive trail is
+// tamper-evident, not just appended.
+func TestVerifyDetectsOperatorRecordTamper(t *testing.T) {
+	s := New(nil) // in-memory mode so we can mutate the stored record directly
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	if err := s.Capture(decision("scope-a", 1, contract.TierJail, "GET", "/p", "1.2.3.4:1", "", now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(OperatorAction{
+		Scope:   "scope-a",
+		Action:  "kill_switch_engage",
+		Posture: map[string]string{"operator": "ir", "reason": "incident-42"},
+		Now:     now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Tamper with the operator-action record at seq 2: forge the reason and downgrade
+	// the action, leaving its (now stale) hash in place.
+	rec := s.mem["scope-a"].records[1]
+	if rec.Kind != KindOperator {
+		t.Fatalf("seq 2 should be the operator record, got kind %q", rec.Kind)
+	}
+	rec.Action = "kill_switch_revive"
+	rec.Posture["reason"] = "routine"
+
+	res, _ := s.Verify("scope-a")
+	if res.Intact {
+		t.Fatal("Verify must report a break after an operator-action record is tampered")
+	}
+	if res.BrokenAtSeq != 2 {
+		t.Fatalf("break should be at the tampered operator record seq 2, got %d (%s)", res.BrokenAtSeq, res.Reason)
+	}
+}
+
 // TestConcurrentSameScopeAppendsDoNotFork: concurrent Submits in the SAME scope hit
 // the seam concurrently (Submit is serial per flow, NOT per scope). The read-prev-
 // head + seq-reserve + head-write happen in ONE bbolt transaction, so the chain must
