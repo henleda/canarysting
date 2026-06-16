@@ -55,6 +55,14 @@ SIEM_FLAG=
 # (mode 0600, never committed). Then a file-only attacker lacking the key cannot forge
 # a chain Verify accepts. Do NOT generate or commit a key from this script.
 AUDIT_HMAC_FLAG=
+# SLICE-B1/B2 operator KILL-SWITCH admin endpoint — OFF by default (empty => no control
+# surface; the engine-side enforcement DISARM is always wired, there is just no way to
+# engage it). To enable, drop a bearer-token FILE outside baseline.db (mode 0600, never
+# committed) and set e.g.
+#   KILLSWITCH_FLAG=-killswitch-admin-addr 127.0.0.1:9610 -killswitch-token-file /etc/canarysting/killswitch.key
+# The addr MUST be loopback (refuses a non-loopback bind in B1; mTLS for remote = B2);
+# operate it with: canaryctl killswitch engage|revive|status. Do NOT commit a token.
+KILLSWITCH_FLAG=
 EOF
 
 echo "=== install + start systemd units (engine, then adapter) ==="
