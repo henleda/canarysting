@@ -1,4 +1,4 @@
-package identity
+package naming
 
 import (
 	"net/netip"
@@ -7,7 +7,7 @@ import (
 )
 
 // demoConfigPath is the shipped M7-window operator-identity map, relative to this
-// package (internal/topology/identity -> repo root is three levels up).
+// package (internal/identity/naming -> repo root is three levels up).
 var demoConfigPath = filepath.Join("..", "..", "..", "deploy", "m7-window", "topology-identities.json")
 
 // TestDemoConfigLoadsAndResolves loads the SHIPPED demo operator-map and asserts

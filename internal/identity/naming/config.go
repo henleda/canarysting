@@ -1,4 +1,4 @@
-package identity
+package naming
 
 import (
 	"encoding/json"
@@ -55,7 +55,7 @@ type Entry struct {
 func LoadConfig(r io.Reader) (*Config, error) {
 	var cfg Config
 	if err := json.NewDecoder(r).Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("identity: parse config: %w", err)
+		return nil, fmt.Errorf("naming: parse config: %w", err)
 	}
 	for i := range cfg.Entries {
 		if err := cfg.Entries[i].normalize(i); err != nil {
@@ -69,7 +69,7 @@ func LoadConfig(r io.Reader) (*Config, error) {
 func LoadConfigFile(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("identity: open config %q: %w", path, err)
+		return nil, fmt.Errorf("naming: open config %q: %w", path, err)
 	}
 	defer f.Close()
 	return LoadConfig(f)
@@ -79,7 +79,7 @@ func LoadConfigFile(path string) (*Config, error) {
 // entry's position, for legible error messages.
 func (e *Entry) normalize(idx int) error {
 	if strings.TrimSpace(e.Name) == "" {
-		return fmt.Errorf("identity: entry %d: empty name", idx)
+		return fmt.Errorf("naming: entry %d: empty name", idx)
 	}
 
 	switch e.Kind {
@@ -96,33 +96,33 @@ func (e *Entry) normalize(idx int) error {
 		// anonymous IP node.
 		e.kind = KindExternal
 	case "":
-		return fmt.Errorf("identity: entry %d (%q): missing kind (want \"service\", \"caller\", or \"external\")", idx, e.Name)
+		return fmt.Errorf("naming: entry %d (%q): missing kind (want \"service\", \"caller\", or \"external\")", idx, e.Name)
 	default:
-		return fmt.Errorf("identity: entry %d (%q): unknown kind %q (want \"service\", \"caller\", or \"external\")", idx, e.Name, e.Kind)
+		return fmt.Errorf("naming: entry %d (%q): unknown kind %q (want \"service\", \"caller\", or \"external\")", idx, e.Name, e.Kind)
 	}
 
 	if e.IP != "" && e.CIDR != "" {
-		return fmt.Errorf("identity: entry %d (%q): ip and cidr are mutually exclusive", idx, e.Name)
+		return fmt.Errorf("naming: entry %d (%q): ip and cidr are mutually exclusive", idx, e.Name)
 	}
 
 	if e.IP != "" {
 		addr, err := netip.ParseAddr(e.IP)
 		if err != nil {
-			return fmt.Errorf("identity: entry %d (%q): bad ip %q: %w", idx, e.Name, e.IP, err)
+			return fmt.Errorf("naming: entry %d (%q): bad ip %q: %w", idx, e.Name, e.IP, err)
 		}
 		e.addr = addr.Unmap()
 	}
 	if e.CIDR != "" {
 		pfx, err := netip.ParsePrefix(e.CIDR)
 		if err != nil {
-			return fmt.Errorf("identity: entry %d (%q): bad cidr %q: %w", idx, e.Name, e.CIDR, err)
+			return fmt.Errorf("naming: entry %d (%q): bad cidr %q: %w", idx, e.Name, e.CIDR, err)
 		}
 		e.prefix = pfx.Masked()
 	}
 	e.hasPort = e.Port != 0
 
 	if !e.addr.IsValid() && !e.prefix.IsValid() && !e.hasPort {
-		return fmt.Errorf("identity: entry %d (%q): no selector — need at least one of ip, cidr, or port", idx, e.Name)
+		return fmt.Errorf("naming: entry %d (%q): no selector — need at least one of ip, cidr, or port", idx, e.Name)
 	}
 	return nil
 }

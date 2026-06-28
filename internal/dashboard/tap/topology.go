@@ -7,7 +7,7 @@ package tap
 //   1. the engine's live in-memory learned topology map (the un-hashed directed
 //      edges + node catalog) via Aggregator.TopologySnapshot — the REAL observed
 //      graph SHAPE and volumes;
-//   2. the node-identity resolver (internal/topology/identity), which turns each
+//   2. the node-identity resolver (internal/identity/naming), which turns each
 //      raw IP/port/SPIFFE into a human-legible {Label, Kind}. The resolver is
 //      OPERATOR-DECLARED metadata, NOT an engine verdict, and is nil-tolerant: a
 //      nil resolver degrades every node to its IP label (staged_labels=false);
@@ -52,7 +52,7 @@ import (
 
 	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/contract"
-	"github.com/canarysting/canarysting/internal/topology/identity"
+	"github.com/canarysting/canarysting/internal/identity/naming"
 )
 
 // topologyTouchWindow is how far back a canary-touch event is considered "recent"
@@ -124,7 +124,7 @@ func (s *Source) buildTopology(now time.Time) TopologyView {
 	}
 	resolver := s.Resolver
 	if resolver == nil {
-		resolver = identity.NewResolver(nil) // degrade to IP labels; never panics
+		resolver = naming.NewResolver(nil) // degrade to IP labels; never panics
 	}
 
 	// nodes is the dedup set keyed by node ID, so an identity that is both an
@@ -156,7 +156,7 @@ func (s *Source) buildTopology(now time.Time) TopologyView {
 			srcNode := resolver.Resolve(srcIP, 0, "", "")
 			dstNode := resolver.Resolve(dstIP, e.DstPort, "", "")
 			// Clean-fabric filter: keep the edge ONLY if BOTH endpoints are named.
-			if srcNode.Kind == identity.KindUnknown || dstNode.Kind == identity.KindUnknown {
+			if srcNode.Kind == naming.KindUnknown || dstNode.Kind == naming.KindUnknown {
 				continue
 			}
 			srcID := coalescedNodeID(srcNode, srcIP, 0)
@@ -186,7 +186,7 @@ func (s *Source) buildTopology(now time.Time) TopologyView {
 		addNode(TopologyNode{
 			ID:    decoyNodeID(ct),
 			Label: string(ct),
-			Kind:  identity.KindDecoy.String(),
+			Kind:  naming.KindDecoy.String(),
 		})
 	}
 
@@ -290,7 +290,7 @@ func (s *Source) recentTouchEdges(now time.Time) []touchEdge {
 	src := TopologyNode{
 		ID:    srcID,
 		Label: touchSourceLabel(len(distinct)),
-		Kind:  identity.KindUnknown.String(),
+		Kind:  naming.KindUnknown.String(),
 	}
 	for i := range out {
 		out[i].src = src
@@ -355,8 +355,8 @@ func addrFrom(b []byte) netip.Addr {
 //     endpoints stay distinct. (In practice the clean-fabric filter drops edges
 //     touching an unknown endpoint, so this branch is only reachable if a future
 //     caller keeps unknown endpoints; it is kept correct regardless.)
-func coalescedNodeID(node identity.Node, ip netip.Addr, port uint16) string {
-	if node.Kind != identity.KindUnknown {
+func coalescedNodeID(node naming.Node, ip netip.Addr, port uint16) string {
+	if node.Kind != naming.KindUnknown {
 		return "id:" + node.Kind.String() + ":" + node.Label
 	}
 	addr := ""

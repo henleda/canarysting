@@ -35,8 +35,8 @@ import (
 	"github.com/canarysting/canarysting/internal/dashboard/tap"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
+	"github.com/canarysting/canarysting/internal/identity/naming"
 	"github.com/canarysting/canarysting/internal/intelligence/stagedlabel"
-	"github.com/canarysting/canarysting/internal/topology/identity"
 	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
@@ -92,7 +92,7 @@ func main() {
 		ksTokenFile      = flag.String("killswitch-token-file", "", "LEGACY single-shared-token mode: path to the bearer-token FILE that gates the kill-switch admin (held OUTSIDE baseline.db, like -audit-hmac-key). One of this or -killswitch-principals-file is REQUIRED to enable -killswitch-admin-addr; an empty/missing file refuses to start. The audited operator is the ADVISORY X-Operator header. Ignored if -killswitch-principals-file is also set (principals file wins).")
 		ksPrincipalsFile = flag.String("killswitch-principals-file", "", "path to a JSON principals file (token_sha256 -> {name, role}) for PER-IDENTITY kill-switch RBAC; takes precedence over -killswitch-token-file. Expected 0o600, held OUTSIDE baseline.db (like /etc/canarysting/anthropic.key). When set, the kill-switch admin resolves the VERIFIED operator/role from the presented bearer token and X-Operator is IGNORED; viewer role => status only, operator role => status+engage+revive. Tokens are stored HASHED (sha256); issue each operator their raw token out-of-band. Empty/missing/malformed refuses to start (no unauthenticated kill-switch).")
 		simPeersDemo     = flag.Bool("sim-peers-demo", false, "DEMO ONLY: mark the consumed cross-customer patterns as SIMULATED (cmd/sim-peers) so the dashboard discloses they came from synthetic peers we operate, not real customers. Auto-detected too if a <shared-spool>.simulated marker is present, so a forgotten flag can't silently present simulated data as real.")
-		topoIdents       = flag.String("topology-identities", "", "F1 learned-topology: JSON operator-declared node-identity map (IP/CIDR/port -> name) used to LABEL the topology nodes on /raw/topology (internal/topology/identity). Operator metadata, NOT an engine verdict; the engine knows only hashed adjacency. Nil-tolerant: with no file the topology nodes fall back to IP labels and staged_labels=false. Demo: deploy/m7-window/topology-identities.json.")
+		topoIdents       = flag.String("topology-identities", "", "F1 learned-topology: JSON operator-declared node-identity map (IP/CIDR/port -> name) used to LABEL the topology nodes on /raw/topology (internal/identity/naming). Operator metadata, NOT an engine verdict; the engine knows only hashed adjacency. Nil-tolerant: with no file the topology nodes fall back to IP labels and staged_labels=false. Demo: deploy/m7-window/topology-identities.json.")
 
 		registryPath = flag.String("ground-truth-registry", "", "REQUIRED: JSON file declaring legit vs attacker source IPs per scope")
 		iAmStaged    = flag.Bool("i-am-running-a-staged-range", false, "REQUIRED acknowledgement: this binary auto-labels from declared ground truth and must NEVER run in production")
@@ -210,18 +210,18 @@ func main() {
 	// state + the locked EventStore). It serves raw JSON only; all presentation is
 	// in the separate dashboard-backend.
 	if *tapAddr != "" {
-		// F1 topology node labeler (internal/topology/identity). NIL-TOLERANT: with
+		// F1 topology node labeler (internal/identity/naming). NIL-TOLERANT: with
 		// no -topology-identities file the resolver is left nil and the tap degrades
 		// every node to its IP label (staged_labels=false). A present-but-unparseable
 		// file is a fatal misconfig — an operator map with a typo must not silently
 		// mis-name (or drop) a node.
-		var topoResolver *identity.Resolver
+		var topoResolver *naming.Resolver
 		if *topoIdents != "" {
-			cfg, err := identity.LoadConfigFile(*topoIdents)
+			cfg, err := naming.LoadConfigFile(*topoIdents)
 			if err != nil {
 				log.Fatalf("staged-range: -topology-identities: %v", err)
 			}
-			topoResolver = identity.NewResolver(cfg)
+			topoResolver = naming.NewResolver(cfg)
 			log.Printf("staged-range: topology node labeler loaded from %q (%d entries)", *topoIdents, len(cfg.Entries))
 		}
 		src := &tap.Source{

@@ -8,7 +8,7 @@ package tap
 //      5 baseline novelty dims + peak label + hit-count + score) via
 //      Aggregator.DeviantSnapshot — flows that DEVIATED from the learned baseline
 //      but touched NO canary, captured for hunting;
-//   2. the node-identity resolver (internal/topology/identity), which turns the
+//   2. the node-identity resolver (internal/identity/naming), which turns the
 //      raw SRC/DST IP+port into a human-legible {label, kind}. The resolver is
 //      OPERATOR-DECLARED metadata, NOT an engine verdict, and is nil-tolerant: a
 //      nil resolver degrades every endpoint to its IP label (staged_labels=false).
@@ -36,7 +36,7 @@ import (
 	"github.com/canarysting/canarysting/internal/contract"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/persist"
-	"github.com/canarysting/canarysting/internal/topology/identity"
+	"github.com/canarysting/canarysting/internal/identity/naming"
 )
 
 // DeviantTriageReader is the NARROW read-only view of the operator ACK/SUPPRESS
@@ -155,11 +155,11 @@ func (s *Source) handleDeviants(w http.ResponseWriter, _ *http.Request) {
 // maxDeviantRows for display), just ranked unfamiliar-first.
 func srcTier(srcKind string) int {
 	switch srcKind {
-	case identity.KindUnknown.String():
+	case naming.KindUnknown.String():
 		return 0
-	case identity.KindCaller.String():
+	case naming.KindCaller.String():
 		return 1
-	case identity.KindService.String():
+	case naming.KindService.String():
 		return 3
 	default:
 		return 2
@@ -194,7 +194,7 @@ func (s *Source) buildDeviants() DeviantsView {
 	}
 	resolver := s.Resolver
 	if resolver == nil {
-		resolver = identity.NewResolver(nil) // degrade to IP labels; never panics
+		resolver = naming.NewResolver(nil) // degrade to IP labels; never panics
 	}
 	if s.Aggregator == nil {
 		return view
@@ -233,7 +233,7 @@ func (s *Source) loadTriageOverlay() map[string]string {
 // HitCount->PeakValue->LastSeen tiebreak within a tier, capped at maxDeviantRows. It
 // is extracted from buildDeviants so the tiering / familiarity / drop-vs-demote logic
 // is unit-testable with synthetic records (the Source.Aggregator is a concrete type).
-func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *identity.Resolver, overlay map[string]string) []DeviantRow {
+func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *naming.Resolver, overlay map[string]string) []DeviantRow {
 	rows := make([]DeviantRow, 0, len(records))
 	for _, r := range records {
 		srcIP := addrFrom(r.SrcIP)
@@ -248,7 +248,7 @@ func rankDeviantRows(records []observebaseline.DeviantFlowRecordView, resolver *
 		// SERVICE source demoted last (a genuinely-novel service-initiated flow is a
 		// lateral-movement lead, not noise — see srcTier). Decoy never appears as a SRC.
 		familiarity := "known"
-		if srcNode.Kind == identity.KindUnknown {
+		if srcNode.Kind == naming.KindUnknown {
 			familiarity = "unfamiliar"
 		}
 		rows = append(rows, DeviantRow{
