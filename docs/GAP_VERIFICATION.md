@@ -257,8 +257,19 @@ internal/identity/
    the 5 importers (`cmd/staged-range/main.go`, `internal/dashboard/tap/{tap,topology,deviants,topology_test}.go`)
    updated; the production-importable import guard kept (passes on the new path). `go build ./...`,
    `go vet ./...`, and `go test ./...` all green; git records the moves as renames.
-2. **Watch-items §3.1 + §3.3 + §3.2** — NEXT: startup kernel-version assertion for the system-global
-   socket cookie; an engine-side `go list -deps` import-guard test; re-resolve scope on the `ReportOutcome` path.
+2. **Watch-items §3.1 + §3.3 + §3.2** — ✅ **DONE** (branch `feat/m1-identity-consolidation`).
+   - §3.1: new `bpf/kernel` package asserts a minimum kernel (5.10, per TECHNICAL_ARCHITECTURE.md §12.4)
+     for the system-global, never-reused socket cookie; wired into `sockops.NewMapResolver` (cookie
+     capture) and `enforce.KernelLoader.Load` (enforcement), failing loud before any attach. Pure
+     version policy is unit-tested cross-platform; the linux uname path is cross-compile-verified.
+   - §3.3: `internal/engine/importguard_test.go` (`TestEngineIsProxyAgnostic`) — `go list -deps` asserts
+     the engine subtree imports no `adapters/*` and no Envoy proxy SDK (cilium/ebpf allowed: the engine's
+     own baseline). The symmetric twin of the adapter's thinness guard.
+   - §3.2: `capturingEngine` now binds the resolved scope to the cookie at Submit (`pendingJails` carries
+     `contract.ScopeKey`) and `ReportOutcome` keys the durable amend + all learned-state writes on that
+     cookie-bound resolved scope, never the wire `rec.Scope` — the uniform analogue of Submit's B1 fix.
+     New `TestReportOutcomeIgnoresForgedWireScope` proves a forged outcome scope cannot drive a
+     cross-scope write. `go build`/`vet`/`test ./...` and the linux cross-compile all green.
 3. **Substrate proper** (per `BUILD_TASK_PLAN.md` M1): DaemonSet + operator skeleton, mesh identity
    (`internal/identity/mesh`) primary with label fallback (`internal/identity/labels`), scope keyed to
    namespace/cluster, and the cross-scope-isolation test as an explicit gate.
