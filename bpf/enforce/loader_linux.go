@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 
+	"github.com/canarysting/canarysting/bpf/kernel"
 	"github.com/canarysting/canarysting/bpf/loader"
 )
 
@@ -31,6 +32,12 @@ func NewKernelLoader(cgroupPath string) *KernelLoader { return &KernelLoader{cgr
 
 // Load loads the objects and attaches both programs to the cgroup.
 func (l *KernelLoader) Load() error {
+	// Refuse to enforce in-kernel on a kernel too old to guarantee a system-global,
+	// never-reused socket cookie — enforcement keys on that cookie, and a reused cookie
+	// could jail a bystander, a critical failure (rule 4; docs/IDENTITY.md).
+	if err := kernel.AssertSocketCookie(); err != nil {
+		return err
+	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("enforce: remove memlock: %w", err)
 	}

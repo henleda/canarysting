@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 
 	"github.com/canarysting/canarysting/adapters/envoy/identity"
+	"github.com/canarysting/canarysting/bpf/kernel"
 )
 
 // MapResolver is the kernel-backed identity.CookieResolver. It loads the sockops
@@ -29,6 +30,12 @@ var _ identity.CookieResolver = (*MapResolver)(nil)
 // attached program captures the cookie for every connection accepted by a process
 // under that cgroup.
 func NewMapResolver(cgroupPath string) (*MapResolver, error) {
+	// Refuse to acquire socket cookies on a kernel too old to guarantee they are
+	// system-global and never reused — the property the L7<->kernel join and
+	// containment precision depend on (rule 4; docs/IDENTITY.md).
+	if err := kernel.AssertSocketCookie(); err != nil {
+		return nil, err
+	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("sockops: remove memlock: %w", err)
 	}
