@@ -45,7 +45,7 @@ func TestD6ContributeRecordsLocalJailWhenOptedIn(t *testing.T) {
 			inner:        fakeInner{tierByCookie: map[uint64]contract.Tier{1: contract.TierJail}},
 			events:       boltevents.New(ps),
 			sharpen:      sharpen.NewStore(mkSrc()),
-			pendingJails: map[uint64]struct{}{},
+			pendingJails: map[uint64]contract.ScopeKey{},
 			ledger:       l,
 			contribute:   contribute,
 		}
@@ -91,7 +91,7 @@ func TestD6_3EmitsConfirmationOnJailWhenConfigured(t *testing.T) {
 			inner:        fakeInner{tierByCookie: map[uint64]contract.Tier{1: contract.TierJail}},
 			events:       boltevents.New(ps),
 			sharpen:      sharpen.NewStore(mkSrc()),
-			pendingJails: map[uint64]struct{}{},
+			pendingJails: map[uint64]contract.ScopeKey{},
 			ledger:       l,
 			contribute:   true,
 		}

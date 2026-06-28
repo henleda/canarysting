@@ -472,7 +472,7 @@ func Build(opts Options, observer observe.Observer) (*Built, error) {
 	// anonymized). This is production-appropriate (D1 foundation); the labeler is
 	// the only staging-specific wrapper and is added by cmd/staged-range.
 	if b.Events != nil {
-		ce := &capturingEngine{inner: eng, events: b.Events, l7events: b.L7Events, audit: b.Audit, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]struct{}{}, ledger: b.Ledger, contribute: opts.Contribute}
+		ce := &capturingEngine{inner: eng, events: b.Events, l7events: b.L7Events, audit: b.Audit, agg: b.Aggregator, sharpen: b.Sharpen, pendingJails: map[uint64]contract.ScopeKey{}, ledger: b.Ledger, contribute: opts.Contribute}
 		// D6-3: emit cross-scope confirmations to the central aggregator on each local
 		// jail, only when contributing + a token + a spool path are all configured.
 		if opts.Contribute && opts.ConfirmSpoolPath != "" && opts.ScopeToken != "" {
@@ -829,8 +829,14 @@ type capturingEngine struct {
 	// confirmed-malicious profile is derived from events that carry the full attrition
 	// signature. Bounded (maxPendingJails) so async/kernel jails that never report an
 	// outcome cannot leak it unboundedly.
+	//
+	// The VALUE is the scope the inner engine RESOLVED for the flow at Submit (v.Scope),
+	// bound to the socket cookie (rule 4). ReportOutcome keys its scope-sensitive side
+	// effects on this resolved scope, NEVER the wire rec.Scope — so a forged outcome
+	// scope cannot drive a cross-scope durable amend or learned-state write (rule 5; the
+	// uniform analogue of Submit's B1 fix that rewrites ev.Scope to v.Scope).
 	mu           sync.Mutex
-	pendingJails map[uint64]struct{} // jailed flow cookies awaiting their outcome
+	pendingJails map[uint64]contract.ScopeKey // jailed cookie -> resolved scope, awaiting outcome
 
 	// D6 contribution (producer half): on a local jail, the jailed flow's coarse
 	// pattern is recorded into the cross-scope ledger, gated on the Contribute opt-in.
@@ -944,7 +950,9 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 	if v.Tier == contract.TierJail && e.sharpen != nil {
 		e.mu.Lock()
 		if len(e.pendingJails) < maxPendingJails {
-			e.pendingJails[ev.Flow.SocketCookie] = struct{}{}
+			// Bind the RESOLVED scope (v.Scope; ev.Scope was corrected to it above) to the
+			// cookie so ReportOutcome keys on it, never the wire scope.
+			e.pendingJails[ev.Flow.SocketCookie] = v.Scope
 		}
 		e.mu.Unlock()
 	}
@@ -962,37 +970,55 @@ func (e *capturingEngine) Submit(ev contract.SignalEvent) (contract.Verdict, err
 // satisfies contract.OutcomeReporter so the gRPC server can route ReportOutcome
 // here without importing intelligence.
 func (e *capturingEngine) ReportOutcome(rec contract.OutcomeRecord) error {
+	// Rule 5 / rule 4: the outcome path must NOT trust the wire scope (rec.Scope). The
+	// authoritative scope for a flow is the one the inner engine RESOLVED at Submit,
+	// bound here to the socket cookie (the join key) when the flow was jailed. Look it up
+	// by cookie and use it for every scope-keyed side effect, so a forged rec.Scope can
+	// drive neither a cross-scope durable amend nor a cross-scope confirmed-malicious
+	// write — the uniform analogue of Submit's B1 fix (which rewrites ev.Scope to v.Scope
+	// before any side effect). Drain is unconditional: pendingJails is only ever
+	// populated when sharpen != nil, so it is empty (and this a no-op) otherwise.
+	e.mu.Lock()
+	authScope, jailed := e.pendingJails[rec.SocketCookie]
+	if jailed {
+		delete(e.pendingJails, rec.SocketCookie)
+	}
+	e.mu.Unlock()
+
+	// For a tracked (jailed) cookie, key the durable amend on the RESOLVED scope, never
+	// the wire scope — this also makes the amend correct, since the verdict event was
+	// captured under the resolved scope at Submit. (A non-jailed Tier-2 outcome is not
+	// cookie-bound here; its amend keys on rec.Scope, but AmendOutcome is per-scope-
+	// isolated and the engine<->adapter outcome RPC is transport-authenticated, so a
+	// forged Tier-2 scope can only write an orphan blob in the named scope — it cannot
+	// aggregate cross-scope learned state.)
+	if jailed && authScope != "" {
+		rec.Scope = authScope
+	}
 	err := e.events.AmendOutcome(rec)
+
 	// D5-Phase-2: if this outcome belongs to a flow that was jailed (marked pending by
-	// Submit), the durable events now carry the amended five-axis outcome — so derive
-	// and record the confirmed-malicious profile NOW (rule 8: records evidence only).
-	// Only fires for a previously-jailed cookie, and AFTER AmendOutcome has run, so the
-	// profile reflects the full attrition signature.
-	if e.sharpen != nil {
-		e.mu.Lock()
-		_, jailed := e.pendingJails[rec.SocketCookie]
-		if jailed {
-			delete(e.pendingJails, rec.SocketCookie)
+	// Submit), the durable events now carry the amended five-axis outcome — so derive and
+	// record the confirmed-malicious profile NOW (rule 8: records evidence only), under
+	// the RESOLVED scope. Only fires for a previously-jailed cookie, and AFTER
+	// AmendOutcome has run, so the profile reflects the full attrition signature.
+	if jailed && e.sharpen != nil {
+		p := e.sharpen.RecordJail(authScope, contract.FlowIdentity{SocketCookie: rec.SocketCookie}, time.UnixMilli(rec.TimestampUnixMs))
+		// D6e (contribution): a local jail is this scope's confirmed-malice ground truth
+		// — record its coarse pattern into the cross-scope ledger so the SAME pattern,
+		// once exhibited by k>=3 distinct scopes, may cross the egress gate. Gated on the
+		// Contribute opt-in; the SAME derived profile feeds both stores (no second query).
+		// Recording is NOT an export — nothing crosses here. Keyed on the resolved scope.
+		if p != nil && e.contribute && e.ledger != nil {
+			_, _ = e.ledger.RecordForm(string(authScope), p.ToExportForm())
 		}
-		e.mu.Unlock()
-		if jailed {
-			p := e.sharpen.RecordJail(rec.Scope, contract.FlowIdentity{SocketCookie: rec.SocketCookie}, time.UnixMilli(rec.TimestampUnixMs))
-			// D6e (contribution): a local jail is this scope's confirmed-malice ground
-			// truth — record its coarse pattern into the cross-scope ledger so the SAME
-			// pattern, once exhibited by k>=3 distinct scopes, may cross the egress gate.
-			// Gated on the Contribute opt-in; the SAME derived profile feeds both stores
-			// (no second query). Recording is NOT an export — nothing crosses here.
-			if p != nil && e.contribute && e.ledger != nil {
-				_, _ = e.ledger.RecordForm(string(rec.Scope), p.ToExportForm())
-			}
-			// D6-3 (cross-scope ingest): ALSO emit a confirmation to the central
-			// aggregator under this deployment's OPAQUE token — never the raw ScopeKey
-			// (D63b). The confirmation carries the same coarse cleared pattern; the
-			// aggregator re-validates it + counts distinct enrolled tokens toward k.
-			if p != nil && e.confirmSpool != nil && e.scopeToken != "" {
-				if b, mErr := json.Marshal(p.ToExportForm()); mErr == nil {
-					_ = e.confirmSpool.SendConfirmation(e.scopeToken, b)
-				}
+		// D6-3 (cross-scope ingest): ALSO emit a confirmation to the central aggregator
+		// under this deployment's OPAQUE token — never the raw ScopeKey (D63b). The
+		// confirmation carries the same coarse cleared pattern; the aggregator re-validates
+		// it + counts distinct enrolled tokens toward k.
+		if p != nil && e.confirmSpool != nil && e.scopeToken != "" {
+			if b, mErr := json.Marshal(p.ToExportForm()); mErr == nil {
+				_ = e.confirmSpool.SendConfirmation(e.scopeToken, b)
 			}
 		}
 	}
