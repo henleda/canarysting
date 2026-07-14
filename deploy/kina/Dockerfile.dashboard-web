@@ -1,0 +1,19 @@
+# Dashboard frontend (dashboard/app, Next.js 14.2.x, output: 'standalone').
+# Context is dashboard/app so the standalone build only sees its own
+# package.json/lockfile — no monorepo-wide COPY needed here (contrast with
+# Dockerfile.core, which must COPY the whole repo for the go:embed bpf .o
+# files).
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+ENV PORT=3001
+EXPOSE 3001
+CMD ["node", "server.js"]

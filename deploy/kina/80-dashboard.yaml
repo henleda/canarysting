@@ -1,0 +1,92 @@
+# Phase 4 (dashboard): backend (cmd/dashboard-backend, part of the core image)
+# + frontend (dashboard-web) in one pod. The backend binds loopback-only
+# (127.0.0.1:8089 — see cmd/dashboard-backend/main.go) and has no auth, so it
+# must never be reachable except from the frontend sharing the pod's network
+# namespace. The frontend's DASHBOARD_BACKEND_URL points at that same
+# loopback address; only the frontend's port is exposed via the Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: canarysting
+  labels:
+    app: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard-backend
+          image: docker.io/canarysting/core:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cs-dashboard-backend"]
+          args:
+            - "-tap-addr"
+            - "http://gateway.canarysting.svc.cluster.local:8088"
+            - "-listen-addr"
+            - "127.0.0.1:8089"
+            - "-env"
+            - "kina-demo"
+          # No readinessProbe: kubelet's httpGet/tcpSocket probes always dial
+          # the pod IP, never loopback, so they can't reach a service bound to
+          # 127.0.0.1 by design (no auth — see cmd/dashboard-backend/main.go).
+          # The distroless base has no shell for an exec probe either. The
+          # dashboard-web container's probe gates rollout readiness instead.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+        - name: dashboard-web
+          image: docker.io/canarysting/dashboard-web:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DASHBOARD_BACKEND_URL
+              value: "http://127.0.0.1:8089"
+            - name: PORT
+              value: "3001"
+            # Kubernetes auto-injects HOSTNAME=<pod-name> into every
+            # container. Next.js's standalone server.js reads
+            # process.env.HOSTNAME to pick its bind address (defaulting to
+            # 0.0.0.0 only when unset), so without this override it binds to
+            # the pod hostname's resolved address instead of all interfaces
+            # and becomes unreachable via loopback or the Service.
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          ports:
+            - name: http
+              containerPort: 3001
+          readinessProbe:
+            tcpSocket:
+              port: 3001
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: canarysting
+  labels:
+    app: dashboard
+spec:
+  type: ClusterIP
+  selector:
+    app: dashboard
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001

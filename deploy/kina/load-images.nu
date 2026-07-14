@@ -17,6 +17,8 @@ def main [--images: list<string> = [core]] {
       load-core
     } else if $image == "mesh" {
       load-mesh
+    } else if $image == "dashboard-web" {
+      load-dashboard-web
     } else {
       print $"skipping unknown image: ($image)"
     }
@@ -42,6 +44,32 @@ def load-core [] {
   } else {
     print "== retagging as docker.io/canarysting/core:latest =="
     ^container exec cs-control-plane ctr -n k8s.io images tag canarysting/core:latest docker.io/canarysting/core:latest
+  }
+}
+
+# Phase 4 (dashboard): frontend (dashboard/app, Next.js standalone build).
+# Context is dashboard/app, not the repo root — the standalone build only
+# needs its own package.json/lockfile, unlike Dockerfile.core which COPYs the
+# whole repo for the go:embed bpf .o files.
+def load-dashboard-web [] {
+  print "== building canarysting/dashboard-web:latest =="
+  ^container build -t canarysting/dashboard-web:latest -f deploy/kina/Dockerfile.dashboard-web dashboard/app
+
+  print "== loading canarysting/dashboard-web:latest into cluster cs =="
+  ^kina load canarysting/dashboard-web:latest --cluster cs
+
+  let already_tagged = (
+    ^container exec cs-control-plane ctr -n k8s.io images ls
+    | complete
+    | get stdout
+    | str contains "docker.io/canarysting/dashboard-web:latest"
+  )
+
+  if $already_tagged {
+    print "== docker.io/canarysting/dashboard-web:latest already tagged, skipping retag =="
+  } else {
+    print "== retagging as docker.io/canarysting/dashboard-web:latest =="
+    ^container exec cs-control-plane ctr -n k8s.io images tag canarysting/dashboard-web:latest docker.io/canarysting/dashboard-web:latest
   }
 }
 
