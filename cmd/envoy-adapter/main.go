@@ -281,6 +281,8 @@ func main() {
 		engineTLSCert = flag.String("engine-tls-cert", "", "client certificate (PEM) the adapter presents to the engine; requires -engine-tls-key and -engine-tls-ca")
 		engineTLSKey  = flag.String("engine-tls-key", "", "client private key (PEM)")
 		engineTLSCA   = flag.String("engine-tls-ca", "", "CA bundle (PEM) the engine's server certificate must chain to (enables mTLS dial)")
+
+		noEBPF = flag.Bool("no-ebpf", false, "skip kernel eBPF containment + cookie resolution; use no-op impls (L7-only demo on a host without BTF)")
 	)
 	flag.Parse()
 	if *scopeFlag == "" {
@@ -365,13 +367,13 @@ func main() {
 		log.Fatalf("envoy-adapter: seeding canaries: %v", err)
 	}
 
-	resolver, err := newResolver()
+	resolver, err := newResolver(*noEBPF)
 	if err != nil {
 		log.Fatalf("envoy-adapter: cookie resolver: %v", err)
 	}
 	defer resolver.Close()
 
-	enf, err := newEnforcer()
+	enf, err := newEnforcer(*noEBPF)
 	if err != nil {
 		log.Fatalf("envoy-adapter: kernel enforcer: %v", err)
 	}

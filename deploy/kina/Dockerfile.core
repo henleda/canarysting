@@ -1,0 +1,18 @@
+# One image, three binaries: cs-engine (cmd/engine), cs-adapter
+# (cmd/envoy-adapter), cs-attacker (cmd/llm-attacker). Kubernetes selects which
+# binary a container runs via command-override (no ENTRYPOINT here) — the same
+# core image backs every service in the kina demo mesh. Context is the repo
+# root so the module (go.mod) is available; COPY . . (not a filtered subset) is
+# required because bpf/*/**_bpfel.o are //go:embed'd by the bpf loader
+# packages — do NOT add a .dockerignore that drops *.o.
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-engine ./cmd/engine
+RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-adapter ./cmd/envoy-adapter
+RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-attacker ./cmd/llm-attacker
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/cs-engine /out/cs-adapter /out/cs-attacker /usr/local/bin/

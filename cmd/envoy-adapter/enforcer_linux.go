@@ -26,10 +26,10 @@ func (e *kernelEnforcer) Release(v contract.Verdict) error {
 }
 func (e *kernelEnforcer) Close() error { return e.l.Close() }
 
-// newEnforcer loads + attaches the enforce programs at the cgroup-v2 root (the
-// same root the sockops bridge uses) and returns a containment-backed enforcer.
-// Requires CAP_BPF + CAP_NET_ADMIN.
-func newEnforcer() (enforcer, error) {
+// newKernelEnforcer loads + attaches the enforce programs at the cgroup-v2
+// root (the same root the sockops bridge uses) and returns a
+// containment-backed enforcer. Requires CAP_BPF + CAP_NET_ADMIN.
+func newKernelEnforcer() (enforcer, error) {
 	l := enforce.NewKernelLoader(cgroupV2Root)
 	if err := l.Load(); err != nil {
 		return nil, err
