@@ -180,6 +180,21 @@ Concretely, relative to `deploy/kina/40-gateway.yaml`:
    `-observe-cgroup /sys/fs/cgroup` (`cmd/engine/main.go:40`). This is a real manifest
    delta, not verbatim reuse — it is why Section 2.3 says "plus enabling the
    currently-disabled observe path."
+7. **[major] Image distribution to real registries — does not apply to the kind step
+   of the spike ladder, REQUIRED before Section 6 step 2 (real EKS/GKE cluster).**
+   `deploy/kina/40-gateway.yaml:36-37,77-78` pins both the `adapter` and `engine`
+   containers to `docker.io/canarysting/core:latest` with `imagePullPolicy:
+   IfNotPresent` — this resolves ONLY because `kina load` side-loads images directly
+   into the local cluster's containerd, bypassing any registry pull. That side-load
+   path does not exist on a real EKS/GKE node: kubelet pulls from the registry named
+   in the manifest, so pods would ImagePullBackOff on first schedule. Before the real
+   2-node cloud cluster step can run, the plan needs: push `cs-engine` / `cs-adapter`
+   (and a patched Envoy image if the datapath needs one) to a real registry (ECR / GCP
+   Artifact Registry / a public registry), reference every image by **pinned digest**
+   (`image@sha256:...`), not `:latest`, and update the manifest image refs + pull
+   policy accordingly. Note explicitly: the `kina load` fix (registry-qualified retag
+   into the `k8s.io` containerd namespace) is **kina-only and does not travel** to a
+   real cluster — it solves local dev side-loading, not registry distribution.
 
 ---
 
@@ -285,6 +300,17 @@ NEVER jailed — deviation-from-baseline is not a trigger (`CLAUDE.md` core rule
    node-scoped keys (each node its own scope) — but that fragments learned state and
    many small scopes may never reach the evidence floor (`docs/SCOPE.md:21`). This is
    the decision the spike must NOT pretend to resolve.
+   - **[minor] Model A also needs mTLS cert provisioning, sized honestly.** The
+     engine's gRPC surface is mTLS-or-fail-closed by design: `cmd/engine/main.go:47-53`
+     — "mTLS for the engine gRPC surface (the only out-of-process seam)... set all
+     three to serve mTLS; leave all three empty to serve bare loopback (warned) only —
+     a routable plaintext addr is refused at startup" (`-grpc-tls-cert`,
+     `-grpc-tls-key`, `-grpc-tls-client-ca`, `cmd/engine/main.go:51-53`). A central
+     cross-node engine listens on a routable address by construction, so Model A's
+     productionization cost is the new observe→engine transport (above) **plus**
+     provisioning and rotating a server cert and a per-adapter client-cert chain for
+     every node — not just the transport build-out. Model B keeps the loopback wiring
+     verbatim (Section 3, item 4) and is unaffected — this cost is Model-A-only.
 2. **Cross-node flow attribution.** A connection spanning node2→node1: which node's
    adapter sees the canary touch, which node's enforcer jails? Assessment: sockops
    captures the **accepted downstream socket on `PASSIVE_ESTABLISHED`**
