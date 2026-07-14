@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engine
+  namespace: canarysting
+  labels:
+    app: engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: engine
+  template:
+    metadata:
+      labels:
+        app: engine
+    spec:
+      containers:
+        - name: engine
+          image: docker.io/canarysting/core:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cs-engine"]
+          args:
+            - "-scope-boundary"
+            - "demo-scope"
+            - "-grpc-addr"
+            - ":50052"
+            - "-aggressive"
+          ports:
+            - name: grpc
+              containerPort: 50052
+          readinessProbe:
+            tcpSocket:
+              port: 50052
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 50052
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: engine
+  namespace: canarysting
+  labels:
+    app: engine
+spec:
+  type: ClusterIP
+  selector:
+    app: engine
+  ports:
+    - name: grpc
+      port: 50052
+      targetPort: 50052
