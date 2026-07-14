@@ -8,6 +8,9 @@
 # service-c is a plain client of the mesh gateway (it never receives
 # east-west fan-out itself), so it runs under the same hardened default
 # profile as the mesh services: runAsNonRoot, drop ALL, no priv escalation.
+#
+# The Redteam persona (P2) replays the frozen omlx cassette from
+# 91-cassette-configmap.yaml, mounted read-only at /cassettes.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +38,8 @@ spec:
               value: "http://gateway.canarysting.svc.cluster.local:8080"
             - name: LISTEN
               value: ":8000"
+            - name: CASSETTE_PATH
+              value: "/cassettes/redteam-omlx.json"
           ports:
             - name: http
               containerPort: 8000
@@ -50,6 +55,14 @@ spec:
             runAsUser: 65532
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: redteam-cassette
+              mountPath: /cassettes
+              readOnly: true
+      volumes:
+        - name: redteam-cassette
+          configMap:
+            name: redteam-cassette
 ---
 apiVersion: v1
 kind: Service
