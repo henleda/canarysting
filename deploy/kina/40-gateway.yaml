@@ -51,25 +51,27 @@ spec:
               port: 50051
             initialDelaySeconds: 2
             periodSeconds: 5
-          # Real eBPF (no -no-ebpf) needs a privileged loader with root +
-          # kernel-facing capabilities — the sockops/enforce programs attach
-          # via bpf(2)/BPF_PROG_LOAD which the default hardened profile
-          # (runAsNonRoot/65532/drop ALL) cannot do. This is the honest
+          # Real eBPF (no -no-ebpf) needs root + kernel-facing capabilities —
+          # the sockops/enforce programs attach via bpf(2)/BPF_PROG_LOAD which
+          # the default hardened profile (runAsNonRoot/65532/drop ALL) cannot
+          # do. Minimal grant for this loader: CAP_BPF + CAP_NET_ADMIN to
+          # load/attach the programs, CAP_SYS_RESOURCE to raise the memlock
+          # rlimit bpf(2) needs. No privileged: true — this is the honest
           # tradeoff for real kernel-level canary-touch detection on the
-          # BTF-kernel demo cluster; the hardened profile returns once the
-          # loader can drop privileges after attach.
+          # BTF-kernel demo cluster.
           securityContext:
-            privileged: true
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: true
             capabilities:
-              add: ["BPF", "NET_ADMIN", "PERFMON", "SYS_ADMIN", "SYS_RESOURCE"]
+              drop: ["ALL"]
+              add: ["BPF", "NET_ADMIN", "SYS_RESOURCE"]
           volumeMounts:
             - name: cgroup
               mountPath: /sys/fs/cgroup
             - name: kernel
               mountPath: /sys/kernel
               readOnly: true
-            - name: bpffs
-              mountPath: /sys/fs/bpf
 
         - name: engine
           image: docker.io/canarysting/core:latest
@@ -106,9 +108,6 @@ spec:
         - name: kernel
           hostPath:
             path: /sys/kernel
-        - name: bpffs
-          hostPath:
-            path: /sys/fs/bpf
 ---
 apiVersion: v1
 kind: Service

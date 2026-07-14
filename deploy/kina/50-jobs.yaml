@@ -51,9 +51,9 @@ spec:
             - |
               set -e
               echo "warmup benign request:"
-              curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/products
+              curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 10 http://gateway:8080/products
               for i in $(seq 1 5); do
                 echo "canary touch $i:"
-                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/.aws/credentials
+                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 10 http://gateway:8080/.aws/credentials
                 sleep 1
               done
