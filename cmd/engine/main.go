@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/canarysting/canarysting/bpf/observe"
 	"github.com/canarysting/canarysting/internal/boot"
+	"github.com/canarysting/canarysting/internal/canary/catalog"
 	"github.com/canarysting/canarysting/internal/contract"
+	"github.com/canarysting/canarysting/internal/dashboard/tap"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/scoring"
 	"github.com/canarysting/canarysting/internal/transport/grpccreds"
@@ -38,6 +41,8 @@ func main() {
 		windowBucketer = flag.Bool("window-bucketer", false, "use the coarse M7 learning-window bucketer (8 buckets) instead of the production 168-bucket default")
 		maxGap         = flag.Duration("max-coverage-gap", 0, "downtime longer than this forces baseline re-accrual on boot (0 => default)")
 		resetSchema    = flag.Bool("baseline-db-reset-on-schema-change", false, "DISCARD the persisted baseline (logged) if its schema version differs from this build, instead of refusing to start")
+
+		tapAddr = flag.String("dashboard-tap-addr", "", "if set, serve the read-only M8 dashboard data tap (raw JSON) at this HTTP address")
 
 		// mTLS for the engine gRPC surface (the only out-of-process seam). The
 		// surface drives kernel containment, so it is mTLS or fail-closed: set all
@@ -68,6 +73,31 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go built.StartAggregator(ctx)
+
+	// Read-only data tap for the M8 dashboard-backend (the engine owns the live
+	// state + the locked EventStore). Mirrors cmd/staged-range's wiring; serves
+	// raw JSON only, all presentation lives in the separate dashboard-backend.
+	if *tapAddr != "" {
+		src := &tap.Source{
+			Scope:      contract.ScopeKey(*boundary),
+			Calib:      built.Calib,
+			Baseline:   built.Baseline,
+			Events:     built.Events,
+			Aggregator: built.Aggregator,
+			SharedSet:  built.SharedSet,
+			Catalog:    catalog.Default(),
+			KillSwitch: built.KillSwitch,
+		}
+		if built.Persist != nil {
+			src.Triage = built.Persist
+		}
+		go func() {
+			log.Printf("engine: dashboard tap on %s", *tapAddr)
+			if err := http.ListenAndServe(*tapAddr, src.Handler()); err != nil {
+				log.Printf("engine: dashboard tap: %v", err)
+			}
+		}()
+	}
 
 	if *selfcheck {
 		runSelfcheck(built.Engine, contract.ScopeKey(*boundary))

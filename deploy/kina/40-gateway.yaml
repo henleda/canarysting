@@ -83,6 +83,13 @@ spec:
             - "-grpc-addr"
             - "127.0.0.1:50052"
             - "-aggressive"
+            - "-dashboard-tap-addr"
+            - "0.0.0.0:8088"
+            - "-baseline-db"
+            - "/data/baseline.db"
+          ports:
+            - name: tap
+              containerPort: 8088
           # No readinessProbe: -grpc-addr is 127.0.0.1:50052 (loopback-only, by
           # design — co-location is what lets the adapter dial the engine in
           # plaintext without certs). kubelet's tcpSocket probe dials the Pod
@@ -97,6 +104,9 @@ spec:
             runAsUser: 65532
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: baseline-db
+              mountPath: /data
 
       volumes:
         - name: envoy-config
@@ -108,6 +118,8 @@ spec:
         - name: kernel
           hostPath:
             path: /sys/kernel
+        - name: baseline-db
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -124,3 +136,6 @@ spec:
     - name: http
       port: 8080
       targetPort: 8080
+    - name: tap
+      port: 8088
+      targetPort: 8088
