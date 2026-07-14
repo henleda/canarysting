@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: benign-traffic
+  namespace: canarysting
+  labels:
+    app: benign-traffic
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: benign-traffic
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: curl
+          image: curlimages/curl:latest
+          command:
+            - "sh"
+            - "-c"
+            - |
+              set -e
+              for i in $(seq 1 5); do
+                echo "benign request $i:"
+                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/products
+                sleep 1
+              done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: l7-gate
+  namespace: canarysting
+  labels:
+    app: l7-gate
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: l7-gate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: curl
+          image: curlimages/curl:latest
+          command:
+            - "sh"
+            - "-c"
+            - |
+              set -e
+              echo "warmup benign request:"
+              curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/products
+              for i in $(seq 1 5); do
+                echo "canary touch $i:"
+                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/.aws/credentials
+                sleep 1
+              done

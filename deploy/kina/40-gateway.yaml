@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: canarysting
+  labels:
+    app: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.34.1
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+
+        - name: adapter
+          image: docker.io/canarysting/core:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cs-adapter"]
+          args:
+            - "-listen"
+            - ":50051"
+            - "-engine"
+            - "127.0.0.1:50052"
+            - "-scope"
+            - "demo-scope"
+            - "-inline"
+            - "-sting-floor"
+            - "1"
+            - "-no-ebpf"
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+
+        - name: engine
+          image: docker.io/canarysting/core:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cs-engine"]
+          args:
+            - "-scope-boundary"
+            - "demo-scope"
+            - "-grpc-addr"
+            - "127.0.0.1:50052"
+            - "-aggressive"
+          # No readinessProbe: -grpc-addr is 127.0.0.1:50052 (loopback-only, by
+          # design — co-location is what lets the adapter dial the engine in
+          # plaintext without certs). kubelet's tcpSocket probe dials the Pod
+          # IP, not container loopback, so a probe against 50052 can never
+          # succeed here and would permanently block this pod's readiness
+          # (and therefore the gateway Service's endpoints). The adapter
+          # container's own readiness/traffic path is the real liveness signal
+          # for this co-located engine.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: envoy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: canarysting
+  labels:
+    app: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
