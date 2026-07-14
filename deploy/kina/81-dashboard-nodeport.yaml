@@ -1,0 +1,22 @@
+# Exposes the dashboard Service (defined in 80-dashboard.yaml) on a stable
+# NodePort so it's reachable from the host Mac via <node-vm-ip>:30301, e.g.
+# for a nip.io demo URL (http://dashboard.<node-vm-ip>.nip.io:30301/).
+# This is additive to the ClusterIP service in 80-dashboard.yaml, not a
+# replacement — internal svc DNS (dashboard.canarysting.svc.cluster.local)
+# still resolves via the ClusterIP for in-cluster callers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-nodeport
+  namespace: canarysting
+  labels:
+    app: dashboard
+spec:
+  type: NodePort
+  selector:
+    app: dashboard
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+      nodePort: 30301
