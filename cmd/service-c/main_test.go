@@ -8,11 +8,17 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/canarysting/canarysting/internal/llm/anthropic"
+	"github.com/canarysting/canarysting/internal/llm/attacker"
 )
 
 // recordingFake is the injected gatewayCaller test double: it records every path
 // requested and always answers 200 — the mock-external-boundary seam (gw.Fetch is
-// the ONLY external call service C makes).
+// the ONLY external call service C makes directly; the Redteam persona's attacker
+// makes its own calls via HTTPTool, never through gw).
 type recordingFake struct {
 	paths []string
 }
@@ -22,17 +28,37 @@ func (f *recordingFake) Fetch(path string) (int, error) {
 	return http.StatusOK, nil
 }
 
-func getPath(t *testing.T, gw gatewayCaller, path string) (int, string) {
+// recordingLauncher is the injected redteamLauncher test double: it records how
+// many times Launch was called and returns a fixed non-empty run_id (or Err, if
+// set, to exercise a failure path).
+type recordingLauncher struct {
+	calls int
+	runID string
+	err   error
+}
+
+func (l *recordingLauncher) Launch() (string, error) {
+	l.calls++
+	if l.err != nil {
+		return "", l.err
+	}
+	if l.runID == "" {
+		l.runID = "run-fake"
+	}
+	return l.runID, nil
+}
+
+func getPath(t *testing.T, gw gatewayCaller, rt redteamLauncher, path string) (int, string) {
 	t.Helper()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	serve(rr, req, gw)
+	serve(rr, req, gw, rt)
 	return rr.Code, rr.Body.String()
 }
 
 // postTransaction submits POST /api/transaction with persona as a form value. An
 // empty persona omits the field entirely (true "missing", not an empty value).
-func postTransaction(t *testing.T, gw gatewayCaller, persona string) (int, string) {
+func postTransaction(t *testing.T, gw gatewayCaller, rt redteamLauncher, persona string) (int, string) {
 	t.Helper()
 	form := url.Values{}
 	if persona != "" {
@@ -41,7 +67,7 @@ func postTransaction(t *testing.T, gw gatewayCaller, persona string) (int, strin
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/transaction", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	serve(rr, req, gw)
+	serve(rr, req, gw, rt)
 	return rr.Code, rr.Body.String()
 }
 
@@ -70,7 +96,7 @@ func TestStandardPathsAreCanaryFree(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	code, body := getPath(t, &recordingFake{}, "/healthz")
+	code, body := getPath(t, &recordingFake{}, &recordingLauncher{}, "/healthz")
 	if code != http.StatusOK {
 		t.Fatalf("/healthz = %d, want 200", code)
 	}
@@ -80,7 +106,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestServesStorefront(t *testing.T) {
-	code, body := getPath(t, &recordingFake{}, "/")
+	code, body := getPath(t, &recordingFake{}, &recordingLauncher{}, "/")
 	if code != http.StatusOK {
 		t.Fatalf("/ = %d, want 200", code)
 	}
@@ -97,7 +123,7 @@ func TestServesStorefront(t *testing.T) {
 
 func TestStandardTransactionHitsServedPaths(t *testing.T) {
 	fake := &recordingFake{}
-	code, body := postTransaction(t, fake, "standard")
+	code, body := postTransaction(t, fake, &recordingLauncher{}, "standard")
 	if code != http.StatusOK {
 		t.Fatalf("persona=standard = %d, want 200", code)
 	}
@@ -123,7 +149,7 @@ func TestStandardTransactionHitsServedPaths(t *testing.T) {
 
 func TestPersonaSelectsPathSet(t *testing.T) {
 	standardFake := &recordingFake{}
-	if code, _ := postTransaction(t, standardFake, "standard"); code != http.StatusOK {
+	if code, _ := postTransaction(t, standardFake, &recordingLauncher{}, "standard"); code != http.StatusOK {
 		t.Fatalf("persona=standard = %d, want 200", code)
 	}
 	if len(standardFake.paths) != len(standardPaths) {
@@ -137,7 +163,7 @@ func TestPersonaSelectsPathSet(t *testing.T) {
 	}
 
 	redteamFake := &recordingFake{}
-	if code, _ := postTransaction(t, redteamFake, "redteam"); code != http.StatusOK {
+	if code, _ := postTransaction(t, redteamFake, &recordingLauncher{}, "redteam"); code != http.StatusOK {
 		t.Fatalf("persona=redteam = %d, want 200", code)
 	}
 	if len(redteamFake.paths) != 0 {
@@ -145,52 +171,74 @@ func TestPersonaSelectsPathSet(t *testing.T) {
 	}
 }
 
-func TestRedteamStubInert(t *testing.T) {
+// TestRedteamLaunchesOnce replaces the old P1 TestRedteamStubInert: the Redteam
+// persona is no longer an inert stub (P2) — it triggers exactly one in-process
+// attacker launch and returns the launcher's run_id.
+func TestRedteamLaunchesOnce(t *testing.T) {
 	fake := &recordingFake{}
-	code, body := postTransaction(t, fake, "redteam")
+	rt := &recordingLauncher{}
+	code, body := postTransaction(t, fake, rt, "redteam")
+	if code != http.StatusOK {
+		t.Fatalf("persona=redteam = %d, want 200", code)
+	}
+	if rt.calls != 1 {
+		t.Errorf("rt.Launch called %d times, want exactly 1", rt.calls)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+		t.Fatalf("receipt body not JSON: %v (%q)", err, body)
+	}
+	if receipt["persona"] != "redteam" {
+		t.Errorf("receipt persona = %v, want \"redteam\"", receipt["persona"])
+	}
+	runID, _ := receipt["run_id"].(string)
+	if runID == "" {
+		t.Errorf("receipt run_id = %v, want non-empty", receipt["run_id"])
+	}
+	if receipt["active"] != true {
+		t.Errorf("receipt active = %v, want true", receipt["active"])
+	}
+}
+
+// TestRedteamMakesNoGatewayCalls asserts the seam boundary: service C's redteam
+// branch never calls gw.Fetch directly — the ATTACKER makes the canary touches,
+// over its own HTTPTool, not service C.
+func TestRedteamMakesNoGatewayCalls(t *testing.T) {
+	fake := &recordingFake{}
+	code, _ := postTransaction(t, fake, &recordingLauncher{}, "redteam")
 	if code != http.StatusOK {
 		t.Fatalf("persona=redteam = %d, want 200", code)
 	}
 	if len(fake.paths) != 0 {
-		t.Errorf("persona=redteam called gw.Fetch %v, want zero calls (P1 stub is inert)", fake.paths)
-	}
-	var stub map[string]any
-	if err := json.Unmarshal([]byte(body), &stub); err != nil {
-		t.Fatalf("stub body not JSON: %v (%q)", err, body)
-	}
-	if stub["persona"] != "redteam" {
-		t.Errorf("stub persona = %v, want \"redteam\"", stub["persona"])
-	}
-	if stub["status"] != "stub" {
-		t.Errorf("stub status = %v, want \"stub\"", stub["status"])
-	}
-	if stub["wired"] != "P2" {
-		t.Errorf("stub wired = %v, want \"P2\"", stub["wired"])
-	}
-	for _, cp := range mirroredCanaryPrefixes {
-		if strings.Contains(body, cp) {
-			t.Errorf("redteam stub body contains canary path %q — must stay negative space (rule 8)", cp)
-		}
+		t.Errorf("persona=redteam called gw.Fetch %v, want zero calls", fake.paths)
 	}
 }
 
-func TestUnknownPersonaRejected(t *testing.T) {
+func TestUnknownPersonaLaunchesNothing(t *testing.T) {
 	unknown := &recordingFake{}
-	code, _ := postTransaction(t, unknown, "foo")
+	unknownRT := &recordingLauncher{}
+	code, _ := postTransaction(t, unknown, unknownRT, "foo")
 	if code != http.StatusBadRequest {
 		t.Errorf("persona=foo = %d, want 400", code)
 	}
 	if len(unknown.paths) != 0 {
 		t.Errorf("persona=foo called gw.Fetch %v, want zero calls", unknown.paths)
 	}
+	if unknownRT.calls != 0 {
+		t.Errorf("persona=foo called rt.Launch %d times, want zero", unknownRT.calls)
+	}
 
 	missing := &recordingFake{}
-	code, _ = postTransaction(t, missing, "")
+	missingRT := &recordingLauncher{}
+	code, _ = postTransaction(t, missing, missingRT, "")
 	if code != http.StatusBadRequest {
 		t.Errorf("missing persona = %d, want 400", code)
 	}
 	if len(missing.paths) != 0 {
 		t.Errorf("missing persona called gw.Fetch %v, want zero calls", missing.paths)
+	}
+	if missingRT.calls != 0 {
+		t.Errorf("missing persona called rt.Launch %d times, want zero", missingRT.calls)
 	}
 }
 
@@ -199,11 +247,87 @@ func TestUnknownPersonaRejected(t *testing.T) {
 func TestShipsNoSecrets(t *testing.T) {
 	akia := regexp.MustCompile(`AKIA[0-9A-Z]{16}`)
 	pem := regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
-	_, body := getPath(t, &recordingFake{}, "/")
+	_, body := getPath(t, &recordingFake{}, &recordingLauncher{}, "/")
 	if akia.MatchString(body) {
 		t.Errorf("/ body contains an AWS key id")
 	}
 	if pem.MatchString(body) {
 		t.Errorf("/ body contains a PEM private key")
+	}
+}
+
+// TestCassetteLauncherSingleSlot exercises the PROD redteamLauncher
+// (newCassetteLauncher) against a fake Messager (zero API, zero cost) and a local
+// httptest.Server gateway (no real omlx, no hung goroutine): a first Launch()
+// starts a background attack; a second Launch() issued while that attack's first
+// tool call is still in flight must return the SAME run_id and must NOT start a
+// second attack (single-slot mutex). The httptest handler blocks on a channel
+// until the test explicitly releases it, which is what gives the test a
+// deterministic window to observe "still active" without a sleep-based race.
+func TestCassetteLauncherSingleSlot(t *testing.T) {
+	toolUse, err := anthropic.MessageFromJSON(`{
+		"id":"resp-1","type":"message","role":"assistant","model":"test-model",
+		"stop_reason":"tool_use",
+		"content":[{"type":"tool_use","id":"tu-1","name":"http_request","input":{"method":"GET","path":"/"}}],
+		"usage":{"input_tokens":10,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}
+	}`)
+	if err != nil {
+		t.Fatalf("build tool_use response: %v", err)
+	}
+	endTurn, err := anthropic.MessageFromJSON(`{
+		"id":"resp-2","type":"message","role":"assistant","model":"test-model",
+		"stop_reason":"end_turn",
+		"content":[{"type":"text","text":"done"}],
+		"usage":{"input_tokens":5,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}
+	}`)
+	if err != nil {
+		t.Fatalf("build end_turn response: %v", err)
+	}
+	fakeMsgr := &anthropic.FakeClient{Responses: []*sdk.Message{toolUse, endTurn}}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gateway.Close()
+
+	launcher := newCassetteLauncher(fakeMsgr, gateway.URL, attacker.Config{Model: "test-model", MaxTurns: 5})
+
+	runID1, err := launcher.Launch()
+	if err != nil {
+		t.Fatalf("first Launch: %v", err)
+	}
+	if runID1 == "" {
+		t.Fatal("first Launch returned an empty run_id")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the attacker's first gateway call")
+	}
+
+	runID2, err := launcher.Launch()
+	if err != nil {
+		t.Fatalf("second Launch (while active): %v", err)
+	}
+	if runID2 != runID1 {
+		t.Errorf("second Launch run_id = %q, want same as first %q (single-slot)", runID2, runID1)
+	}
+	if got := fakeMsgr.CallCount(); got != 1 {
+		t.Errorf("Messager.New called %d times while first run still active, want 1 (no second run started)", got)
+	}
+
+	close(release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for fakeMsgr.CallCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := fakeMsgr.CallCount(); got != 2 {
+		t.Fatalf("Messager.New called %d times after run completed, want 2 (one tool_use turn + one end_turn)", got)
 	}
 }
