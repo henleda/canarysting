@@ -1,11 +1,11 @@
-# One image, four binaries: cs-engine (cmd/engine), cs-adapter
+# One image, five binaries: cs-engine (cmd/engine), cs-adapter
 # (cmd/envoy-adapter), cs-attacker (cmd/llm-attacker), cs-dashboard-backend
-# (cmd/dashboard-backend). Kubernetes selects which binary a container runs via
-# command-override (no ENTRYPOINT here) — the same core image backs every
-# service in the kina demo mesh. Context is the repo root so the module
-# (go.mod) is available; COPY . . (not a filtered subset) is required because
-# bpf/*/**_bpfel.o are //go:embed'd by the bpf loader packages — do NOT add a
-# .dockerignore that drops *.o.
+# (cmd/dashboard-backend), cs-servicec (cmd/service-c). Kubernetes selects
+# which binary a container runs via command-override (no ENTRYPOINT here) —
+# the same core image backs every service in the kina demo mesh. Context is
+# the repo root so the module (go.mod) is available; COPY . . (not a
+# filtered subset) is required because bpf/*/**_bpfel.o are //go:embed'd by
+# the bpf loader packages — do NOT add a .dockerignore that drops *.o.
 FROM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -15,6 +15,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-engine ./cmd/engine
 RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-adapter ./cmd/envoy-adapter
 RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-attacker ./cmd/llm-attacker
 RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-dashboard-backend ./cmd/dashboard-backend
+RUN CGO_ENABLED=0 go build -trimpath -o /out/cs-servicec ./cmd/service-c
 
 FROM gcr.io/distroless/static-debian12
-COPY --from=build /out/cs-engine /out/cs-adapter /out/cs-attacker /out/cs-dashboard-backend /usr/local/bin/
+COPY --from=build /out/cs-engine /out/cs-adapter /out/cs-attacker /out/cs-dashboard-backend /out/cs-servicec /usr/local/bin/

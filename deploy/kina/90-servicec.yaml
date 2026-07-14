@@ -1,0 +1,89 @@
+# Interactive deception demo, P1: the storefront web app (cmd/service-c). One
+# Deployment running cs-servicec from the shared core image (command-override,
+# same pattern as 60-mesh.yaml's mesh binary). GATEWAY_URL points it at the
+# mesh gateway; a Standard-persona transaction drives real, canary-free
+# traffic against it (standardPaths in cmd/service-c/main.go). Redteam is an
+# inert P1 stub — wired to the local-model attacker in P2.
+#
+# service-c is a plain client of the mesh gateway (it never receives
+# east-west fan-out itself), so it runs under the same hardened default
+# profile as the mesh services: runAsNonRoot, drop ALL, no priv escalation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-c
+  namespace: canarysting
+  labels:
+    app: service-c
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-c
+  template:
+    metadata:
+      labels:
+        app: service-c
+    spec:
+      containers:
+        - name: service-c
+          image: docker.io/canarysting/core:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/cs-servicec"]
+          env:
+            - name: GATEWAY_URL
+              value: "http://gateway.canarysting.svc.cluster.local:8080"
+            - name: LISTEN
+              value: ":8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-c
+  namespace: canarysting
+  labels:
+    app: service-c
+spec:
+  type: ClusterIP
+  selector:
+    app: service-c
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+# Exposes the storefront on a stable NodePort so it's reachable from the host
+# Mac via <node-vm-ip>:30302, e.g. for a nip.io demo URL
+# (http://service-c.<node-vm-ip>.nip.io:30302/). Additive to the ClusterIP
+# Service above, same pattern as 81-dashboard-nodeport.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-c-nodeport
+  namespace: canarysting
+  labels:
+    app: service-c
+spec:
+  type: NodePort
+  selector:
+    app: service-c
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30302
