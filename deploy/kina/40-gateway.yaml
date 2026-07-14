@@ -46,18 +46,30 @@ spec:
             - "-inline"
             - "-sting-floor"
             - "1"
-            - "-no-ebpf"
           readinessProbe:
             tcpSocket:
               port: 50051
             initialDelaySeconds: 2
             periodSeconds: 5
+          # Real eBPF (no -no-ebpf) needs a privileged loader with root +
+          # kernel-facing capabilities — the sockops/enforce programs attach
+          # via bpf(2)/BPF_PROG_LOAD which the default hardened profile
+          # (runAsNonRoot/65532/drop ALL) cannot do. This is the honest
+          # tradeoff for real kernel-level canary-touch detection on the
+          # BTF-kernel demo cluster; the hardened profile returns once the
+          # loader can drop privileges after attach.
           securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-            runAsUser: 65532
+            privileged: true
             capabilities:
-              drop: ["ALL"]
+              add: ["BPF", "NET_ADMIN", "PERFMON", "SYS_ADMIN", "SYS_RESOURCE"]
+          volumeMounts:
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+            - name: kernel
+              mountPath: /sys/kernel
+              readOnly: true
+            - name: bpffs
+              mountPath: /sys/fs/bpf
 
         - name: engine
           image: docker.io/canarysting/core:latest
@@ -88,6 +100,15 @@ spec:
         - name: envoy-config
           configMap:
             name: envoy-config
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+        - name: kernel
+          hostPath:
+            path: /sys/kernel
+        - name: bpffs
+          hostPath:
+            path: /sys/fs/bpf
 ---
 apiVersion: v1
 kind: Service
