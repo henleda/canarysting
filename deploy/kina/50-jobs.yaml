@@ -21,9 +21,12 @@ spec:
             - "-c"
             - |
               set -e
+              # "/" is the mesh frontend's real landing route (fans out to
+              # api -> auth/db/cache/payments); "/products" was a whoami-era
+              # path that 404s against the mesh's realistic routing.
               for i in $(seq 1 5); do
                 echo "benign request $i:"
-                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/products
+                curl -s -o /dev/null -w '%{http_code} %{time_total}\n' http://gateway:8080/
                 sleep 1
               done
 ---
@@ -51,7 +54,7 @@ spec:
             - |
               set -e
               echo "warmup benign request:"
-              curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 10 http://gateway:8080/products
+              curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 10 http://gateway:8080/
               for i in $(seq 1 5); do
                 echo "canary touch $i:"
                 curl -s -o /dev/null -w '%{http_code} %{time_total}\n' --max-time 10 http://gateway:8080/.aws/credentials

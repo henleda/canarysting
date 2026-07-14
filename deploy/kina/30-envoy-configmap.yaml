@@ -74,7 +74,7 @@ data:
           endpoints:
           - lb_endpoints:
             - endpoint:
-                address: { socket_address: { address: whoami.canarysting.svc.cluster.local, port_value: 80 } }
+                address: { socket_address: { address: frontend.canarysting.svc.cluster.local, port_value: 8000 } }
 
       - name: canarysting_extproc
         type: STRICT_DNS

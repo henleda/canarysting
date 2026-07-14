@@ -16,9 +16,7 @@ def main [--images: list<string> = [core]] {
     if $image == "core" {
       load-core
     } else if $image == "mesh" {
-      # Phase 3 (6-service mesh): not built yet. Left as a placeholder so the
-      # --images flag has a documented extension point when that work lands.
-      print $"skipping ($image): mesh image not implemented until Phase 3"
+      load-mesh
     } else {
       print $"skipping unknown image: ($image)"
     }
@@ -44,5 +42,34 @@ def load-core [] {
   } else {
     print "== retagging as docker.io/canarysting/core:latest =="
     ^container exec cs-control-plane ctr -n k8s.io images tag canarysting/core:latest docker.io/canarysting/core:latest
+  }
+}
+
+# Phase 3 (6-service mesh): tiny east-west service (deploy/m7-window/mesh),
+# same retag dance as load-core. `ctr images tag` needs the source image in
+# the k8s.io namespace; `kina load` lands it in `default`, so bridge via
+# export/import first (see module docstring).
+def load-mesh [] {
+  print "== building canarysting/mesh:latest =="
+  ^container build -t canarysting/mesh:latest -f deploy/m7-window/mesh/Dockerfile .
+
+  print "== loading canarysting/mesh:latest into cluster cs =="
+  ^kina load canarysting/mesh:latest --cluster cs
+
+  let already_tagged = (
+    ^container exec cs-control-plane ctr -n k8s.io images ls
+    | complete
+    | get stdout
+    | str contains "docker.io/canarysting/mesh:latest"
+  )
+
+  if $already_tagged {
+    print "== docker.io/canarysting/mesh:latest already tagged, skipping retag =="
+  } else {
+    print "== bridging canarysting/mesh:latest into the k8s.io namespace =="
+    ^container exec cs-control-plane ctr -n default images export /tmp/canarysting-mesh.tar canarysting/mesh:latest
+    ^container exec cs-control-plane ctr -n k8s.io images import /tmp/canarysting-mesh.tar
+    print "== retagging as docker.io/canarysting/mesh:latest =="
+    ^container exec cs-control-plane ctr -n k8s.io images tag canarysting/mesh:latest docker.io/canarysting/mesh:latest
   }
 }

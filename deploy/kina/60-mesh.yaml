@@ -1,0 +1,361 @@
+# Phase 3 mesh backend: 6 mock services (deploy/m7-window/mesh) wired into a
+# frontend -> api -> {auth, db, cache, payments} fan-out. Real east-west HTTP
+# traffic — not a single flat hop to whoami — so Hubble/Cilium and the
+# eBPF baseline learner see a genuine multi-node service graph. Envoy
+# (30-envoy-configmap.yaml) routes to `frontend`; `frontend` is the only
+# service reachable from outside the mesh.
+#
+# Every service is the same image with a different SVC_NAME/DOWNSTREAMS —
+# the mesh binary needs no eBPF or elevated privilege, so all six run under
+# the hardened default profile (runAsNonRoot, drop ALL, no priv escalation).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: canarysting
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: frontend
+            - name: LISTEN
+              value: ":8000"
+            - name: DOWNSTREAMS
+              value: "http://api.canarysting.svc.cluster.local:8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: canarysting
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: canarysting
+  labels:
+    app: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: api
+            - name: LISTEN
+              value: ":8000"
+            - name: DOWNSTREAMS
+              value: "http://auth.canarysting.svc.cluster.local:8000,http://db.canarysting.svc.cluster.local:8000,http://cache.canarysting.svc.cluster.local:8000,http://payments.canarysting.svc.cluster.local:8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: canarysting
+  labels:
+    app: api
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: canarysting
+  labels:
+    app: auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth
+  template:
+    metadata:
+      labels:
+        app: auth
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: auth
+            - name: LISTEN
+              value: ":8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  namespace: canarysting
+  labels:
+    app: auth
+spec:
+  type: ClusterIP
+  selector:
+    app: auth
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: canarysting
+  labels:
+    app: db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: db
+            - name: LISTEN
+              value: ":8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: canarysting
+  labels:
+    app: db
+spec:
+  type: ClusterIP
+  selector:
+    app: db
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+  namespace: canarysting
+  labels:
+    app: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: cache
+            - name: LISTEN
+              value: ":8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache
+  namespace: canarysting
+  labels:
+    app: cache
+spec:
+  type: ClusterIP
+  selector:
+    app: cache
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: canarysting
+  labels:
+    app: payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      containers:
+        - name: mesh
+          image: docker.io/canarysting/mesh:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SVC_NAME
+              value: payments
+            - name: LISTEN
+              value: ":8000"
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  namespace: canarysting
+  labels:
+    app: payments
+spec:
+  type: ClusterIP
+  selector:
+    app: payments
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
