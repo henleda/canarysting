@@ -1,6 +1,8 @@
 package views
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -499,5 +501,79 @@ func TestDeriveReconTimelineEmpty(t *testing.T) {
 	rt := DeriveReconTimeline(evs, base.Add(time.Minute))
 	if rt.TotalRecon != 0 || len(rt.Rows) != 0 {
 		t.Fatalf("want empty recon, got %+v", rt)
+	}
+}
+
+// --- FlowRow mechanism/depth aggregation (P4: /intel panel per-flow attribution) ---
+
+func TestBuildFlowRow_MechanismAndDepth_FakeTree(t *testing.T) {
+	s := flowSession{
+		FlowID: 0x10,
+		Events: []intelligence.AdversaryInteractionEvent{
+			evSting(0x10, 2, "contain", "backup/db.sql", 0, intelligence.StingOutcome{Mechanism: "fake_tree", DepthReached: 3}, 2),
+		},
+	}
+	row := buildFlowRow(s)
+	if row.LastMechanism != "fake_tree" {
+		t.Fatalf("LastMechanism = %q, want fake_tree", row.LastMechanism)
+	}
+	if row.MaxDepth != 3 {
+		t.Fatalf("MaxDepth = %d, want 3", row.MaxDepth)
+	}
+}
+
+func TestBuildFlowRow_LastMechanismSurvivesTrailingEmpty(t *testing.T) {
+	// poison_field(depth 2) -> token_bait(depth 4) -> a later kernel-jail touch with
+	// no sting attribution. The trailing empty StingOutcome must NOT clobber the
+	// last real mechanism, and the max depth must still reflect the highest seen.
+	s := flowSession{
+		FlowID: 0x10,
+		Events: []intelligence.AdversaryInteractionEvent{
+			evSting(0x10, 1, "tag", ".env", 0, intelligence.StingOutcome{Mechanism: "poison_field", DepthReached: 2}, 1),
+			evSting(0x10, 2, "contain", ".aws/credentials", 10, intelligence.StingOutcome{Mechanism: "token_bait", DepthReached: 4}, 2),
+			evSting(0x10, 3, "jail", "backup/db.sql", 20, intelligence.StingOutcome{}, 3),
+		},
+	}
+	row := buildFlowRow(s)
+	if row.LastMechanism != "token_bait" {
+		t.Fatalf("LastMechanism = %q, want token_bait (trailing empty must not clobber it)", row.LastMechanism)
+	}
+	if row.MaxDepth != 4 {
+		t.Fatalf("MaxDepth = %d, want 4 (max preserved)", row.MaxDepth)
+	}
+}
+
+func TestBuildFlowRow_KernelJailNoAttribution(t *testing.T) {
+	// A pure kernel-jail flow: every event has a zero StingOutcome (no sting layer
+	// attribution). "" / 0 is the honest sentinel here, not a bug.
+	s := flowSession{
+		FlowID: 0x20,
+		Events: []intelligence.AdversaryInteractionEvent{
+			evSting(0x20, 3, "jail", ".env", 0, intelligence.StingOutcome{}, 1),
+			evSting(0x20, 3, "jail", ".env", 5, intelligence.StingOutcome{}, 2),
+		},
+	}
+	row := buildFlowRow(s)
+	if row.LastMechanism != "" {
+		t.Fatalf("LastMechanism = %q, want empty (no sting attribution)", row.LastMechanism)
+	}
+	if row.MaxDepth != 0 {
+		t.Fatalf("MaxDepth = %d, want 0 (no sting attribution)", row.MaxDepth)
+	}
+}
+
+func TestFlowRowJSON_LastMechanismDepthAlwaysPresent(t *testing.T) {
+	// Non-omitempty contract: the TS side treats these as always-present, not
+	// optional. A zero-value FlowRow must still emit both keys.
+	b, err := json.Marshal(FlowRow{})
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"last_mechanism"`) {
+		t.Fatalf("json missing last_mechanism key (must be non-omitempty): %s", s)
+	}
+	if !strings.Contains(s, `"max_depth"`) {
+		t.Fatalf("json missing max_depth key (must be non-omitempty): %s", s)
 	}
 }
