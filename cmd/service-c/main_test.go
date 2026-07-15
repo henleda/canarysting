@@ -71,6 +71,28 @@ func postTransaction(t *testing.T, gw gatewayCaller, rt redteamLauncher, persona
 	return rr.Code, rr.Body.String()
 }
 
+// postTransactionWithAction submits POST /api/transaction with persona AND
+// action form values — the extended contract for storefront actions (design
+// doc §5.2): persona=standard + action=<name> drives actionPaths[name]
+// instead of the legacy standardPaths; persona=redteam ignores action
+// entirely. An empty action omits the field (true "missing" — exercises the
+// legacy standardPaths path for persona=standard, unchanged behavior).
+func postTransactionWithAction(t *testing.T, gw gatewayCaller, rt redteamLauncher, persona, action string) (int, string) {
+	t.Helper()
+	form := url.Values{}
+	if persona != "" {
+		form.Set("persona", persona)
+	}
+	if action != "" {
+		form.Set("action", action)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/transaction", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	serve(rr, req, gw, rt)
+	return rr.Code, rr.Body.String()
+}
+
 // mirroredCanaryPrefixes hand-mirrors the negative-space canary prefixes defined in
 // deploy/m7-window/mesh/main.go:62-64 (canaryPrefixes) and cmd/envoy-adapter/main.go
 // :243-249 (demoCanaryPaths). package main is unimportable across binaries, so this
@@ -91,6 +113,26 @@ func TestStandardPathsAreCanaryFree(t *testing.T) {
 		}
 		if p != "/" && !strings.HasPrefix(p, "/api/") {
 			t.Errorf("standardPaths entry %q must be \"/\" or begin \"/api/\"", p)
+		}
+	}
+}
+
+// TestActionPathsAreCanaryFree is the load-bearing scope guard for the
+// storefront action table (design doc §3 actionPaths / §5.6): every path any
+// action drives against the gateway must stay disjoint from the canary
+// negative space and confined to the served surface ("/" or "/api/*"). Same
+// discipline as TestStandardPathsAreCanaryFree, extended to actionPaths.
+func TestActionPathsAreCanaryFree(t *testing.T) {
+	for action, paths := range actionPaths {
+		for _, p := range paths {
+			for _, cp := range mirroredCanaryPrefixes {
+				if p == cp || strings.HasPrefix(p, cp) {
+					t.Errorf("actionPaths[%q] entry %q collides with canary prefix %q — must stay disjoint (rule 8)", action, p, cp)
+				}
+			}
+			if p != "/" && !strings.HasPrefix(p, "/api/") {
+				t.Errorf("actionPaths[%q] entry %q must be \"/\" or begin \"/api/\"", action, p)
+			}
 		}
 	}
 }
@@ -239,6 +281,114 @@ func TestUnknownPersonaLaunchesNothing(t *testing.T) {
 	}
 	if missingRT.calls != 0 {
 		t.Errorf("missing persona called rt.Launch %d times, want zero", missingRT.calls)
+	}
+}
+
+// TestStandardActionDrivesConfiguredPaths freezes the per-action contract
+// (design doc §3/§5.2): a Standard-persona transaction naming an action drives
+// exactly actionPaths[action] against the gateway, in order, and the receipt
+// echoes both persona and action. Table-driven over every entry in
+// actionPaths so the implementer has zero ambiguity about the full table.
+func TestStandardActionDrivesConfiguredPaths(t *testing.T) {
+	for action, wantPaths := range actionPaths {
+		t.Run(action, func(t *testing.T) {
+			fake := &recordingFake{}
+			code, body := postTransactionWithAction(t, fake, &recordingLauncher{}, "standard", action)
+			if code != http.StatusOK {
+				t.Fatalf("persona=standard action=%s = %d, want 200", action, code)
+			}
+			if len(fake.paths) != len(wantPaths) {
+				t.Fatalf("gw.Fetch called %v, want exactly %v", fake.paths, wantPaths)
+			}
+			for i, want := range wantPaths {
+				if fake.paths[i] != want {
+					t.Errorf("gw.Fetch call %d = %q, want %q", i, fake.paths[i], want)
+				}
+			}
+			var receipt map[string]any
+			if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+				t.Fatalf("receipt body not JSON: %v (%q)", err, body)
+			}
+			if receipt["persona"] != "standard" {
+				t.Errorf("receipt persona = %v, want \"standard\"", receipt["persona"])
+			}
+			if receipt["action"] != action {
+				t.Errorf("receipt action = %v, want %q", receipt["action"], action)
+			}
+			if receipt["ok"] != true {
+				t.Errorf("receipt ok = %v, want true", receipt["ok"])
+			}
+		})
+	}
+}
+
+// TestStandardActionUnknownRejected: an action not present in actionPaths is
+// rejected the same way an unknown persona is — 400, zero gw.Fetch, zero
+// rt.Launch (design doc §5.2 "Unknown action → 400, mirroring the persona
+// 400").
+func TestStandardActionUnknownRejected(t *testing.T) {
+	fake := &recordingFake{}
+	rt := &recordingLauncher{}
+	code, _ := postTransactionWithAction(t, fake, rt, "standard", "bogus-action")
+	if code != http.StatusBadRequest {
+		t.Errorf("persona=standard action=bogus-action = %d, want 400", code)
+	}
+	if len(fake.paths) != 0 {
+		t.Errorf("unknown action called gw.Fetch %v, want zero calls", fake.paths)
+	}
+	if rt.calls != 0 {
+		t.Errorf("unknown action called rt.Launch %d times, want zero", rt.calls)
+	}
+}
+
+// TestStandardTransactionWithoutActionKeepsLegacyPaths freezes backward
+// compatibility (design doc §5.3 "Keep POST /api/transaction exactly as-is"):
+// persona=standard with NO action field still drives the legacy
+// standardPaths and the receipt carries no "action" key at all — existing
+// callers (and TestStandardTransactionHitsServedPaths) see unchanged
+// behavior.
+func TestStandardTransactionWithoutActionKeepsLegacyPaths(t *testing.T) {
+	fake := &recordingFake{}
+	code, body := postTransactionWithAction(t, fake, &recordingLauncher{}, "standard", "")
+	if code != http.StatusOK {
+		t.Fatalf("persona=standard (no action) = %d, want 200", code)
+	}
+	if len(fake.paths) != len(standardPaths) {
+		t.Fatalf("gw.Fetch called %v, want exactly %v (legacy standardPaths)", fake.paths, standardPaths)
+	}
+	for i, want := range standardPaths {
+		if fake.paths[i] != want {
+			t.Errorf("gw.Fetch call %d = %q, want %q", i, fake.paths[i], want)
+		}
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal([]byte(body), &receipt); err != nil {
+		t.Fatalf("receipt body not JSON: %v (%q)", err, body)
+	}
+	if receipt["persona"] != "standard" {
+		t.Errorf("receipt persona = %v, want \"standard\"", receipt["persona"])
+	}
+	if _, hasAction := receipt["action"]; hasAction {
+		t.Errorf("receipt unexpectedly has an \"action\" key (%v) for a no-action legacy transaction", receipt["action"])
+	}
+}
+
+// TestRedteamIgnoresActionParam: an action value alongside persona=redteam
+// must not change redteam semantics — the launcher fires exactly once, and
+// service C still makes zero gw.Fetch calls (design doc §5.2 "plus standard
+// for compatibility"; redteam untouched).
+func TestRedteamIgnoresActionParam(t *testing.T) {
+	fake := &recordingFake{}
+	rt := &recordingLauncher{}
+	code, _ := postTransactionWithAction(t, fake, rt, "redteam", "browse")
+	if code != http.StatusOK {
+		t.Fatalf("persona=redteam action=browse = %d, want 200", code)
+	}
+	if rt.calls != 1 {
+		t.Errorf("rt.Launch called %d times, want exactly 1", rt.calls)
+	}
+	if len(fake.paths) != 0 {
+		t.Errorf("persona=redteam action=browse called gw.Fetch %v, want zero calls", fake.paths)
 	}
 }
 
