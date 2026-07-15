@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -29,6 +30,23 @@ import (
 	"github.com/canarysting/canarysting/internal/transport/grpccreds"
 )
 
+// buildEngineOptions maps the three inline demo/escalation flags onto the
+// identically named boot.Options fields (boot.go:75,81,90) and enforces the
+// same -aggressive/-demo-escalation mutual exclusion cmd/staged-range/main.go:137-139
+// already guards. The caller merges the returned fields into the Options it
+// builds from the remaining flags (Boundary, Window, BaselineDBPath, etc).
+func buildEngineOptions(aggressive, demoEscalation, containInline, jailInline bool) (boot.Options, error) {
+	if aggressive && demoEscalation {
+		return boot.Options{}, errors.New("engine: -aggressive and -demo-escalation are mutually exclusive (single-touch vs the 3-5-touch dwell band)")
+	}
+	return boot.Options{
+		Aggressive:     aggressive,
+		DemoEscalation: demoEscalation,
+		ContainInline:  containInline,
+		JailInline:     jailInline,
+	}, nil
+}
+
 func main() {
 	var (
 		boundary       = flag.String("scope-boundary", "", "operator-defined scope boundary; required where no cluster identity is derivable (standalone). Empty => refuse to start.")
@@ -36,6 +54,9 @@ func main() {
 		selfcheck      = flag.Bool("selfcheck", false, "submit one synthetic signal event, print the verdict, and exit")
 		grpcAddr       = flag.String("grpc-addr", "", "if set, serve the Engine over gRPC at this address for an out-of-process adapter (M4)")
 		aggressive     = flag.Bool("aggressive", false, "demo/eval: minimum per-tier confidence so a flow escalates to Jail on fewer distinct touches (uncalibrated cold-start)")
+		demoEscalation = flag.Bool("demo-escalation", false, "DEMO ONLY: a middle escalation band (Tag@~touch-1, Contain@~3, Jail@~5 at M=1) so a flow DWELLS in the inline attrition (tarpit/maze/poison) for 3-5 touches before the jail — a credible bleed, not the -aggressive single touch. Mutually exclusive with -aggressive; NEVER for production.")
+		containInline  = flag.Bool("contain-inline", false, "Tier 2 (Contain) runs INLINE attrition (held tarpit + deception body, real attacker-cost reported) instead of async kernel enforce; Tier 3 stays async kernel-jail")
+		jailInline     = flag.Bool("jail-inline", false, "make Tier 3 (Jail) INLINE so the jailed flow's attrition outcome is reported back — which drains the pending jail into RecordJail and emits the D6-3 cross-scope confirmation. Default off (async kernel jail). For STAGED CONTRIBUTOR scopes that must emit confirmations (an async kernel jail drops the socket before any outcome is reported).")
 		baselineDB     = flag.String("baseline-db", "", "bbolt path for the durable baseline + interaction event store; empty => in-memory (no durability)")
 		observeCgroup  = flag.String("observe-cgroup", "", "cgroup v2 path to attach the OBSERVE-ONLY baseline path (e.g. /sys/fs/cgroup); empty => observe disabled (touch-only)")
 		windowBucketer = flag.Bool("window-bucketer", false, "use the coarse M7 learning-window bucketer (8 buckets) instead of the production 168-bucket default")
@@ -54,10 +75,18 @@ func main() {
 	)
 	flag.Parse()
 
+	inlineOpts, err := buildEngineOptions(*aggressive, *demoEscalation, *containInline, *jailInline)
+	if err != nil {
+		log.Fatalf("engine: refusing to start: %v", err)
+	}
+
 	built, err := boot.Build(boot.Options{
 		Boundary:              *boundary,
 		Window:                *window,
-		Aggressive:            *aggressive,
+		Aggressive:            inlineOpts.Aggressive,
+		DemoEscalation:        inlineOpts.DemoEscalation,
+		ContainInline:         inlineOpts.ContainInline,
+		JailInline:            inlineOpts.JailInline,
 		BaselineDBPath:        *baselineDB,
 		ObserveCgroup:         *observeCgroup,
 		CoarseBucketer:        *windowBucketer,
