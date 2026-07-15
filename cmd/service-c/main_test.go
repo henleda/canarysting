@@ -52,7 +52,7 @@ func getPath(t *testing.T, gw gatewayCaller, rt redteamLauncher, path string) (i
 	t.Helper()
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	serve(rr, req, gw, rt)
+	serve(rr, req, gw, rt, newStore(fixtureProducts))
 	return rr.Code, rr.Body.String()
 }
 
@@ -67,7 +67,7 @@ func postTransaction(t *testing.T, gw gatewayCaller, rt redteamLauncher, persona
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/transaction", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	serve(rr, req, gw, rt)
+	serve(rr, req, gw, rt, newStore(fixtureProducts))
 	return rr.Code, rr.Body.String()
 }
 
@@ -89,7 +89,7 @@ func postTransactionWithAction(t *testing.T, gw gatewayCaller, rt redteamLaunche
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/transaction", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	serve(rr, req, gw, rt)
+	serve(rr, req, gw, rt, newStore(fixtureProducts))
 	return rr.Code, rr.Body.String()
 }
 
