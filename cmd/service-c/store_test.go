@@ -428,3 +428,50 @@ func TestStoreEndpointsMakeNoGatewayCalls(t *testing.T) {
 		t.Errorf("gw.Fetch called %v across /api/store/* endpoints, want zero (canary-free seam)", fake.paths)
 	}
 }
+
+// 14. A session that has checked out more than wantCap times sees at most
+// wantCap orders from GET /api/store/orders, most-recent-first, with the
+// oldest dropped. (A1 — per-session order-history cap)
+func TestStoreOrderHistoryCappedAtMostRecent(t *testing.T) {
+	const wantCap = 20
+	st := newStore(fixtureProducts)
+	sess := newStoreSession(t, st)
+	p := fixtureProducts[0]
+
+	numbers := make([]string, 0, wantCap+1)
+	for i := 0; i < wantCap+1; i++ {
+		sess.do(http.MethodPost, "/api/store/cart", url.Values{"product_id": {p.ID}, "delta": {"1"}})
+		rr := sess.do(http.MethodPost, "/api/store/checkout", url.Values{})
+		var resp struct {
+			Order Order `json:"order"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("checkout %d response not JSON: %v (%q)", i, err, rr.Body.String())
+		}
+		numbers = append(numbers, resp.Order.Number)
+	}
+	firstNumber := numbers[0]
+	newestNumber := numbers[len(numbers)-1]
+	secondNumber := numbers[1]
+
+	ordersRR := sess.do(http.MethodGet, "/api/store/orders", nil)
+	var orders []Order
+	if err := json.Unmarshal(ordersRR.Body.Bytes(), &orders); err != nil {
+		t.Fatalf("orders response not JSON: %v (%q)", err, ordersRR.Body.String())
+	}
+
+	if len(orders) != wantCap {
+		t.Fatalf("orders count = %d, want %d (capped)", len(orders), wantCap)
+	}
+	if orders[0].Number != newestNumber {
+		t.Errorf("orders[0].Number = %q, want %q (newest first)", orders[0].Number, newestNumber)
+	}
+	if orders[wantCap-1].Number != secondNumber {
+		t.Errorf("orders[%d].Number = %q, want %q (oldest retained; first checkout dropped)", wantCap-1, orders[wantCap-1].Number, secondNumber)
+	}
+	for _, o := range orders {
+		if o.Number == firstNumber {
+			t.Errorf("orders contains %q (the first, oldest checkout), want it dropped", firstNumber)
+		}
+	}
+}
