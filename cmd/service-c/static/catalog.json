@@ -1,0 +1,14 @@
+[
+  { "id": "tent-ridgeline", "category": "camping", "name": "Ridgeline 2P Tent", "price": 229.00, "art": "⛺", "blurb": "Two-person freestanding tent, 3-season, 2.1kg packed." },
+  { "id": "stove-ember", "category": "camping", "name": "Ember Camp Stove", "price": 64.00, "art": "🔥", "blurb": "Compact canister stove, boils 1L in under 3 minutes." },
+  { "id": "bag-summit", "category": "camping", "name": "Summit Sleeping Bag", "price": 179.00, "art": "🛏️", "blurb": "Down-fill mummy bag rated to -6C." },
+  { "id": "chalk-granite", "category": "climbing", "name": "Granite Chalk Bag", "price": 22.00, "art": "🧱", "blurb": "Fleece-lined chalk bag with fold-over lid." },
+  { "id": "harness-alpine", "category": "climbing", "name": "Alpine Climbing Harness", "price": 89.00, "art": "🧗", "blurb": "Lightweight adjustable harness for multi-pitch routes." },
+  { "id": "pad-basalt", "category": "climbing", "name": "Basalt Crash Pad", "price": 149.00, "art": "🪨", "blurb": "Foldable bouldering pad, dual-density foam." },
+  { "id": "jacket-trailhead", "category": "apparel", "name": "Trailhead Softshell Jacket", "price": 139.00, "art": "🧥", "blurb": "Windproof softshell with articulated elbows." },
+  { "id": "layer-meridian", "category": "apparel", "name": "Meridian Base Layer", "price": 45.00, "art": "👕", "blurb": "Merino-blend base layer, odor-resistant." },
+  { "id": "boots-switchback", "category": "apparel", "name": "Switchback Hiking Boots", "price": 159.00, "art": "🥾", "blurb": "Waterproof mid-cut boots with sticky-rubber outsole." },
+  { "id": "gps-beacon", "category": "electronics", "name": "Beacon GPS Locator", "price": 249.00, "art": "📡", "blurb": "Satellite messenger with SOS beacon." },
+  { "id": "headlamp-lumen", "category": "electronics", "name": "Lumen Headlamp Pro", "price": 39.00, "art": "🔦", "blurb": "400-lumen rechargeable headlamp, red night mode." },
+  { "id": "power-voyager", "category": "electronics", "name": "Voyager Power Bank", "price": 59.00, "art": "🔋", "blurb": "20,000mAh solar-assist power bank." }
+]

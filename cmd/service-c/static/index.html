@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meridian Supply Co.</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="#/browse">Meridian Supply Co.</a>
+  <nav class="category-nav">
+    <a href="#/browse?category=camping">Camping</a>
+    <a href="#/browse?category=climbing">Climbing</a>
+    <a href="#/browse?category=apparel">Apparel</a>
+    <a href="#/browse?category=electronics">Electronics</a>
+  </nav>
+  <form id="search-form" class="search-form">
+    <input id="search-input" type="search" name="q" placeholder="Search products" aria-label="Search products">
+    <button type="submit">Search</button>
+  </form>
+  <div class="header-actions">
+    <a href="#/cart" id="cart-link">Cart <span id="cart-count" class="badge">0</span></a>
+    <a href="#/login" id="account-link">Account</a>
+    <div class="persona-switcher" role="group" aria-label="Persona">
+      <button type="button" id="persona-standard" class="persona-btn active" data-persona="standard">Standard</button>
+      <button type="button" id="persona-redteam" class="persona-btn" data-persona="redteam">Redteam</button>
+    </div>
+  </div>
+</header>
+
+<div id="redteam-banner" class="redteam-banner" hidden>
+  <strong>Red-team test mode</strong> &mdash; launches a simulated attacker against this environment.
+  <button type="button" id="run-security-test">Run security test</button>
+  <a id="dashboard-link" href="#" hidden target="_blank" rel="noopener">Watch on operator dashboard</a>
+  <span id="redteam-status" aria-live="polite"></span>
+</div>
+
+<main id="app"></main>
+
+<div id="activity" class="activity" aria-live="polite"></div>
+
+<!-- product-card-tpl is cloned once per catalog item by app.js (vanilla JS
+     templating, no build step). The literal "Buy Now" label doubles as the
+     storefront's quick-purchase control. -->
+<template id="product-card-tpl">
+  <article class="product-card">
+    <a class="product-link" href="#">
+      <div class="product-art" aria-hidden="true"></div>
+      <h3 class="product-name"></h3>
+    </a>
+    <p class="product-price"></p>
+    <div class="product-actions">
+      <button type="button" class="add-cart-btn">Add to Cart</button>
+      <button type="button" class="buy-btn">Buy Now</button>
+    </div>
+  </article>
+</template>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

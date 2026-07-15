@@ -9,9 +9,11 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +25,24 @@ import (
 	"github.com/canarysting/canarysting/internal/llm/anthropic"
 	"github.com/canarysting/canarysting/internal/llm/attacker"
 )
+
+//go:embed static
+var embeddedStatic embed.FS
+
+// staticHandler serves the embedded storefront SPA (index.html, app.js,
+// styles.css, catalog.json) — replaces the old serveIndex string literal.
+// http.FileServer serves static/index.html for "/" and 404s any path with
+// no matching file, which is what keeps unmapped /api/* GETs 404ing without
+// a special case (design doc §5.1).
+var staticHandler http.Handler
+
+func init() {
+	sub, err := fs.Sub(embeddedStatic, "static")
+	if err != nil {
+		log.Fatalf("service-c: embed static assets: %v", err)
+	}
+	staticHandler = http.FileServer(http.FS(sub))
+}
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -123,6 +143,22 @@ func (l *cassetteLauncher) Launch() (string, error) {
 // asserts it against the mirrored prefixes).
 var standardPaths = []string{"/", "/api/status"}
 
+// actionPaths are the gateway paths each storefront shopping action drives,
+// in order (design doc §3). A Standard-persona transaction naming an action
+// drives actionPaths[action] instead of the legacy standardPaths; an action
+// not present here is rejected with 400 (TestStandardActionUnknownRejected).
+// Every path is "/" or "/api/*" and disjoint from the canary negative space
+// — TestActionPathsAreCanaryFree asserts it.
+var actionPaths = map[string][]string{
+	"browse":   {"/", "/api/products"},
+	"search":   {"/api/search"},
+	"product":  {"/api/products"},
+	"login":    {"/api/login", "/api/session"},
+	"cart":     {"/api/cart"},
+	"checkout": {"/api/checkout", "/api/orders"},
+	"orders":   {"/api/orders"},
+}
+
 // dashboardURL optionally links the storefront to the operator dashboard; a
 // blank value (the default) hides the link. Set once in main() from
 // DASHBOARD_URL.
@@ -161,68 +197,66 @@ func serve(w http.ResponseWriter, r *http.Request, gw gatewayCaller, rt redteamL
 	switch {
 	case r.URL.Path == "/healthz":
 		_, _ = io.WriteString(w, "ok")
-	case r.URL.Path == "/" && r.Method == http.MethodGet:
-		serveIndex(w)
 	case r.URL.Path == "/api/transaction" && r.Method == http.MethodPost:
 		serveTransaction(w, r, gw, rt)
+	case r.URL.Path == "/api/store/config" && r.Method == http.MethodGet:
+		serveStoreConfig(w)
+	case r.Method == http.MethodGet:
+		staticHandler.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-// serveIndex renders the storefront: one product, a Buy control, and a
-// Standard/Redteam persona toggle. Ordinary harmless HTML — no secrets, keys,
-// or PEMs (TestShipsNoSecrets asserts it). The inline script POSTs the
-// selected persona to /api/transaction and shows the receipt.
-func serveIndex(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	dashboardLink := ""
-	if dashboardURL != "" {
-		dashboardLink = fmt.Sprintf(`<p><a href="%s">Operator dashboard</a></p>`, dashboardURL)
-	}
-	fmt.Fprintf(w, `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Canary Sting Storefront</title>
-<meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body>
-<h1>Canary Sting Storefront</h1>
-<p>Widget &mdash; $19.99</p>
-<form id="buy-form">
-<label><input type="radio" name="persona" value="standard" checked> Standard</label>
-<label><input type="radio" name="persona" value="redteam"> Redteam</label>
-<button type="submit">Buy</button>
-</form>
-<pre id="receipt"></pre>
-%s
-<script>
-document.getElementById('buy-form').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var sel = document.querySelector('input[name="persona"]:checked').value;
-  fetch('/api/transaction', {method: 'POST', body: new URLSearchParams({persona: sel})})
-    .then(function (r) { return r.text(); })
-    .then(function (t) { document.getElementById('receipt').textContent = t; });
-});
-</script>
-</body></html>
-`, dashboardLink)
+// serveStoreConfig exposes DASHBOARD_URL to the embedded SPA without
+// templating the static assets — the redteam banner's dashboard link reads
+// this at load time (design doc §5.4).
+func serveStoreConfig(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"dashboard_url": dashboardURL,
+	})
 }
 
 // serveTransaction dispatches a persona's purchase attempt. Standard drives
-// standardPaths against the gateway in order and returns a receipt; Redteam
+// standardPaths against the gateway in order and returns a receipt — or, when
+// an action form value names a storefront shopping action (design doc §5.2),
+// drives actionPaths[action] instead and echoes the action in the receipt; an
+// unrecognized action is rejected the same way an unknown persona is. Redteam
 // launches (or rejoins) one in-process attacker run via rt.Launch and returns
 // its run_id — zero gw.Fetch calls, the attacker makes its own calls over its
-// own HTTPTool; anything else is rejected without touching the gateway or
-// launching an attack.
+// own HTTPTool, and any action value is ignored; anything else is rejected
+// without touching the gateway or launching an attack.
 func serveTransaction(w http.ResponseWriter, r *http.Request, gw gatewayCaller, rt redteamLauncher) {
 	switch r.FormValue("persona") {
 	case "standard":
-		for _, p := range standardPaths {
+		action := r.FormValue("action")
+		if action == "" {
+			for _, p := range standardPaths {
+				_, _ = gw.Fetch(p)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"persona": "standard",
+				"ok":      true,
+				"paths":   standardPaths,
+			})
+			return
+		}
+		paths, ok := actionPaths[action]
+		if !ok {
+			http.Error(w, "unknown action", http.StatusBadRequest)
+			return
+		}
+		for _, p := range paths {
 			_, _ = gw.Fetch(p)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"persona": "standard",
+			"action":  action,
 			"ok":      true,
-			"paths":   standardPaths,
+			"paths":   paths,
 		})
 	case "redteam":
 		runID, err := rt.Launch()
