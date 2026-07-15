@@ -438,6 +438,8 @@ export interface FlowRow {
   total_cost: FlowCost;
   first_seen: string;
   last_seen: string;
+  last_mechanism: string; // last sting mechanism attributed; "" for pure kernel-jail flows (honest sentinel, not omitempty)
+  max_depth: number; // deepest StingOutcome.DepthReached seen; 0 for pure kernel-jail flows
   spark_series?: number[]; // only populated for escalation.attacker_flows cards (per-flow climb); the /flows table omits it (Go omitempty)
 }
 

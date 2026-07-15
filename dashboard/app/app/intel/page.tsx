@@ -4,6 +4,7 @@ import TopBar from '@/components/TopBar';
 import Breadcrumbs from '@/components/Breadcrumbs';
 import TimeRangeBar from '@/components/TimeRangeBar';
 import AdversaryIntelligence from '@/components/AdversaryIntelligence';
+import AttackerCostFlows from '@/components/AttackerCostFlows';
 import { useOverview } from '@/lib/useOverview';
 import { fixtureOverview } from '@/lib/fixture';
 
@@ -29,6 +30,7 @@ export default function IntelPage() {
         <div className="detail-section intel-standalone" style={{ padding: 0, overflow: 'hidden' }}>
           <AdversaryIntelligence intel={snap?.adversary_intel} />
         </div>
+        <AttackerCostFlows flows={snap?.escalation?.attacker_flows} />
       </main>
     </div>
   );

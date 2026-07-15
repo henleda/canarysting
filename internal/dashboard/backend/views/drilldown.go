@@ -113,6 +113,14 @@ type FlowRow struct {
 	TotalCost    FlowCost  `json:"total_cost"`
 	FirstSeen    time.Time `json:"first_seen"`
 	LastSeen     time.Time `json:"last_seen"`
+	// LastMechanism is the last sting mechanism attributed to this flow (the last
+	// event with a non-empty StingOutcome.Mechanism). Empty for pure kernel-jail
+	// flows where the sting layer never attributed a mechanism — an honest
+	// sentinel, not a bug (see TestBuildFlowRow_KernelJailNoAttribution).
+	LastMechanism string `json:"last_mechanism"`
+	// MaxDepth is the deepest StingOutcome.DepthReached seen across the session's
+	// events. 0 for pure kernel-jail flows.
+	MaxDepth int `json:"max_depth"`
 	// SparkSeries is this session's own normalized score progression (0..1, same
 	// shape escalation.flow uses). Set ONLY by AttackerFlowCards for the wall's
 	// live-attacker strip; omitted (omitempty) on the /flows table + /cost by-flow
@@ -512,6 +520,8 @@ func buildFlowRow(s flowSession) FlowRow {
 	maxTier, verdict := 0, ""
 	var firstSeen, lastSeen time.Time
 	var latestScore float64
+	var lastMechanism string
+	var maxDepth int
 	for i, e := range s.Events {
 		if e.Tier >= maxTier {
 			maxTier = e.Tier
@@ -524,21 +534,29 @@ func buildFlowRow(s flowSession) FlowRow {
 			lastSeen = e.Timestamp
 		}
 		latestScore = e.Score
+		if e.Sting.Mechanism != "" {
+			lastMechanism = e.Sting.Mechanism
+		}
+		if e.Sting.DepthReached > maxDepth {
+			maxDepth = e.Sting.DepthReached
+		}
 	}
 	return FlowRow{
-		FlowIDHex:    fmt.Sprintf("0x%x", s.FlowID),
-		FlowID:       s.FlowID,
-		SessionStart: s.SessionStart,
-		SessionIndex: s.Index,
-		SessionCount: s.Count,
-		PeakTier:     maxTier,
-		Verdict:      verdict,
-		TouchCount:   len(s.Events),
-		Score:        latestScore,
-		BaseM:        computeMaxM(s.Events),
-		TotalCost:    costFromEvents(s.Events),
-		FirstSeen:    firstSeen,
-		LastSeen:     lastSeen,
+		FlowIDHex:     fmt.Sprintf("0x%x", s.FlowID),
+		FlowID:        s.FlowID,
+		SessionStart:  s.SessionStart,
+		SessionIndex:  s.Index,
+		SessionCount:  s.Count,
+		PeakTier:      maxTier,
+		Verdict:       verdict,
+		TouchCount:    len(s.Events),
+		Score:         latestScore,
+		BaseM:         computeMaxM(s.Events),
+		TotalCost:     costFromEvents(s.Events),
+		FirstSeen:     firstSeen,
+		LastSeen:      lastSeen,
+		LastMechanism: lastMechanism,
+		MaxDepth:      maxDepth,
 	}
 }
 

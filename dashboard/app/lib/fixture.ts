@@ -325,9 +325,9 @@ export const fixtureFlowsList: FlowsList = {
   total_count: 3,
   filtered: 3,
   flows: [
-    { flow_id_hex: '0x118', flow_id: 0x118, session_start: '2026-06-09T13:54:00Z', session_index: 2, session_count: 3, peak_tier: 3, verdict: 'jail', touch_count: 5, score: 5, base_m: 2.6, total_cost: { time_held_sec: 16, bytes_served: 17672, requests: 2, token_cost: 4418 }, first_seen: '2026-06-09T13:54:00Z', last_seen: '2026-06-09T13:58:12Z' },
-    { flow_id_hex: '0x2a', flow_id: 0x2a, session_start: '2026-06-09T13:40:00Z', session_index: 1, session_count: 1, peak_tier: 2, verdict: 'contain', touch_count: 3, score: 3, base_m: 1.9, total_cost: { time_held_sec: 8, bytes_served: 8054, requests: 1, token_cost: 2014 }, first_seen: '2026-06-09T13:40:00Z', last_seen: '2026-06-09T13:41:30Z' },
-    { flow_id_hex: '0x7c', flow_id: 0x7c, session_start: '2026-06-09T13:30:00Z', session_index: 1, session_count: 1, peak_tier: 1, verdict: 'tag', touch_count: 1, score: 1, base_m: 1.0, total_cost: { time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0 }, first_seen: '2026-06-09T13:30:00Z', last_seen: '2026-06-09T13:30:00Z' },
+    { flow_id_hex: '0x118', flow_id: 0x118, session_start: '2026-06-09T13:54:00Z', session_index: 2, session_count: 3, peak_tier: 3, verdict: 'jail', touch_count: 5, score: 5, base_m: 2.6, total_cost: { time_held_sec: 16, bytes_served: 17672, requests: 2, token_cost: 4418 }, first_seen: '2026-06-09T13:54:00Z', last_seen: '2026-06-09T13:58:12Z', last_mechanism: '', max_depth: 0 },
+    { flow_id_hex: '0x2a', flow_id: 0x2a, session_start: '2026-06-09T13:40:00Z', session_index: 1, session_count: 1, peak_tier: 2, verdict: 'contain', touch_count: 3, score: 3, base_m: 1.9, total_cost: { time_held_sec: 8, bytes_served: 8054, requests: 1, token_cost: 2014 }, first_seen: '2026-06-09T13:40:00Z', last_seen: '2026-06-09T13:41:30Z', last_mechanism: 'fake_tree', max_depth: 3 },
+    { flow_id_hex: '0x7c', flow_id: 0x7c, session_start: '2026-06-09T13:30:00Z', session_index: 1, session_count: 1, peak_tier: 1, verdict: 'tag', touch_count: 1, score: 1, base_m: 1.0, total_cost: { time_held_sec: 0, bytes_served: 0, requests: 0, token_cost: 0 }, first_seen: '2026-06-09T13:30:00Z', last_seen: '2026-06-09T13:30:00Z', last_mechanism: 'token_bait', max_depth: 1 },
   ],
 };
 
