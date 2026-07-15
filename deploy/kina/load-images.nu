@@ -3,14 +3,23 @@
 #
 # CRI name-normalization recipe (see CLAUDE.md / kina fix item):
 # manifests reference `docker.io/canarysting/<name>:latest` (containerd's
-# CRI-side default-registry normalization). `kina load` (kina >= the
-# force-tag fix, kina-cli commit 162962c) now registers the image in the
-# k8s.io namespace under that registry-qualified ref itself, force-retagging
-# on every load so a rebuilt image never leaves a stale digest behind. Do
-# NOT reintroduce a manual `ctr images tag`/export-import bridge here — that
-# predates the fix, duplicates work `kina load` already does correctly, and
-# is what caused the stale-digest bug (its own tag-exists check skipped
-# retagging and masked `kina load`'s pre-fix failure to overwrite).
+# CRI-side default-registry normalization). `kina load` lands the image in
+# containerd's `default` namespace under the bare tag; kubelet/CRI reads from
+# the `k8s.io` namespace, so a bridge is required. kina-cli commit 162962c
+# fixed `kina load` to do this bridge + force-retag itself — but that fix is
+# only in a cargo-built kina, not yet in a tagged kina release. `eval "$(mise
+# env)"` puts mise's RELEASED kina (0.2.0, 2026-07-10, predates 162962c) on
+# PATH ahead of any cargo-built fixed binary, so under the normal dev
+# environment `kina load` silently leaves the image stranded in `default` —
+# the cluster keeps serving whatever stale digest was last in `k8s.io`
+# (confirmed: P2 deploy, 2026-07-15 — kina reported "loaded successfully"
+# three times, including under a brand-new tag, and none of it reached
+# `k8s.io`). So the bridge below is unconditional (no presence-skip; that
+# skip is what masked the pre-162962c bug the first time around) and
+# version-independent — it works whether or not the PATH's kina has the fix.
+# Drop it again ONLY once kina 162962c ships a release and that release is
+# pinned in mise (see github follow-up: release kina load fix so mise-pinned
+# kina has it).
 #
 # Usage:
 #   nu deploy/kina/load-images.nu
@@ -30,12 +39,26 @@ def main [--images: list<string> = [core]] {
   }
 }
 
+# bridge-to-k8s-io moves image:latest from containerd's `default` namespace
+# (where `kina load` lands it) into `k8s.io` (where kubelet/CRI reads from),
+# force-retagging so a rollout restart always picks up the fresh digest. See
+# the module docstring for why this is unconditional and version-independent.
+def bridge-to-k8s-io [image: string] {
+  let safe = ($image | str replace "/" "-")
+  let tar = $"/tmp/($safe).tar"
+  print $"== bridging ($image):latest into the k8s.io namespace =="
+  ^container exec cs-control-plane ctr -n default images export $tar $"($image):latest"
+  ^container exec cs-control-plane ctr -n k8s.io images import $tar
+  ^container exec cs-control-plane ctr -n k8s.io images tag --force $"($image):latest" $"docker.io/($image):latest"
+}
+
 def load-core [] {
   print "== building canarysting/core:latest =="
   ^container build -t canarysting/core:latest -f deploy/kina/Dockerfile.core .
 
   print "== loading canarysting/core:latest into cluster cs =="
   ^kina load canarysting/core:latest --cluster cs
+  bridge-to-k8s-io "canarysting/core"
 }
 
 # Phase 4 (dashboard): frontend (dashboard/app, Next.js standalone build).
@@ -48,6 +71,7 @@ def load-dashboard-web [] {
 
   print "== loading canarysting/dashboard-web:latest into cluster cs =="
   ^kina load canarysting/dashboard-web:latest --cluster cs
+  bridge-to-k8s-io "canarysting/dashboard-web"
 }
 
 # Phase 3 (6-service mesh): tiny east-west service (deploy/m7-window/mesh).
@@ -57,4 +81,5 @@ def load-mesh [] {
 
   print "== loading canarysting/mesh:latest into cluster cs =="
   ^kina load canarysting/mesh:latest --cluster cs
+  bridge-to-k8s-io "canarysting/mesh"
 }
