@@ -8,7 +8,13 @@
 </head>
 <body>
 <header class="site-header">
-  <a class="brand" href="#/browse">Meridian Supply Co.</a>
+  <a class="brand" href="#/browse">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 20l6-11 4 7 3-5 5 9H3z"/>
+      <circle cx="12" cy="6" r="2"/>
+    </svg>
+    Meridian Supply Co.
+  </a>
   <nav class="category-nav">
     <a href="#/browse?category=camping">Camping</a>
     <a href="#/browse?category=climbing">Climbing</a>
@@ -30,6 +36,8 @@
 </header>
 
 <div id="redteam-banner" class="redteam-banner" hidden>
+  <span aria-hidden="true">&#9888;</span>
+  <span class="status-dot" aria-hidden="true"></span>
   <strong>Red-team test mode</strong> &mdash; launches a simulated attacker against this environment.
   <button type="button" id="run-security-test">Run security test</button>
   <a id="dashboard-link" href="#" hidden target="_blank" rel="noopener">Watch on operator dashboard</a>
@@ -39,6 +47,15 @@
 <main id="app"></main>
 
 <div id="activity" class="activity" aria-live="polite"></div>
+
+<footer class="site-footer">
+  <p>Meridian Supply Co. &mdash; demo storefront for CanarySting.</p>
+  <nav>
+    <a href="#/browse">About</a>
+    <a href="#/browse">Shipping</a>
+    <a href="#/browse">Contact</a>
+  </nav>
+</footer>
 
 <!-- product-card-tpl is cloned once per catalog item by app.js (vanilla JS
      templating, no build step). The literal "Buy Now" label doubles as the

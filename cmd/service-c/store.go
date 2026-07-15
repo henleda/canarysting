@@ -63,6 +63,10 @@ var (
 // upgrade path if this outlives the demo.
 const maxSessions = 500
 
+// maxOrdersPerSession caps retained order history per sid (A1): the most-recent
+// N orders are kept, older dropped. In-memory demo store — bounds unbounded growth.
+const maxOrdersPerSession = 20
+
 // store is the server-side shop-to-order state: catalog plus per-session
 // carts and order history. All map access is mutex-guarded — store is shared
 // across every request goroutine.
@@ -178,6 +182,10 @@ func (s *store) checkout(sid string) (Order, error) {
 		PlacedAt: time.Now(),
 	}
 	s.orders[sid] = append(s.orders[sid], order)
+	if n := len(s.orders[sid]); n > maxOrdersPerSession {
+		// copy (not reslice) so dropped orders are released, not pinned by the backing array
+		s.orders[sid] = append([]Order(nil), s.orders[sid][n-maxOrdersPerSession:]...)
+	}
 	s.carts[sid] = make(map[string]int)
 	return order, nil
 }

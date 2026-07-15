@@ -228,6 +228,7 @@ function productCard(product) {
   node.querySelector('.product-link').href = `#/product/${product.id}`;
   node.querySelector('.product-art').textContent = product.art;
   node.querySelector('.product-name').textContent = product.name;
+  node.querySelector('.product-name').insertAdjacentHTML('afterend', `<span class="product-cat">${escapeHtml(product.category)}</span>`);
   node.querySelector('.product-price').textContent = `$${product.price.toFixed(2)}`;
   node.querySelector('.add-cart-btn').addEventListener('click', () => addToCart(product.id, 1));
   node.querySelector('.buy-btn').addEventListener('click', async () => {
@@ -525,6 +526,8 @@ async function boot() {
       fetch('/api/store/products'),
       fetch('/api/store/config'),
     ]);
+    // A3: a non-200 JSON error body must not poison the catalog
+    if (!productsRes.ok) throw new Error(`products fetch failed (${productsRes.status})`);
     catalog = await productsRes.json();
     const config = await configRes.json();
     dashboardUrl = config.dashboard_url || '';
