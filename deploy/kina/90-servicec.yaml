@@ -9,7 +9,7 @@
 # east-west fan-out itself), so it runs under the same hardened default
 # profile as the mesh services: runAsNonRoot, drop ALL, no priv escalation.
 #
-# The Redteam persona (P2) replays the frozen omlx cassette from
+# The Redteam persona (P2) replays the frozen deterred cassette from
 # 91-cassette-configmap.yaml, mounted read-only at /cassettes.
 apiVersion: apps/v1
 kind: Deployment
@@ -39,7 +39,7 @@ spec:
             - name: LISTEN
               value: ":8000"
             - name: CASSETTE_PATH
-              value: "/cassettes/redteam-omlx.json"
+              value: "/cassettes/redteam-deterred.json"
           ports:
             - name: http
               containerPort: 8000

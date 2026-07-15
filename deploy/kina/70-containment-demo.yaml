@@ -1,10 +1,13 @@
 # Phase 3 containment demo: unlike l7-gate (50-jobs.yaml), which hits ONE
-# canary path 5x and never escalates past the first tier, this Job touches 4
-# DISTINCT canary paths on a single keep-alive curl connection — the repeated
-# touches from one attacker identity across different canaries is what drives
-# the engine's tier climb (0 -> 1 -> 2 -> 3) to the kernel jail. A single curl
-# invocation with multiple URLs against the same host:port reuses one TCP
-# connection by default, so all four touches share the same flow identity.
+# canary path 5x and never escalates past the first tier, this Job touches 5
+# DISTINCT canary categories on a single keep-alive curl connection — the
+# repeated touches from one attacker identity across different canaries is
+# what drives the engine's tier climb (0 -> 1 -> 2 -> 3) to the kernel jail.
+# A single curl invocation with multiple URLs against the same host:port
+# reuses one TCP connection by default, so all five touches share the same
+# flow identity: 5 decoy categories over one keep-alive connection; the
+# tier-3 flow-drop lands at/near the final touch (curl may report a reset
+# code on the last request).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -27,16 +30,17 @@ spec:
             - "sh"
             - "-c"
             - |
-              echo "containment demo: 4 distinct canary paths, one keep-alive connection"
-              # No `set -e`: the 4th (fake_bucket) touch is expected to drive the
-              # engine to tier 3 and get jailed — the connection reset that
-              # produces (curl exit != 0, code=000) IS the demo payoff, not a
-              # script failure. Each URL gets its own -o/-w pair so curl doesn't
-              # silently spill later bodies to stdout when only one -o is given
-              # for multiple URLs.
+              echo "containment demo: 5 distinct canary categories, one keep-alive connection"
+              # No `set -e`: the flow-drop is expected to land at/near the final
+              # touch and drive the engine to tier 3 and get jailed — the
+              # connection reset that produces (curl exit != 0, code=000) IS the
+              # demo payoff, not a script failure. Each URL gets its own -o/-w
+              # pair so curl doesn't silently spill later bodies to stdout when
+              # only one -o is given for multiple URLs.
               curl --max-time 10 -s \
                 -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/.aws/credentials \
                 -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/.env \
                 -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/backup/db.sql \
-                -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/internal/buckets
+                -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/internal/buckets \
+                -o /dev/null -w 'code=%{http_code}\n' http://gateway:8080/admin/metrics
               exit 0
