@@ -72,6 +72,69 @@ func isCanaryPath(p string) bool {
 	return false
 }
 
+// parseRouteMap parses the ROUTE_MAP env grammar: ';'-separated "path=svc[,svc]"
+// entries. It differentiates per-service fanout — e.g. /api/login only calls auth,
+// not the whole downstream set — so the learned east-west fabric (and the Hubble
+// edges) show real service-specific traffic instead of a uniform full mesh on every
+// request. Malformed entries (no '=') are skipped; an empty string yields an empty
+// map, which selectDownstreams treats as "every path falls back to full fanout".
+func parseRouteMap(s string) map[string][]string {
+	rm := map[string][]string{}
+	for _, entry := range strings.Split(s, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		path, svcs, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		var names []string
+		for _, n := range strings.Split(svcs, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		if path == "" || len(names) == 0 {
+			continue
+		}
+		rm[path] = names
+	}
+	return rm
+}
+
+// matchesService reports whether a downstream URL is addressed to the service named
+// name, anchored on "//<name>." so a prefix collision (e.g. "payment" vs "payments")
+// never false-positives.
+func matchesService(url, name string) bool {
+	return strings.Contains(url, "//"+name+".")
+}
+
+// selectDownstreams narrows downstreams to the ROUTE_MAP subset for path, in the
+// mapped VALUE order. A path with no entry in rm preserves the full downstream list
+// (the un-differentiated default). A mapped path whose names ALL fail to resolve
+// against downstreams — a ROUTE_MAP typo — falls back to full fanout too: a broken
+// ROUTE_MAP degrades to "fanout everything", never "fanout nothing".
+func selectDownstreams(path string, downstreams []string, rm map[string][]string) []string {
+	names, ok := rm[path]
+	if !ok {
+		return downstreams
+	}
+	var selected []string
+	for _, name := range names {
+		for _, d := range downstreams {
+			if matchesService(d, name) {
+				selected = append(selected, d)
+				break
+			}
+		}
+	}
+	if len(selected) == 0 {
+		return downstreams
+	}
+	return selected
+}
+
 func main() {
 	name := env("SVC_NAME", "svc")
 	listen := env("LISTEN", ":8000")
@@ -81,6 +144,7 @@ func main() {
 			downstreams = append(downstreams, d)
 		}
 	}
+	routeMap := parseRouteMap(os.Getenv("ROUTE_MAP"))
 
 	// DisableKeepAlives so each internal hop is a distinct completing flow the
 	// observe path folds — the internal east-west adjacencies accrue per-call.
@@ -103,17 +167,8 @@ func main() {
 		Timeout:   2 * time.Second,
 		Transport: transport,
 	}
-	fanout := func(ctx context.Context) {
-		for _, d := range downstreams {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, d+"/", nil)
-			if err != nil {
-				continue
-			}
-			if resp, err := client.Do(req); err == nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-			}
-		}
+	fanoutFn := func(ctx context.Context, p string) {
+		fanout(ctx, p, downstreams, client, routeMap)
 	}
 
 	mux := http.NewServeMux()
@@ -121,18 +176,35 @@ func main() {
 		_, _ = io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		serve(w, r, name, fanout)
+		serve(w, r, name, fanoutFn)
 	})
 
-	log.Printf("mesh service %q listening on %s, downstreams=%v", name, listen, downstreams)
+	log.Printf("mesh service %q listening on %s, downstreams=%v routeMap=%v", name, listen, downstreams, routeMap)
 	srv := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 3 * time.Second}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// fanout calls each downstream selectDownstreams resolves for path (per ROUTE_MAP rm),
+// forwarding the same path to each (d+path, not a hardcoded d+"/") so the ROUTE_MAP
+// differentiation is visible per-downstream in the real HTTP calls — not just decided
+// in-process — and shows up as distinct edges in Hubble/the eBPF baseline.
+func fanout(ctx context.Context, path string, downstreams []string, client *http.Client, rm map[string][]string) {
+	for _, d := range selectDownstreams(path, downstreams, rm) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, d+path, nil)
+		if err != nil {
+			continue
+		}
+		if resp, err := client.Do(req); err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}
 }
 
 // serve is the application router (extracted so it is unit-testable). It keeps the
 // east-west fan-out on real application paths, serves realistic content, returns a
 // real 404 for unknown paths, and never serves a canary path (rule 8).
-func serve(w http.ResponseWriter, r *http.Request, name string, fanout func(context.Context)) {
+func serve(w http.ResponseWriter, r *http.Request, name string, fanout func(context.Context, string)) {
 	w.Header().Set("X-Service", name)
 	p := r.URL.Path
 
@@ -148,7 +220,7 @@ func serve(w http.ResponseWriter, r *http.Request, name string, fanout func(cont
 	case p == "/" || p == "/index.html":
 		ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
 		defer cancel()
-		fanout(ctx)
+		fanout(ctx, p)
 		serveIndex(w, name)
 	case p == "/robots.txt":
 		w.Header().Set("Content-Type", "text/plain")
@@ -158,7 +230,7 @@ func serve(w http.ResponseWriter, r *http.Request, name string, fanout func(cont
 	case strings.HasPrefix(p, "/api/"):
 		ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
 		defer cancel()
-		fanout(ctx)
+		fanout(ctx, p)
 		serveAPI(w, name, p)
 	default:
 		notFound(w)
@@ -180,7 +252,10 @@ func serveIndex(w http.ResponseWriter, name string) {
 `, name)
 }
 
-// serveAPI returns small plausible JSON for a couple of real API paths, else 404.
+// serveAPI returns small plausible JSON for a couple of real API paths, plus the 7
+// storefront stub endpoints the fable-designed SPA drives (products/search/login/
+// session/cart/checkout/orders), naming the resource (last path segment) so each
+// stub is distinguishable in logs/Hubble without a canary risk. Else 404.
 func serveAPI(w http.ResponseWriter, name, p string) {
 	switch p {
 	case "/api/health", "/api/health/":
@@ -189,6 +264,10 @@ func serveAPI(w http.ResponseWriter, name, p string) {
 	case "/api/status", "/api/status/":
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"service":%q,"status":"ok","uptime_s":%d}`+"\n", name, 86400)
+	case "/api/products", "/api/search", "/api/login", "/api/session", "/api/cart", "/api/checkout", "/api/orders":
+		resource := strings.TrimPrefix(p, "/api/")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"service":%q,"resource":%q,"status":"ok"}`+"\n", name, resource)
 	default:
 		notFound(w)
 	}

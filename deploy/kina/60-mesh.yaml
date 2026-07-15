@@ -96,6 +96,8 @@ spec:
               value: ":8000"
             - name: DOWNSTREAMS
               value: "http://auth.canarysting.svc.cluster.local:8000,http://db.canarysting.svc.cluster.local:8000,http://cache.canarysting.svc.cluster.local:8000,http://payments.canarysting.svc.cluster.local:8000"
+            - name: ROUTE_MAP
+              value: "/api/login=auth;/api/session=auth;/api/cart=cache;/api/search=db,cache;/api/products=db;/api/checkout=payments,db;/api/orders=db"
           ports:
             - name: http
               containerPort: 8000
