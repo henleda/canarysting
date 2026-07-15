@@ -181,9 +181,19 @@ func main() {
 	}
 	rt := newCassetteLauncher(msgr, gatewayURL, attacker.Config{MaxTurns: 30})
 
+	catalogBytes, err := fs.ReadFile(embeddedStatic, "static/catalog.json")
+	if err != nil {
+		log.Fatalf("service-c: read embedded catalog.json: %v", err)
+	}
+	var products []Product
+	if err := json.Unmarshal(catalogBytes, &products); err != nil {
+		log.Fatalf("service-c: parse embedded catalog.json: %v", err)
+	}
+	st := newStore(products)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		serve(w, r, gw, rt)
+		serve(w, r, gw, rt, st)
 	})
 
 	log.Printf("service-c listening on %s, gateway=%s, cassette=%s", listen, gatewayURL, cassettePath)
@@ -192,8 +202,9 @@ func main() {
 }
 
 // serve is the application router (extracted so it is unit-testable without
-// a real listener or a real gateway).
-func serve(w http.ResponseWriter, r *http.Request, gw gatewayCaller, rt redteamLauncher) {
+// a real listener or a real gateway). Store routes are switch cases above the
+// generic static-GET case so they take priority over the embedded FS.
+func serve(w http.ResponseWriter, r *http.Request, gw gatewayCaller, rt redteamLauncher, st *store) {
 	switch {
 	case r.URL.Path == "/healthz":
 		_, _ = io.WriteString(w, "ok")
@@ -201,6 +212,16 @@ func serve(w http.ResponseWriter, r *http.Request, gw gatewayCaller, rt redteamL
 		serveTransaction(w, r, gw, rt)
 	case r.URL.Path == "/api/store/config" && r.Method == http.MethodGet:
 		serveStoreConfig(w)
+	case r.URL.Path == "/api/store/products" && r.Method == http.MethodGet:
+		serveStoreProducts(w, r, st)
+	case r.URL.Path == "/api/store/cart" && r.Method == http.MethodGet:
+		serveStoreCartGet(w, r, st)
+	case r.URL.Path == "/api/store/cart" && r.Method == http.MethodPost:
+		serveStoreCartPost(w, r, st)
+	case r.URL.Path == "/api/store/checkout" && r.Method == http.MethodPost:
+		serveStoreCheckout(w, r, st)
+	case r.URL.Path == "/api/store/orders" && r.Method == http.MethodGet:
+		serveStoreOrders(w, r, st)
 	case r.Method == http.MethodGet:
 		staticHandler.ServeHTTP(w, r)
 	default:

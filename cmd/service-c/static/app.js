@@ -1,16 +1,17 @@
 // Meridian Supply Co. storefront SPA — vanilla ES module, no build step
 // (restraint ladder: static serving + fetch cover this; a framework isn't
-// justified for ~7 views). Client owns routing, cart state, and catalog
-// data; every shopping action fires POST /api/transaction with
-// persona=standard&action=<name> so it drives real east-west mesh traffic
-// through the existing gatewayCaller seam (design doc §3/§5.2).
+// justified for ~7 views). Client owns routing and persona UI; catalog,
+// cart, and order state live server-side (P2: /api/store/*, session-scoped
+// via the sid cookie) — every shopping action still fires
+// POST /api/transaction with persona=standard&action=<name> so it drives
+// real east-west mesh traffic through the existing gatewayCaller seam
+// (design doc §3/§5.2), independent of the real cart/order calls below.
 
-const CART_KEY = 'meridian-cart-v1';
 const PERSONA_KEY = 'meridian-persona-v1';
-const ORDERS_KEY = 'meridian-orders-v1';
 
 let catalog = [];
 let dashboardUrl = '';
+let lastConfirmedOrder = null;
 
 const app = document.getElementById('app');
 const activityEl = document.getElementById('activity');
@@ -21,41 +22,7 @@ const redteamStatus = document.getElementById('redteam-status');
 const dashboardLinkEl = document.getElementById('dashboard-link');
 const productTpl = document.getElementById('product-card-tpl');
 
-// ---- persistence ----
-
-function loadJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function loadCart() {
-  return loadJSON(CART_KEY, {});
-}
-
-function saveCart(cart) {
-  localStorage.setItem(CART_KEY, JSON.stringify(cart));
-  updateCartBadge();
-}
-
-function loadOrders() {
-  return loadJSON(ORDERS_KEY, []);
-}
-
-function saveOrders(orders) {
-  localStorage.setItem(ORDERS_KEY, JSON.stringify(orders));
-}
-
-function updateCartBadge() {
-  const cart = loadCart();
-  const count = Object.values(cart).reduce((n, qty) => n + qty, 0);
-  cartCountEl.textContent = String(count);
-}
-
-// ---- persona switcher ----
+// ---- persona switcher (client-only UI preference; no server state) ----
 
 function getPersona() {
   return localStorage.getItem(PERSONA_KEY) || 'standard';
@@ -85,7 +52,8 @@ function showActivity(text, isError) {
   activityTimer = setTimeout(() => activityEl.classList.remove('show'), 3500);
 }
 
-// ---- backend action wiring (the point of the exercise) ----
+// ---- mesh-traffic wiring (unchanged: every action still fires the
+// existing gateway-fanout transaction, independent of the store calls) ----
 
 // fireAction drives one storefront action against the mesh via
 // POST /api/transaction persona=standard&action=<name>. URLSearchParams sets
@@ -133,6 +101,73 @@ async function runSecurityTest() {
   }
 }
 
+// ---- server-backed cart (P2: real state behind the sid cookie, not
+// localStorage — GET/POST /api/store/cart) ----
+
+async function fetchCartSnapshot() {
+  const res = await fetch('/api/store/cart');
+  const snap = await res.json();
+  if (!res.ok) {
+    throw new Error(snap.error || `cart fetch failed (${res.status})`);
+  }
+  return snap;
+}
+
+async function postCartDelta(productId, delta) {
+  const res = await fetch('/api/store/cart', {
+    method: 'POST',
+    body: new URLSearchParams({ product_id: productId, delta: String(delta) }),
+  });
+  const snap = await res.json();
+  if (!res.ok) {
+    throw new Error(snap.error || `cart update failed (${res.status})`);
+  }
+  return snap;
+}
+
+function applyCartBadge(snapshot) {
+  cartCountEl.textContent = String(snapshot.count);
+}
+
+async function updateCartBadge() {
+  try {
+    applyCartBadge(await fetchCartSnapshot());
+  } catch {
+    // leave the badge as-is; showActivity already covers user-visible
+    // failures on the call sites that matter (add/remove/checkout).
+  }
+}
+
+async function addToCart(id, qty) {
+  try {
+    applyCartBadge(await postCartDelta(id, qty || 1));
+  } catch (err) {
+    showActivity(`add to cart failed: ${err.message}`, true);
+    return;
+  }
+  fireAction('cart');
+}
+
+async function changeQty(id, delta) {
+  try {
+    applyCartBadge(await postCartDelta(id, delta));
+  } catch (err) {
+    showActivity(`update quantity failed: ${err.message}`, true);
+    return;
+  }
+  render();
+}
+
+async function removeFromCart(id, qty) {
+  try {
+    applyCartBadge(await postCartDelta(id, -qty));
+  } catch (err) {
+    showActivity(`remove failed: ${err.message}`, true);
+    return;
+  }
+  render();
+}
+
 // ---- routing (hash-based; the SPA never asks the server for a route) ----
 
 function parseRoute() {
@@ -177,6 +212,11 @@ function render() {
 
 // ---- shared helpers ----
 
+// escapeHtml is required (F4) for every server-returned string spliced into
+// an innerHTML template — catalog fields (name/category/blurb/art) and cart
+// item fields all originate server-side via /api/store/*. Fields assigned
+// through textContent (order numbers/totals/list rows below) are safe by
+// construction and don't need it.
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str == null ? '' : str;
@@ -189,9 +229,9 @@ function productCard(product) {
   node.querySelector('.product-art').textContent = product.art;
   node.querySelector('.product-name').textContent = product.name;
   node.querySelector('.product-price').textContent = `$${product.price.toFixed(2)}`;
-  node.querySelector('.add-cart-btn').addEventListener('click', () => addToCart(product.id));
-  node.querySelector('.buy-btn').addEventListener('click', () => {
-    addToCart(product.id);
+  node.querySelector('.add-cart-btn').addEventListener('click', () => addToCart(product.id, 1));
+  node.querySelector('.buy-btn').addEventListener('click', async () => {
+    await addToCart(product.id, 1);
     location.hash = '#/cart';
   });
   return node;
@@ -251,7 +291,7 @@ function renderProduct(id) {
   const wrap = document.createElement('div');
   wrap.className = 'product-detail';
   wrap.innerHTML = `
-    <div class="product-art">${product.art}</div>
+    <div class="product-art">${escapeHtml(product.art)}</div>
     <div class="product-detail-info">
       <h1>${escapeHtml(product.name)}</h1>
       <p class="product-price">$${product.price.toFixed(2)}</p>
@@ -263,9 +303,9 @@ function renderProduct(id) {
       <button type="button" class="buy-btn" id="detail-add-cart">Add to Cart</button>
     </div>`;
   app.appendChild(wrap);
-  wrap.querySelector('#detail-add-cart').addEventListener('click', () => {
+  wrap.querySelector('#detail-add-cart').addEventListener('click', async () => {
     const qty = Math.max(1, parseInt(wrap.querySelector('#qty').value, 10) || 1);
-    addToCart(product.id, qty);
+    await addToCart(product.id, qty);
     location.hash = '#/cart';
   });
 
@@ -281,35 +321,23 @@ function renderProduct(id) {
   }
 }
 
-function addToCart(id, qty) {
-  const cart = loadCart();
-  cart[id] = (cart[id] || 0) + (qty || 1);
-  saveCart(cart);
+async function renderCart() {
   fireAction('cart');
-}
-
-function changeQty(id, delta) {
-  const cart = loadCart();
-  cart[id] = (cart[id] || 0) + delta;
-  if (cart[id] <= 0) delete cart[id];
-  saveCart(cart);
-  render();
-}
-
-function removeFromCart(id) {
-  const cart = loadCart();
-  delete cart[id];
-  saveCart(cart);
-  render();
-}
-
-function renderCart() {
-  fireAction('cart');
-  const cart = loadCart();
-  const entries = Object.entries(cart).filter(([, qty]) => qty > 0);
   heroBlock('<h1>Your cart</h1>');
 
-  if (!entries.length) {
+  let snap;
+  try {
+    snap = await fetchCartSnapshot();
+  } catch (err) {
+    const errEl = document.createElement('p');
+    errEl.className = 'empty-state';
+    errEl.textContent = `Could not load your cart: ${err.message}`;
+    app.appendChild(errEl);
+    return;
+  }
+  applyCartBadge(snap);
+
+  if (!snap.items.length) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
     empty.textContent = 'Your cart is empty. Go find something for your next trip.';
@@ -317,35 +345,37 @@ function renderCart() {
     return;
   }
 
-  let subtotal = 0;
   const list = document.createElement('div');
-  entries.forEach(([id, qty]) => {
-    const product = catalog.find((p) => p.id === id);
-    if (!product) return;
-    subtotal += product.price * qty;
+  snap.items.forEach((item) => {
+    const product = catalog.find((p) => p.id === item.product_id);
+    const art = product ? product.art : '';
+    const category = product ? product.category : '';
     const row = document.createElement('div');
     row.className = 'cart-row';
     row.innerHTML = `
-      <div class="product-art">${product.art}</div>
-      <div class="name">${escapeHtml(product.name)} <small>(${escapeHtml(product.category)})</small></div>
+      <div class="product-art">${escapeHtml(art)}</div>
+      <div class="name">${escapeHtml(item.name)} <small>(${escapeHtml(category)})</small></div>
       <div>
         <button type="button" class="qty-minus" aria-label="Decrease quantity">-</button>
-        <span class="qty-value">${qty}</span>
+        <span class="qty-value"></span>
         <button type="button" class="qty-plus" aria-label="Increase quantity">+</button>
       </div>
-      <div>$${(product.price * qty).toFixed(2)}</div>
+      <div class="line-total"></div>
       <button type="button" class="remove-btn" aria-label="Remove">Remove</button>`;
-    row.querySelector('.qty-minus').addEventListener('click', () => changeQty(id, -1));
-    row.querySelector('.qty-plus').addEventListener('click', () => changeQty(id, 1));
-    row.querySelector('.remove-btn').addEventListener('click', () => removeFromCart(id));
+    row.querySelector('.qty-value').textContent = String(item.qty);
+    row.querySelector('.line-total').textContent = `$${item.line_total.toFixed(2)}`;
+    row.querySelector('.qty-minus').addEventListener('click', () => changeQty(item.product_id, -1));
+    row.querySelector('.qty-plus').addEventListener('click', () => changeQty(item.product_id, 1));
+    row.querySelector('.remove-btn').addEventListener('click', () => removeFromCart(item.product_id, item.qty));
     list.appendChild(row);
   });
   app.appendChild(list);
 
   const summary = document.createElement('div');
   summary.className = 'cart-summary';
-  summary.innerHTML = `<p class="subtotal">Subtotal: $${subtotal.toFixed(2)}</p>
-    <button type="button" class="buy-btn" id="proceed-checkout">Proceed to checkout</button>`;
+  summary.innerHTML = '<p class="subtotal">Subtotal: <span class="subtotal-value"></span></p>' +
+    '<button type="button" class="buy-btn" id="proceed-checkout">Proceed to checkout</button>';
+  summary.querySelector('.subtotal-value').textContent = `$${snap.subtotal.toFixed(2)}`;
   app.appendChild(summary);
   summary.querySelector('#proceed-checkout').addEventListener('click', () => {
     location.hash = '#/checkout';
@@ -373,20 +403,27 @@ function renderLogin() {
   });
 }
 
-function renderCheckout() {
-  const cart = loadCart();
-  const entries = Object.entries(cart).filter(([, qty]) => qty > 0);
-  if (!entries.length) {
-    app.innerHTML = '<p class="empty-state">Your cart is empty &mdash; add something before checking out.</p>';
+async function renderCheckout() {
+  let snap;
+  try {
+    snap = await fetchCartSnapshot();
+  } catch (err) {
+    const p = document.createElement('p');
+    p.className = 'empty-state';
+    p.textContent = `Could not load your cart: ${err.message}`;
+    app.appendChild(p);
     return;
   }
-  let subtotal = 0;
-  entries.forEach(([id, qty]) => {
-    const product = catalog.find((p) => p.id === id);
-    if (product) subtotal += product.price * qty;
-  });
+  if (!snap.items.length) {
+    const p = document.createElement('p');
+    p.className = 'empty-state';
+    p.textContent = 'Your cart is empty — add something before checking out.';
+    app.appendChild(p);
+    return;
+  }
 
-  heroBlock(`<h1>Checkout</h1><p>Order total: $${subtotal.toFixed(2)}</p>`);
+  const hero = heroBlock('<h1>Checkout</h1><p>Order total: <span class="checkout-total"></span></p>');
+  hero.querySelector('.checkout-total').textContent = `$${snap.subtotal.toFixed(2)}`;
 
   const form = document.createElement('form');
   form.className = 'checkout-form';
@@ -397,19 +434,33 @@ function renderCheckout() {
   app.appendChild(form);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const receipt = await fireAction('checkout');
-    if (!receipt || !receipt.ok) return;
-    const orderNo = `MSC-${Date.now().toString(36).toUpperCase()}`;
-    const orders = loadOrders();
-    orders.unshift({ id: orderNo, total: subtotal, items: entries.length, placedAt: new Date().toISOString() });
-    saveOrders(orders);
-    saveCart({});
-    location.hash = `#/confirmation/${orderNo}`;
+    fireAction('checkout'); // mesh traffic, independent of the real order below
+    try {
+      const res = await fetch('/api/store/checkout', { method: 'POST' });
+      const body = await res.json();
+      if (!res.ok) {
+        showActivity(body.error || `checkout failed (${res.status})`, true);
+        return;
+      }
+      lastConfirmedOrder = body.order;
+      updateCartBadge();
+      location.hash = `#/confirmation/${body.order.number}`;
+    } catch (err) {
+      showActivity(`checkout failed: ${err.message}`, true);
+    }
   });
 }
 
 function renderConfirmation(orderNo) {
-  heroBlock(`<h1>Order confirmed</h1><p>Order <strong>${escapeHtml(orderNo)}</strong> is on its way.</p>`);
+  const order = lastConfirmedOrder && lastConfirmedOrder.number === orderNo ? lastConfirmedOrder : null;
+  const hero = heroBlock(order
+    ? '<h1>Order confirmed</h1><p>Order <strong class="order-number"></strong> is on its way. Total: <span class="order-total"></span></p>'
+    : '<h1>Order confirmed</h1><p>Order <strong class="order-number"></strong> is on its way.</p>');
+  hero.querySelector('.order-number').textContent = orderNo;
+  if (order) {
+    hero.querySelector('.order-total').textContent = `$${order.total.toFixed(2)}`;
+  }
+
   const link = document.createElement('a');
   link.href = '#/orders';
   link.className = 'buy-btn';
@@ -417,10 +468,25 @@ function renderConfirmation(orderNo) {
   app.appendChild(link);
 }
 
-function renderOrders() {
+async function renderOrders() {
   fireAction('orders');
-  const orders = loadOrders();
   heroBlock('<h1>Your orders</h1>');
+
+  let orders;
+  try {
+    const res = await fetch('/api/store/orders');
+    orders = await res.json();
+    if (!res.ok) {
+      throw new Error((orders && orders.error) || `orders fetch failed (${res.status})`);
+    }
+  } catch (err) {
+    const errEl = document.createElement('p');
+    errEl.className = 'empty-state';
+    errEl.textContent = `Could not load orders: ${err.message}`;
+    app.appendChild(errEl);
+    return;
+  }
+
   if (!orders.length) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
@@ -432,7 +498,7 @@ function renderOrders() {
   list.className = 'order-list';
   orders.forEach((o) => {
     const li = document.createElement('li');
-    li.textContent = `${o.id} — $${o.total.toFixed(2)} — ${o.items} item(s)`;
+    li.textContent = `${o.number} — $${o.total.toFixed(2)} — ${o.items.length} item(s)`;
     list.appendChild(li);
   });
   app.appendChild(list);
@@ -454,19 +520,19 @@ window.addEventListener('hashchange', render);
 
 async function boot() {
   applyPersonaUI();
-  updateCartBadge();
   try {
-    const [catalogRes, configRes] = await Promise.all([
-      fetch('/catalog.json'),
+    const [productsRes, configRes] = await Promise.all([
+      fetch('/api/store/products'),
       fetch('/api/store/config'),
     ]);
-    catalog = await catalogRes.json();
+    catalog = await productsRes.json();
     const config = await configRes.json();
     dashboardUrl = config.dashboard_url || '';
   } catch (err) {
     showActivity(`failed to load storefront data: ${err.message}`, true);
     catalog = [];
   }
+  await updateCartBadge();
   render();
 }
 

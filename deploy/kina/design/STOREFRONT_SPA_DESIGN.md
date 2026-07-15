@@ -230,9 +230,13 @@ Pure reuse of the P2 mechanism — no re-invention:
 
 ## 5. Backend wiring (what changes in service-c Go)
 
-Client-side (SPA owns): routing, catalog data, cart state (localStorage), search filtering,
-order history for the session, persona mode UI. No server state — service-c stays stateless
-(12-factor process, no session store needed for a demo).
+Client-side (SPA owns): routing, search filtering, persona mode UI. No client-side cart/order
+persistence as of P2 (superseding the original plan below) — catalog, cart, and order history
+now live server-side, session-scoped via an `sid` cookie (§8 item 3 records the decision).
+
+Client-side (as originally planned, P1): routing, catalog data, cart state (localStorage),
+search filtering, order history for the session, persona mode UI. No server state —
+service-c stays stateless (12-factor process, no session store needed for a demo).
 
 Server-side (service-c changes):
 1. **Serve the embedded SPA.** `//go:embed static`; `serve` (main.go:160-171) routes
@@ -258,6 +262,21 @@ Server-side (service-c changes):
    gateway calls on the redteam path; keep `TestShipsNoSecrets` (referenced at
    main.go:174-176) and extend it over the embedded static FS (no keys/PEMs/routable hosts
    in shipped assets).
+7. **P2 — server-side shop-to-order store (`cmd/service-c/store.go`).** Supersedes the "no
+   server state" line above for this one seam only; every other server-side item (1-6) is
+   unchanged. `newStore(products []Product)` holds the catalog plus per-session carts and
+   order history, guarded by a single mutex. Session identity is an `sid` cookie
+   (crypto/rand hex, HttpOnly, SameSite=Lax) minted on the first `/api/store/*` request
+   lacking one — no real auth, no shared/global cart (rule 5-style isolation, scoped to the
+   demo, not the platform's actual scope-isolation machinery). Endpoints, all under
+   `/api/store/`: `GET products` (the catalog, now served from the store instead of the
+   static `catalog.json` fetch); `GET cart` / `POST cart` (`product_id` + `delta` form
+   fields, floored at zero, unknown product → 400); `POST checkout` (confirms the cart as an
+   `Order`, 400 on an empty cart, clears the cart); `GET orders` (session's orders,
+   most-recent-first). Zero `gw.Fetch` calls from any store endpoint — the store is
+   data-plane only and stays outside the canary-free mesh seam (`TestStoreEndpointsMakeNoGatewayCalls`
+   mirrors `TestRedteamMakesNoGatewayCalls`). Capped at `maxSessions` in-memory sessions
+   (oldest evicted first) — see the `restraint:` marker in store.go and §8 item 3.
 
 ## 6. Build & deploy
 
@@ -285,7 +304,12 @@ Server-side (service-c changes):
   *Demo: click around the store, watch Hubble light up per click; run a redteam test.*
 - **P2 — Clean 200s + full shopping loop.** Mesh `serveAPI` storefront stubs
   (mesh main.go:184-195 extension); login, checkout, order-confirmation, order-history
-  views complete. *Demo: full shop-to-order journey with clean L7 status codes.*
+  views complete. Shipped as: real server-side cart/checkout/orders
+  (`cmd/service-c/store.go`, §5 item 7) rather than the client-only-state plan originally
+  scoped here — the SPA now reads the catalog and renders cart/order views from
+  `/api/store/*` instead of localStorage, for demo realism (§8 item 3 records the
+  supersession). *Demo: full shop-to-order journey with clean L7 status codes, cart and
+  order history that actually live on the server.*
 - **P3 — Differentiated flows.** Path-forwarding fanout + `ROUTE_MAP` on the `api` service
   (§3 Stage 3) + the mesh-side canary-free test. *Demo: login lights up auth, checkout
   lights up payments+db — the Hubble graph matches the narration.*
@@ -320,13 +344,24 @@ Top risks / open questions:
    `serveIndex` (main.go:177-207) and repurposes `GET /`; coordinate merge order so the
    diagnosis isn't invalidated mid-flight and any real bug it finds (e.g. in the launcher or
    gateway path) is fixed before or with P1, not silently papered over by the rewrite.
-3. **Scope-balloon watchlist.** Things this design deliberately does NOT include and that
-   should be rejected if they creep in: real sessions/auth, server-side cart or order
-   persistence, a product database, real payment fields, a second web framework, mesh
-   services returning actual product data, and canary-adjacent "admin" store pages (an
-   `/admin` store UI would collide with the canary prefix — envoy-adapter main.go:248).
-   If the operator later wants richer UI than vanilla JS comfortably carries, the upgrade
-   path is the dashboard's Next.js pattern (§6), as a deliberate decision — not a drift.
+3. **Scope-balloon watchlist (updated P2).** In-memory, server-side cart/order state is now
+   IN SCOPE as of P2 (`cmd/service-c/store.go`, §5 item 7) — added deliberately for demo
+   realism (a cart/checkout/order-history flow with state that survives a page reload and is
+   isolated per browser session), not scope creep. The rest of the original watchlist stands
+   and should still be rejected if it creeps in: real sessions/auth (the `sid` cookie is
+   session identity only, not authentication), a real product database (the catalog is still
+   the embedded `catalog.json`, just served through the store instead of fetched directly),
+   real payment fields, a second web framework, mesh services returning actual product data,
+   and canary-adjacent "admin" store pages (an `/admin` store UI would collide with the
+   canary prefix — envoy-adapter main.go:248). If the operator later wants richer UI than
+   vanilla JS comfortably carries, the upgrade path is the dashboard's Next.js pattern (§6),
+   as a deliberate decision — not a drift.
+   **12-factor / eviction caveat:** the store is in-process memory, not a backing service (12F
+   factor IV/VI) — it does not survive a pod restart, does not scale past one replica
+   (90-servicec.yaml is already single-replica), and is capped at `maxSessions` concurrent
+   carts with oldest-first eviction (the `restraint:` marker in store.go). Acceptable for a
+   single-replica demo; a durable cart would need a real backing store (Redis/Postgres) if
+   this ever needs to survive a restart or run at more than one replica.
 4. **(Minor) `TestShipsNoSecrets` coverage.** The no-secrets/no-routable-hosts assertion
    (main.go:174-176) currently reads the rendered page; it must be extended over the whole
    embedded static tree or the invariant silently narrows as content moves out of Go
