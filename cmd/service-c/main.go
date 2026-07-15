@@ -196,8 +196,8 @@ func serveIndex(w http.ResponseWriter) {
 <script>
 document.getElementById('buy-form').addEventListener('submit', function (e) {
   e.preventDefault();
-  var sel = document.querySelector('input[name=persona]:checked').value;
-  fetch('/api/transaction', {method: 'POST', body: 'persona=' + sel})
+  var sel = document.querySelector('input[name="persona"]:checked').value;
+  fetch('/api/transaction', {method: 'POST', body: new URLSearchParams({persona: sel})})
     .then(function (r) { return r.text(); })
     .then(function (t) { document.getElementById('receipt').textContent = t; });
 });
