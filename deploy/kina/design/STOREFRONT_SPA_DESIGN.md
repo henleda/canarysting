@@ -3,7 +3,7 @@
 Design for replacing the minimal service-C storefront (`cmd/service-c/main.go`) with a
 believable e-commerce SPA whose shopping actions drive real east-west traffic through the
 existing 6-service mock mesh. Read-only research; every claim about existing code carries a
-file:line citation. Authored 2026-07-15 by fable-storefront.
+file:line citation. Authored 2026-07-15.
 
 ---
 

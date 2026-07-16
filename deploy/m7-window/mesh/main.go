@@ -253,7 +253,7 @@ func serveIndex(w http.ResponseWriter, name string) {
 }
 
 // serveAPI returns small plausible JSON for a couple of real API paths, plus the 7
-// storefront stub endpoints the fable-designed SPA drives (products/search/login/
+// storefront stub endpoints the storefront SPA drives (products/search/login/
 // session/cart/checkout/orders), naming the resource (last path segment) so each
 // stub is distinguishable in logs/Hubble without a canary risk. Else 404.
 func serveAPI(w http.ResponseWriter, name, p string) {
