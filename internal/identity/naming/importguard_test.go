@@ -1,4 +1,4 @@
-package identity_test
+package naming_test
 
 import (
 	"os/exec"
@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	identityPkg    = "github.com/canarysting/canarysting/internal/topology/identity"
+	namingPkg      = "github.com/canarysting/canarysting/internal/identity/naming"
 	stagedlabelPkg = "github.com/canarysting/canarysting/internal/intelligence/stagedlabel"
 	networkPkg     = "github.com/canarysting/canarysting/internal/intelligence/network"
 )
@@ -26,23 +26,23 @@ const (
 //
 // Modeled on stagedlabel/importguard_test.go's TestProductionEngineCannotImportLabeler.
 func TestResolverIsProductionImportable(t *testing.T) {
-	deps := goListDeps(t, identityPkg)
+	deps := goListDeps(t, namingPkg)
 
 	for _, forbidden := range []string{stagedlabelPkg, networkPkg} {
 		if deps[forbidden] {
-			t.Errorf("%s transitively imports %s — the resolver must stay self-contained and production-importable", identityPkg, forbidden)
+			t.Errorf("%s transitively imports %s — the resolver must stay self-contained and production-importable", namingPkg, forbidden)
 		}
 	}
 
 	for dep := range deps {
-		if dep == identityPkg {
+		if dep == namingPkg {
 			continue
 		}
 		if strings.HasPrefix(dep, "github.com/canarysting/canarysting/internal/engine") {
-			t.Errorf("%s transitively imports engine internal %s — the resolver must not depend on engine internals", identityPkg, dep)
+			t.Errorf("%s transitively imports engine internal %s — the resolver must not depend on engine internals", namingPkg, dep)
 		}
 		if strings.HasPrefix(dep, "github.com/canarysting/canarysting/adapters") {
-			t.Errorf("%s transitively imports adapter %s — the resolver must not depend on adapter internals", identityPkg, dep)
+			t.Errorf("%s transitively imports adapter %s — the resolver must not depend on adapter internals", namingPkg, dep)
 		}
 	}
 }

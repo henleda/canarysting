@@ -25,12 +25,12 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/baseline"
 	"github.com/canarysting/canarysting/internal/engine/calibration"
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
+	"github.com/canarysting/canarysting/internal/identity/naming"
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
 	"github.com/canarysting/canarysting/internal/intelligence/network"
 	"github.com/canarysting/canarysting/internal/intelligence/sharedset"
 	"github.com/canarysting/canarysting/internal/sting/killswitch"
-	"github.com/canarysting/canarysting/internal/topology/identity"
 )
 
 // crossMatchThreshold is the similarity at/above which the current adversary flow is
@@ -80,13 +80,13 @@ type Source struct {
 	Events     *boltevents.Store
 	Aggregator *observebaseline.Aggregator
 	SharedSet  *sharedset.Store // D6 cross-customer consumer (nil if not consuming)
-	// Resolver names the F1 learned-topology nodes (internal/topology/identity). It
+	// Resolver names the F1 learned-topology nodes (internal/identity/naming). It
 	// is OPERATOR-DECLARED metadata, never an engine verdict, and is NIL-TOLERANT:
 	// a nil resolver degrades every node to its IP label and reports
 	// staged_labels=false (the engine knows only hashed adjacency — it never
 	// natively knows service names). LOCAL-ONLY (Rule 9): the resolver and the raw
 	// edges it labels stay in the deployment.
-	Resolver *identity.Resolver
+	Resolver *naming.Resolver
 	// Catalog supplies the canary decoy types injected as decoy nodes in the
 	// topology's negative space (the 5 types). Nil-tolerant: the topology endpoint
 	// falls back to the stable type identifiers when no catalog is wired.

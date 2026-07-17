@@ -75,7 +75,7 @@ func TestSharpenBridgeRecordsOnReportNotSubmit(t *testing.T) {
 		}},
 		events:       boltevents.New(ps),
 		sharpen:      sh,
-		pendingJails: map[uint64]struct{}{},
+		pendingJails: map[uint64]contract.ScopeKey{},
 	}
 
 	submit := func(scope contract.ScopeKey, cookie uint64) {
@@ -118,5 +118,70 @@ func TestSharpenBridgeRecordsOnReportNotSubmit(t *testing.T) {
 	}
 	if got := sh.Match("scopeB", contract.FlowIdentity{SocketCookie: 14}, now); got != 0 {
 		t.Fatalf("Tier-2 verdicts fed the sharpen bridge: scopeB Match=%v, want 0 (only Tier-3 jails are confirmed-malicious)", got)
+	}
+}
+
+// TestReportOutcomeIgnoresForgedWireScope is the ReportOutcome-side analogue of the
+// Submit-side TestSubmit_ForgedScopeCannotDriveCrossScopeState: the outcome path must
+// never trust the wire scope (rule 5), keying its confirmed-malicious write on the
+// scope the engine RESOLVED at Submit and bound to the socket cookie (rule 4). A flow
+// jailed under its resolved scope, whose outcome is then reported with a FORGED scope,
+// must have its profile recorded under the resolved scope — and nothing must land under
+// the forged one.
+func TestReportOutcomeIgnoresForgedWireScope(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	types := []string{".env", "backup/db.sql"}
+	axesAttr := contract.AxisVelocity | contract.AxisPoison
+	axes := uint32(axesAttr)
+
+	const resolved = contract.ScopeKey("scope-victim")
+	const forged = contract.ScopeKey("scope-attacker")
+
+	// Confirmed events (for cookies 1,2,3 + probe 4) exist ONLY under the resolved scope.
+	src := &fakeSharpenSource{byScope: map[string][]intelligence.AdversaryInteractionEvent{}}
+	for _, c := range []uint64{1, 2, 3, 4} {
+		for i, ty := range types {
+			src.byScope[string(resolved)] = append(src.byScope[string(resolved)], intelligence.AdversaryInteractionEvent{
+				ScopeKey: string(resolved), FlowID: c, CanaryType: ty, Tier: 3,
+				Timestamp: now.Add(time.Duration(i) * time.Second), Sting: intelligence.StingOutcome{Axes: axes},
+			})
+		}
+	}
+
+	ps, _, err := persist.Open(filepath.Join(t.TempDir(), "forge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ps.Close()
+
+	sh := sharpen.NewStore(src)
+	ce := &capturingEngine{
+		inner: fakeInner{tierByCookie: map[uint64]contract.Tier{
+			1: contract.TierJail, 2: contract.TierJail, 3: contract.TierJail,
+		}},
+		events:       boltevents.New(ps),
+		sharpen:      sh,
+		pendingJails: map[uint64]contract.ScopeKey{},
+	}
+
+	// Submit each jail HONESTLY under the resolved scope (fakeInner echoes it as v.Scope),
+	// then report the outcome with a FORGED scope.
+	for _, c := range []uint64{1, 2, 3} {
+		if _, err := ce.Submit(contract.SignalEvent{Flow: contract.FlowIdentity{SocketCookie: c}, Scope: resolved, Canary: ".env", Timestamp: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ce.ReportOutcome(contract.OutcomeRecord{SocketCookie: c, Scope: forged, Outcome: contract.StingOutcome{Axes: axesAttr}, TimestampUnixMs: now.UnixMilli()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	probe := contract.FlowIdentity{SocketCookie: 4}
+	// The profile must be recorded under the RESOLVED scope (a matching probe sharpens),
+	if got := sh.Match(resolved, probe, now); got < 0.999 {
+		t.Fatalf("profile not recorded under the resolved scope: Match(%q)=%v, want ~1.0 (the cookie-bound resolved scope must be used, not the wire scope)", resolved, got)
+	}
+	// and NOTHING must land under the forged scope.
+	if got := sh.Match(forged, probe, now); got != 0 {
+		t.Fatalf("forged wire scope drove a cross-scope learned-state write: Match(%q)=%v, want 0 (rule 5)", forged, got)
 	}
 }

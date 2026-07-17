@@ -1,7 +1,12 @@
-// Package identity resolves a flow's raw network/identity attributes (IP, port,
+// Package naming resolves a flow's raw network/identity attributes (IP, port,
 // SPIFFE ID, source-address hint) to a human-legible topology node — a {Label,
 // Kind} pair — for the learned east-west topology (F1; see
 // docs/TOPOLOGY_AND_DEVIANTS.md §3 "Node identity model").
+//
+// It is the operator-declared NAMING leaf of the identity domain
+// (internal/identity/naming): it answers "what is this endpoint called", not
+// "is this identity cryptographically verified" (that is internal/identity/mesh,
+// roadmap) nor "the L7↔kernel socket-cookie join" (that is adapters/envoy/identity).
 //
 // It is a PURE LOOKUP over an operator-supplied config. It never errors and
 // ALWAYS returns a Node: when nothing matches it degrades to the IP string with
@@ -31,7 +36,7 @@
 // internal/intelligence/stagedlabel (a staging-only labeler the production
 // cmd/engine cannot import) nor on any engine/adapter internals, so the dashboard
 // backend AND the engine can both use it. See importguard_test.go.
-package identity
+package naming
 
 import (
 	"net/netip"

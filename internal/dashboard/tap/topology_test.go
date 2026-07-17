@@ -15,9 +15,9 @@ import (
 	"github.com/canarysting/canarysting/internal/engine/observebaseline"
 	"github.com/canarysting/canarysting/internal/engine/persist"
 	"github.com/canarysting/canarysting/internal/engine/scope"
+	"github.com/canarysting/canarysting/internal/identity/naming"
 	"github.com/canarysting/canarysting/internal/intelligence"
 	"github.com/canarysting/canarysting/internal/intelligence/boltevents"
-	"github.com/canarysting/canarysting/internal/topology/identity"
 )
 
 const topoTestScope = contract.ScopeKey("topo-scope")
@@ -89,9 +89,9 @@ func foldedAggregator(t *testing.T, now time.Time) *observebaseline.Aggregator {
 // demoResolver labels the demo mesh in the DISTINCT-IDENTITY scheme: each service
 // is named by its 127.0.1.<K> IP (so its egress[port 0] and listen[port N] sides
 // coalesce), and the caller by IP. Mirrors deploy/m7-window/topology-identities.json.
-func demoResolver(t *testing.T) *identity.Resolver {
+func demoResolver(t *testing.T) *naming.Resolver {
 	t.Helper()
-	cfg, err := identity.LoadConfig(strings.NewReader(`{"entries":[
+	cfg, err := naming.LoadConfig(strings.NewReader(`{"entries":[
 		{"ip":"127.0.1.1","name":"frontend","kind":"service"},
 		{"ip":"127.0.1.2","name":"api","kind":"service"},
 		{"ip":"127.0.1.3","name":"auth","kind":"service"},
@@ -100,7 +100,7 @@ func demoResolver(t *testing.T) *identity.Resolver {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return identity.NewResolver(cfg)
+	return naming.NewResolver(cfg)
 }
 
 // The endpoint resolves learned-node labels from the operator registry and reports
@@ -235,7 +235,7 @@ func TestTopologyDropsUnknownEndpointEdge(t *testing.T) {
 // ingress node — even appearing on different edges.
 func TestTopologyCoalescesIngressEndpoints(t *testing.T) {
 	now := time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC)
-	cfg, err := identity.LoadConfig(strings.NewReader(`{"entries":[
+	cfg, err := naming.LoadConfig(strings.NewReader(`{"entries":[
 		{"ip":"127.0.1.1","name":"frontend","kind":"service"},
 		{"ip":"127.0.0.1","port":8080,"name":"ingress-gateway","kind":"external"},
 		{"ip":"127.0.2.1","name":"ingress-gateway","kind":"external"}
@@ -243,7 +243,7 @@ func TestTopologyCoalescesIngressEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := identity.NewResolver(cfg)
+	resolver := naming.NewResolver(cfg)
 
 	// Two flows that both involve the ingress under its two addresses:
 	//   - a caller hits the ingress accept address 127.0.0.1:8080,
