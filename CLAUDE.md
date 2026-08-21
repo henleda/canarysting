@@ -4,6 +4,69 @@ This file is the entry point for Claude Code working in this repository. Read it
 
 ## What this project is
 
+# CLAUDE.md additions — Kubernetes-native pivot
+
+These are drop-in edits for the existing `CLAUDE.md`. They are additive. The existing nine core rules all survive unchanged. Paste the new section where indicated and apply the two small edits noted at the end.
+
+---
+
+## INSERT this new section immediately after "## What this project is" (before "## Core architectural rules")
+
+## Build target: Kubernetes-native (current phase)
+
+The current build target is **Kubernetes-only**. CanarySting stays proxy-agnostic in design (the contract and the thin-adapter model do not change), but for this phase we build, test, and demo on Kubernetes and do not invest in generic non-Kubernetes east-west paths. Keep the abstraction, focus the implementation.
+
+Three documents govern the pivot and sit alongside the existing architecture docs. Read them before working on anything Kubernetes-native or anything in the new graph/operator/identity layers:
+
+- `docs/ARCHITECTURE_SPEC_K8S.md` — the target-state Kubernetes-native architecture (deployment model, the blast-radius graph, narrow vs. medium capability split, the K8s API surface, mesh-vs-no-mesh identity, the hardest problems). This is the destination.
+- `docs/BUILD_TASK_PLAN.md` — the sequenced milestones to get there.
+- `docs/GAP_REPORT.md` — how this repo maps against the target, what is already consistent, and what is net-new. Read it to understand why the pivot is almost entirely additive.
+
+If these conflict with the existing architecture docs on *intent*, stop and ask. They do not override the nine core rules below; they extend the system on top of them.
+
+Three load-bearing facts about the Kubernetes pivot:
+
+- **Deployment is per-node DaemonSet plus a Kubernetes operator. Not sidecar.** The socket-cookie join (rule 4) is per-socket and host-local, so enforcement must live on the same node as the flow. The proxy-agnostic engine runs inside the DaemonSet; the operator manages CRDs and reconciles desired state.
+- **Identity is the spine, and mesh-enabled Kubernetes is the beachhead.** Blast radius is an identity-reachability problem. With a service mesh (Istio/Linkerd/Cilium mTLS, SPIFFE/SPIRE) identity is cryptographically verified. Without a mesh, identity is label-derived, spoofable, and racy: support it as an explicitly-lower-confidence fallback, never as the primary assumption.
+- **Blast-radius modeling is a first-class capability, built on the existing vantage point.** A new graph layer assembles the engine's already-attributed flow observations into a reachability graph with three edge types: OBSERVED (from the baseline and proxy, the ground truth we already collect), PERMITTED (from ingested K8s policy, the medium case), and ADVERSARIAL (from canary interaction). The gap PERMITTED minus OBSERVED is "dark reachability" and is the most valuable computation. The narrow case (observed/demonstrated blast radius) uses only data we already collect; the medium case adds K8s API policy ingestion.
+
+---
+
+## INSERT these as new core rules 10 and 11 at the end of "## Core architectural rules"
+
+10. **The blast-radius graph reuses the contract, it does not fork the data path.** The new graph layer (`internal/graph/`) consumes the same flow-identity-plus-signal events defined in `internal/contract/`. It must not introduce a parallel observation path or a second source of truth for flow attribution. OBSERVED edges come from the engine's existing attributed observations. Do not duplicate attribution logic in the graph layer.
+
+11. **Permitted-edge ingestion is read-only and medium-case-only.** K8s API ingestion (NetworkPolicy, CiliumNetworkPolicy, mesh AuthorizationPolicy, RBAC, namespaces/labels/ServiceAccounts) feeds PERMITTED edges for the medium case. It is read-only against the cluster. Policy *recommendations* derived from dark reachability are emitted in audit/detect-only mode and require human sign-off and a baseline-maturity gate before any enforce. Never auto-enforce a recommended policy.
+
+---
+
+## INSERT this new subsection at the end of "## Safety and posture rules"
+
+- **Observe before enforce.** On attach, run observe-only and learn the baseline for the defined period before any enforcement rule activates. This applies to the sting (already implied by tier discipline) and to any policy recommendation from the blast-radius layer. Enforcement that activates before baseline maturity is a bug.
+- **Mesh identity is primary, label-derived identity is a lower-confidence fallback.** Any code resolving workload identity must prefer verified mesh/SPIFFE identity and must mark label-derived identity with explicitly lower confidence on the edges it produces. Do not treat the two as equivalent.
+
+---
+
+## SMALL EDIT 1 — update the "## Repository layout" map
+
+Add these entries to the layout list (new packages introduced by the pivot):
+
+- `cmd/operator` — the Kubernetes operator binary (controller-runtime). Manages CRDs and reconciles desired state. `canaryctl` remains the human operator CLI alongside it.
+- `internal/operator/` — operator/controller logic and CRD types (DeceptionPolicy and scope/graph config).
+- `internal/graph/` — the blast-radius graph: node and edge model (OBSERVED/PERMITTED/ADVERSARIAL), dark-reachability, transitive reachable-set computation, ranking. Consumes `internal/contract/` events. Does not fork the data path (rule 10).
+- `internal/k8s/` — Kubernetes API ingestion (client-go): permitted-edge and identity sources for the medium case. Read-only (rule 11).
+- `internal/identity/` — workload identity resolution: mesh/SPIFFE primary, label-derived fallback. Feeds attribution and the graph.
+
+(If any of these names collide with existing packages, surface it rather than overwriting. See `docs/GAP_REPORT.md`.)
+
+---
+
+## SMALL EDIT 2 — update the "## Status" line
+
+Replace the current Status text with:
+
+Early scaffold pivoting to Kubernetes-native. The structure, the contracts, and the nine-plus-two core rules are the load-bearing part. The existing proxy-agnostic engine, canary, sting, and intelligence layers survive the pivot unchanged in intent; the net-new work is the Kubernetes deployment model (DaemonSet + operator), mesh identity, and the blast-radius graph. See `docs/GAP_REPORT.md` for what exists vs. what is net-new, and `docs/BUILD_TASK_PLAN.md` for the sequence.
+
 CanarySting is a proxy-attached deception and active-response platform. It seeds harmless decoy resources ("canaries") within reach of east-west traffic, scores how each network flow interacts with them, and escalates an automated response from silent observation up to aggressive economic attrition against the attacker — enforced in the kernel.
 
 Two product components:
