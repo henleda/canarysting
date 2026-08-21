@@ -1,0 +1,202 @@
+{{- if .Values.nodeAgent.enabled -}}
+{{- $scope := include "canarysting.scope" . -}}
+{{- $eng := .Values.nodeAgent.engine -}}
+{{- $ad := .Values.nodeAgent.adapter -}}
+{{- $baselineDir := dir $eng.baselineDbPath -}}
+# ---------------------------------------------------------------------------
+# Node agent — privileged DaemonSet (one pod per node).
+#
+# Runs the CanarySting datapath on every node: the decision engine (cmd/engine,
+# OBSERVE-only baseline via cgroup_skb) and the Envoy ext_proc adapter
+# (cmd/envoy-adapter: sockops cookie bridge + cgroup_skb/sock_release enforce +
+# canary seeding). This MUST be a per-node DaemonSet, not a sidecar: the
+# socket-cookie join (CLAUDE.md rule 4) is per-socket and host-local, so
+# enforcement lives on the same node as the flow.
+#
+# The two containers share the pod network namespace, so the adapter reaches the
+# engine over loopback ({{ $ad.engineAddr }}); the engine serves gRPC on
+# {{ $eng.grpcAddr }} and refuses to serve a routable address in plaintext, so
+# loopback keeps that surface inside the pod.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "canarysting.fullname" . }}-node-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "canarysting.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "canarysting.nodeAgent.selectorLabels" . | nindent 6 }}
+  {{- with .Values.nodeAgent.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "canarysting.nodeAgent.selectorLabels" . | nindent 8 }}
+        {{- with .Values.nodeAgent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Never mesh-inject the datapath agent: it attaches at the host cgroup
+        # root, it is not a per-pod sidecar. (Honors mesh.enabled only for the
+        # documentation annotation below.)
+        sidecar.istio.io/inject: "false"
+        canarysting.io/identity-mode: {{ if .Values.mesh.enabled }}"mesh"{{ else }}"labels"{{ end }}
+        {{- with .Values.nodeAgent.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "canarysting.nodeAgent.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeAgent.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # hostNetwork/hostPID default false: the eBPF is cgroup-attached and
+      # netns-independent (see values.yaml nodeAgent.hostNetwork comment).
+      hostNetwork: {{ .Values.nodeAgent.hostNetwork }}
+      hostPID: {{ .Values.nodeAgent.hostPID }}
+      {{- if .Values.nodeAgent.hostNetwork }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      # Root: loading/attaching cgroup-v2 eBPF + programming the verdict map
+      # (CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON). Matches the systemd model (root).
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      terminationGracePeriodSeconds: 30
+      containers:
+        # ---- engine (cmd/engine): OBSERVE-only baseline + scoring + verdicts ----
+        - name: engine
+          image: {{ include "canarysting.image" (dict "registry" .Values.image.registry "repository" .Values.image.engine.repository "tag" .Values.image.engine.tag) }}
+          imagePullPolicy: {{ $eng.image.pullPolicy | default .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/engine"]
+          args:
+            - "-scope-boundary={{ $scope }}"
+            - "-grpc-addr={{ $eng.grpcAddr }}"
+            - "-observe-cgroup={{ $eng.observeCgroup }}"
+            - "-baseline-db={{ $eng.baselineDbPath }}"
+            - "-window={{ $eng.window }}"
+            {{- if $eng.windowBucketer }}
+            - "-window-bucketer"
+            {{- end }}
+            {{- if and $eng.tls.certFile $eng.tls.keyFile $eng.tls.clientCaFile }}
+            - "-grpc-tls-cert={{ $eng.tls.certFile }}"
+            - "-grpc-tls-key={{ $eng.tls.keyFile }}"
+            - "-grpc-tls-client-ca={{ $eng.tls.clientCaFile }}"
+            {{- end }}
+          securityContext:
+            {{- if .Values.nodeAgent.privileged }}
+            privileged: true
+            {{- else }}
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+              add:
+                {{- toYaml .Values.nodeAgent.capabilities | nindent 16 }}
+            {{- end }}
+          volumeMounts:
+            - name: cgroup
+              mountPath: {{ .Values.nodeAgent.hostMounts.cgroup.hostPath }}
+              readOnly: {{ .Values.nodeAgent.hostMounts.cgroup.readOnly }}
+            - name: btf
+              mountPath: {{ .Values.nodeAgent.hostMounts.btf.hostPath }}
+              readOnly: {{ .Values.nodeAgent.hostMounts.btf.readOnly }}
+            {{- if .Values.nodeAgent.persistence.enabled }}
+            - name: baseline
+              mountPath: {{ $baselineDir }}
+            {{- end }}
+            {{- with .Values.nodeAgent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $eng.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        # ---- adapter (cmd/envoy-adapter): sockops + enforce + canary seeding ----
+        - name: adapter
+          image: {{ include "canarysting.image" (dict "registry" .Values.image.registry "repository" .Values.image.adapter.repository "tag" .Values.image.adapter.tag) }}
+          imagePullPolicy: {{ $ad.image.pullPolicy | default .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/envoy-adapter"]
+          args:
+            - "-listen={{ $ad.listen }}"
+            - "-engine={{ $ad.engineAddr }}"
+            - "-scope={{ $scope }}"
+            {{- if $ad.inline }}
+            - "-inline"
+            {{- end }}
+            - "-sting-floor={{ int $ad.stingFloor }}"
+            {{- if and $ad.tls.certFile $ad.tls.keyFile $ad.tls.caFile }}
+            - "-engine-tls-cert={{ $ad.tls.certFile }}"
+            - "-engine-tls-key={{ $ad.tls.keyFile }}"
+            - "-engine-tls-ca={{ $ad.tls.caFile }}"
+            {{- end }}
+          ports:
+            # ext_proc gRPC endpoint Envoy connects to. hostPort exposes it at
+            # <nodeIP>:<hostPort> for mesh sidecars (see values.yaml / README).
+            - name: extproc
+              containerPort: {{ (splitList ":" $ad.listen | last) | int }}
+              {{- if $ad.hostPort }}
+              hostPort: {{ int $ad.hostPort }}
+              {{- end }}
+              protocol: TCP
+          securityContext:
+            {{- if .Values.nodeAgent.privileged }}
+            privileged: true
+            {{- else }}
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+              add:
+                {{- toYaml .Values.nodeAgent.capabilities | nindent 16 }}
+            {{- end }}
+          volumeMounts:
+            - name: cgroup
+              mountPath: {{ .Values.nodeAgent.hostMounts.cgroup.hostPath }}
+              readOnly: {{ .Values.nodeAgent.hostMounts.cgroup.readOnly }}
+            - name: btf
+              mountPath: {{ .Values.nodeAgent.hostMounts.btf.hostPath }}
+              readOnly: {{ .Values.nodeAgent.hostMounts.btf.readOnly }}
+            {{- with .Values.nodeAgent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with $ad.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: cgroup
+          hostPath:
+            path: {{ .Values.nodeAgent.hostMounts.cgroup.hostPath }}
+            type: Directory
+        - name: btf
+          hostPath:
+            path: {{ .Values.nodeAgent.hostMounts.btf.hostPath }}
+            type: Directory
+        {{- if .Values.nodeAgent.persistence.enabled }}
+        - name: baseline
+          hostPath:
+            path: {{ .Values.nodeAgent.persistence.hostPath }}
+            type: {{ .Values.nodeAgent.persistence.hostPathType }}
+        {{- end }}
+        {{- with .Values.nodeAgent.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      nodeSelector:
+        {{- toYaml (.Values.nodeAgent.nodeSelector | default .Values.nodeSelector) | nindent 8 }}
+      {{- with (.Values.nodeAgent.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.nodeAgent.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

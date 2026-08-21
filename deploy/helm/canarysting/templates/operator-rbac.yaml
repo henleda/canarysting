@@ -1,0 +1,56 @@
+{{- if and .Values.operator.enabled .Values.operator.rbac.create -}}
+# ---------------------------------------------------------------------------
+# Operator RBAC — least-privilege, mostly READ-ONLY.
+#
+# Cluster-scoped because the operator watches DeceptionPolicy resources in any
+# namespace and (medium case) reads cluster-wide policy/identity sources.
+#
+# 1. DeceptionPolicy: the only write is to /status (the reconciler records the
+#    Accepted condition + seededCount). Source: cmd/operator + the controller's
+#    kubebuilder:rbac markers in internal/operator/controller.
+# 2. Read-only ingestion (CLAUDE.md rule 11): NetworkPolicies, pods, namespaces,
+#    serviceaccounts — get/list/watch ONLY. These feed PERMITTED edges for the
+#    blast-radius medium case (internal/k8s, read-only). The M1 operator does not
+#    ingest yet; these are pre-provisioned and gated by operator.rbac.ingestionReadOnly.
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "canarysting.fullname" . }}-operator
+  labels:
+    {{- include "canarysting.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  # --- DeceptionPolicy: watch the spec, write only status ---
+  - apiGroups: ["deception.canarysting.io"]
+    resources: ["deceptionpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["deception.canarysting.io"]
+    resources: ["deceptionpolicies/status"]
+    verbs: ["get", "update", "patch"]
+  {{- if .Values.operator.rbac.ingestionReadOnly }}
+  # --- Read-only K8s ingestion for the medium-case blast-radius layer (rule 11) ---
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "canarysting.fullname" . }}-operator
+  labels:
+    {{- include "canarysting.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "canarysting.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "canarysting.operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end -}}

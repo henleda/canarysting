@@ -1,0 +1,11 @@
+# Patterns to ignore when packaging the chart (helm package / helm lint).
+.DS_Store
+*.tmp
+*.bak
+*.orig
+*.swp
+.git/
+.gitignore
+*.md.orig
+# Keep README.md OUT of the chart package's parent dir noise but the chart's own
+# NOTES/templates are needed; this file only affects `helm package` bundling.

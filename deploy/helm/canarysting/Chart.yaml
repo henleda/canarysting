@@ -1,0 +1,42 @@
+apiVersion: v2
+name: canarysting
+description: >-
+  CanarySting — proxy-attached deception + in-kernel active response for
+  Kubernetes. Installs the DeceptionPolicy CRD, the controller-runtime operator
+  (Deployment), and the per-node datapath (privileged DaemonSet: engine +
+  Envoy ext_proc adapter + eBPF observe/sockops/enforce).
+type: application
+
+# Chart version. Bump on any chart change (SemVer).
+version: 0.1.0
+
+# appVersion tracks the CanarySting build the default images are expected to
+# contain. Pre-release: no product tag has been cut. The default images
+# (ghcr.io/canarysting/*:latest) do NOT exist yet — see values.yaml image.* TODOs.
+appVersion: "0.1.0"
+
+# The DaemonSet loads cgroup-v2 eBPF (cgroup_skb / sockops / sock_release) and
+# the operator uses apiextensions v1 + the controller-runtime health surface.
+# 1.24 is a conservative floor that covers those APIs; the node kernel floor
+# (>=5.10 with BTF + cgroup-v2) is a separate, node-side requirement documented
+# in deploy/helm/README.md and INSTALL.md.
+kubeVersion: ">=1.24.0-0"
+
+keywords:
+  - security
+  - deception
+  - honeypot
+  - ebpf
+  - active-response
+  - blast-radius
+home: https://github.com/henleda/canarysting
+sources:
+  - https://github.com/henleda/canarysting
+maintainers:
+  - name: CanarySting
+    url: https://github.com/henleda/canarysting
+annotations:
+  # This chart installs a privileged DaemonSet that loads eBPF and mounts the
+  # host cgroup-v2 hierarchy. Operators must review the securityContext before
+  # installing on a shared cluster. See values.yaml nodeAgent.* and README.md.
+  category: Security

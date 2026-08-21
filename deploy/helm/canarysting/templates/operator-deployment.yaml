@@ -1,0 +1,85 @@
+{{- if .Values.operator.enabled -}}
+{{- $probeAddr := .Values.operator.healthProbeBindAddress | default ":8081" -}}
+{{- $probePort := (splitList ":" $probeAddr | last) | int -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "canarysting.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "canarysting.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "canarysting.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "canarysting.operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.operator.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "canarysting.operator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: operator
+          image: {{ include "canarysting.image" (dict "registry" .Values.image.registry "repository" .Values.image.operator.repository "tag" .Values.image.operator.tag) }}
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy | default .Values.image.pullPolicy }}
+          args:
+            - "-health-probe-bind-address={{ $probeAddr }}"
+            - "-metrics-bind-address={{ .Values.operator.metricsBindAddress }}"
+            - "-zap-log-level={{ .Values.logLevel }}"
+          ports:
+            - name: health
+              containerPort: {{ $probePort }}
+              protocol: TCP
+            {{- if ne (.Values.operator.metricsBindAddress | toString) "0" }}
+            - name: metrics
+              containerPort: {{ (splitList ":" .Values.operator.metricsBindAddress | last) | int }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.operator.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      nodeSelector:
+        {{- toYaml (.Values.operator.nodeSelector | default .Values.nodeSelector) | nindent 8 }}
+      {{- with (.Values.operator.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.operator.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

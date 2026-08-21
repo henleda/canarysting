@@ -1,0 +1,77 @@
+CanarySting {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Scope boundary : {{ .Values.scope.boundary }}
+Identity mode  : {{ if .Values.mesh.enabled }}mesh (verified, high-confidence){{ else }}labels (lower-confidence fallback){{ end }}
+Node arch      : {{ index .Values.nodeSelector "kubernetes.io/arch" | default "any" }}
+
+WHAT WAS INSTALLED
+  - DeceptionPolicy CRD (deceptionpolicies.deception.canarysting.io)
+{{- if .Values.operator.enabled }}
+  - operator Deployment ({{ include "canarysting.fullname" . }}-operator) + ClusterRole/Binding
+{{- end }}
+{{- if .Values.nodeAgent.enabled }}
+  - node agent DaemonSet ({{ include "canarysting.fullname" . }}-node-agent): engine + Envoy ext_proc adapter + eBPF
+{{- end }}
+
+VERIFY THE INSTALL
+
+1) CRD is registered:
+   kubectl get crd deceptionpolicies.deception.canarysting.io
+
+{{- if .Values.operator.enabled }}
+
+2) Operator is running and healthy:
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "canarysting.fullname" . }}-operator
+   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "canarysting.fullname" . }}-operator | grep "starting operator"
+{{- end }}
+
+{{- if .Values.nodeAgent.enabled }}
+
+3) Node agent DaemonSet is Ready on every targeted node:
+   kubectl -n {{ .Release.Namespace }} get ds {{ include "canarysting.fullname" . }}-node-agent
+   # DESIRED should equal READY. If a pod is stuck, check the eBPF preconditions:
+   kubectl -n {{ .Release.Namespace }} logs ds/{{ include "canarysting.fullname" . }}-node-agent -c engine
+   kubectl -n {{ .Release.Namespace }} logs ds/{{ include "canarysting.fullname" . }}-node-agent -c adapter
+
+   Node preconditions (per node) — the agent will fail to attach without them:
+     - cgroup v2 unified hierarchy mounted at {{ .Values.nodeAgent.hostMounts.cgroup.hostPath }}
+     - BTF present at {{ .Values.nodeAgent.hostMounts.btf.hostPath }}/vmlinux
+     - kernel >= 5.10 (system-global socket cookie; the engine pins a minimum at startup)
+{{- if not .Values.nodeAgent.privileged }}
+     - the container runtime honors added capabilities: {{ join ", " .Values.nodeAgent.capabilities }}
+       (if attach fails with EPERM, set --set nodeAgent.privileged=true)
+{{- end }}
+{{- end }}
+
+4) Apply a sample DeceptionPolicy and watch the operator accept it:
+   cat <<'EOF' | kubectl apply -f -
+   apiVersion: deception.canarysting.io/v1alpha1
+   kind: DeceptionPolicy
+   metadata:
+     name: sample-decoys
+     namespace: {{ .Release.Namespace }}
+   spec:
+     selector:
+       labelSelector:
+         matchLabels:
+           app.kubernetes.io/name: your-app
+     decoys:
+       - type: fake_secret
+         count: 2
+       - type: planted_credential
+         count: 1
+   EOF
+   kubectl -n {{ .Release.Namespace }} get deceptionpolicies
+   # The "Accepted" printer column should read True once reconciled.
+   # NOTE (honesty): the M1 operator VALIDATES policies and reports status only.
+   # It plants NO decoys yet (SeededCount stays 0) — seeding is wired in M2.
+
+WHAT THIS CHART DOES NOT DO
+  - It does NOT wire your service mesh's Envoys to the adapter's ext_proc
+    endpoint. The socket-cookie join under a CNI is an unproven integration (a
+    separate spike). Until then the datapath observes/attaches on the node but
+    no L7 touches reach the adapter. See deploy/helm/README.md.
+{{- if not .Values.nodeAgent.adapter.hostPort }}
+  - The adapter ext_proc port is NOT exposed on the node (no hostPort). Set
+    nodeAgent.adapter.hostPort to reach it from mesh sidecars.
+{{- end }}

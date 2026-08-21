@@ -1,0 +1,308 @@
+# Default values for the CanarySting chart.
+# ---------------------------------------------------------------------------
+# This chart installs three things:
+#   1. the DeceptionPolicy CRD (crds/, installed automatically by `helm install`)
+#   2. the operator          — a Deployment (controller-runtime, cmd/operator)
+#   3. the node agent        — a privileged DaemonSet (cmd/engine +
+#                              cmd/envoy-adapter + the cgroup-v2 eBPF datapath)
+#
+# The datapath is per-NODE, not a sidecar: the socket-cookie join (CLAUDE.md
+# rule 4) is per-socket and host-local, so enforcement must run on the same node
+# as the flow. See deploy/helm/README.md.
+# ---------------------------------------------------------------------------
+
+# -- Override the generated chart name / fullname.
+nameOverride: ""
+fullnameOverride: ""
+
+# ===========================================================================
+# Scope (REQUIRED)
+# ===========================================================================
+# The per-deployment scope boundary. Both the engine (-scope-boundary) and the
+# adapter (-scope) REFUSE TO START with an empty scope — CanarySting never falls
+# back to a global scope (CLAUDE.md: "Fail safe on uncertainty", docs/SCOPE.md).
+# `helm install` will fail with a clear message if this is left empty.
+scope:
+  boundary: ""
+
+# ===========================================================================
+# Images (per component)
+# ===========================================================================
+# TODO(images): these images DO NOT EXIST YET. No CanarySting container images
+# have been built or pushed. Before this chart can `helm install` onto a real
+# cluster you must:
+#   1. build the binaries (Makefile: `make bin` -> engine, envoy-adapter,
+#      operator) for linux/arm64 (the target node is aarch64),
+#   2. package each into a container image (the eBPF objects bpf/**/*_bpfel.o
+#      are committed and embedded, so the runtime image needs NO clang),
+#   3. push them to a registry your cluster can pull from, and
+#   4. point image.<component>.repository / .tag at them.
+# The placeholders below render valid manifests for static validation
+# (helm lint / helm template / kubectl --dry-run) but will ImagePullBackOff on
+# a live cluster until real images exist.
+image:
+  registry: ghcr.io
+  # imagePullPolicy applies to every component unless overridden per component.
+  pullPolicy: IfNotPresent
+  operator:
+    repository: canarysting/operator
+    tag: "latest"        # TODO: pin to a real, immutable tag (never float :latest in prod)
+  engine:
+    repository: canarysting/engine
+    tag: "latest"        # TODO: pin
+  adapter:
+    repository: canarysting/envoy-adapter
+    tag: "latest"        # TODO: pin
+
+# imagePullSecrets referenced by every pod's ServiceAccount / podSpec.
+imagePullSecrets: []
+#  - name: ghcr-pull
+
+# ===========================================================================
+# Placement (arch / node selection)
+# ===========================================================================
+# The KubeCon reproducibility target is a single-node ARM64 (aarch64) k3s box,
+# kernel 6.17, cgroup v2, BTF present. Default the arch nodeSelector to arm64;
+# override to amd64 (or {} for any) once multi-arch images exist.
+nodeSelector:
+  kubernetes.io/arch: arm64
+
+# Tolerations applied to BOTH the operator and the node agent. A single-node
+# k3s cluster runs its one node as control-plane + worker, so we tolerate the
+# control-plane/master taints by default (otherwise nothing schedules there).
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+# affinity applied to both workloads (empty = none).
+affinity: {}
+
+# ===========================================================================
+# Mesh (identity confidence)
+# ===========================================================================
+# CanarySting's identity spine prefers cryptographically-verified mesh/SPIFFE
+# identity (high confidence) and falls back to label-derived identity (EXPLICITLY
+# lower confidence, spoofable) — CLAUDE.md "Mesh identity is primary".
+#   enabled=true  -> annotate the node agent identity-mode "mesh" (beachhead)
+#   enabled=false -> identity-mode "labels" (lower-confidence fallback)
+# HONESTY: the M1/M2 binaries do not yet CONSUME this selector — mesh/label
+# resolution (internal/identity/) is roadmap. This currently sets a documentation
+# annotation only and never changes the datapath. The node agent is NEVER
+# mesh-injected (it needs the host cgroup root, not a per-pod sidecar); the
+# templates always stamp sidecar.istio.io/inject="false" on it.
+mesh:
+  enabled: false
+
+# ===========================================================================
+# Logging
+# ===========================================================================
+# Applies to the operator's controller-runtime zap logger (-zap-log-level).
+# One of: debug | info | error. NOTE: the engine and adapter use the Go stdlib
+# logger and have no log-level flag today, so this knob affects the operator only.
+logLevel: info
+
+# ===========================================================================
+# Operator (Deployment, cmd/operator)
+# ===========================================================================
+operator:
+  enabled: true
+  replicaCount: 1   # cmd/operator does not enable leader election; keep at 1.
+
+  # Health/readiness probe bind address inside the pod (cmd/operator default).
+  healthProbeBindAddress: ":8081"
+  # Metrics bind address. "0" DISABLES the metrics server (the binary default).
+  # Set to ":8080" to expose controller-runtime metrics.
+  metricsBindAddress: "0"
+
+  image:
+    pullPolicy: ""   # "" => inherit image.pullPolicy
+    # repository/tag inherit image.operator.* unless set here.
+
+  serviceAccount:
+    create: true
+    name: ""          # "" => generated (<fullname>-operator)
+    annotations: {}
+
+  # RBAC the operator is granted (least-privilege, mostly READ-ONLY):
+  rbac:
+    create: true
+    # Grant the read-only K8s ingestion perms the medium-case blast-radius layer
+    # needs (CLAUDE.md rule 11: NetworkPolicies, pods, namespaces, serviceaccounts
+    # — get/list/watch, read-only). The M1 operator does not ingest yet; this
+    # pre-provisions the perms so the ClusterRole is stable across the M-series.
+    # Set false to grant ONLY the DeceptionPolicy watch+status perms.
+    ingestionReadOnly: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # The operator needs NO privileges — hardened pod/container securityContext.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  # Per-workload overrides (fall back to the top-level values when empty).
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
+
+# ===========================================================================
+# Node agent (privileged DaemonSet: engine + adapter + eBPF)
+# ===========================================================================
+nodeAgent:
+  enabled: true
+
+  # ---- Privilege model -----------------------------------------------------
+  # The engine and adapter load + attach cgroup-v2 eBPF (cgroup_skb observe +
+  # enforce, sockops cookie bridge, sock_release) and program the verdict map.
+  # INSTALL.md: the minimal capability set is CAP_BPF + CAP_NET_ADMIN +
+  # CAP_PERFMON. We default to that least-privilege set rather than full
+  # `privileged: true`.
+  #
+  # privileged=true is the escape hatch for clusters where the capability set
+  # alone is insufficient (e.g. the runtime blocks the RLIMIT_MEMLOCK bump on an
+  # older kernel, bpffs is unavailable, or LSM/securityContext caps are not
+  # honored). When true, the capabilities list below is omitted.
+  privileged: false
+  capabilities:
+    - BPF
+    - NET_ADMIN
+    - PERFMON
+
+  # ---- Host namespaces -----------------------------------------------------
+  # hostNetwork: PREFER false. The eBPF is cgroup-attached and netns-independent
+  # — attaching cgroup_skb/sockops at the host cgroup-v2 root captures every
+  # flow on the node regardless of the agent's own network namespace (CLAUDE.md
+  # rule 4 rationale). So the datapath does NOT require hostNetwork. The only
+  # reason to enable it is to expose the adapter's ext_proc endpoint at a stable
+  # node address for mesh sidecars — prefer a hostPort (adapter.hostPort) for
+  # that instead, which is far narrower. TRADEOFF: hostNetwork would also put the
+  # engine's 127.0.0.1:50052 gRPC on the node loopback shared with all host
+  # processes; leaving it false keeps that surface inside the pod netns.
+  hostNetwork: false
+  # hostPID: PREFER false. Not needed for cgroup-attached eBPF. Flip to true only
+  # if your container runtime's private cgroup namespace prevents attaching at
+  # the true host cgroup root through the mounted hostPath (rare on k3s).
+  hostPID: false
+
+  # ---- Engine (cmd/engine) -------------------------------------------------
+  engine:
+    image:
+      pullPolicy: ""   # "" => inherit image.pullPolicy
+    grpcAddr: "127.0.0.1:50052"      # loopback: adapter dials it in-pod (shared netns)
+    observeCgroup: "/sys/fs/cgroup"  # host cgroup-v2 root (must match the mounted hostPath)
+    baselineDbPath: "/var/lib/canarysting/baseline.db"
+    window: "5m"                     # scoring correlation window
+    # Coarse 8-bucket learning-window bucketer. false => production 168-bucket.
+    windowBucketer: false
+    # Optional mTLS for the engine gRPC surface. Leave empty to serve bare
+    # loopback (allowed with a warning; fine intra-pod). Set all three (mounted
+    # via extraVolumes/extraVolumeMounts) to require mTLS.
+    tls:
+      certFile: ""
+      keyFile: ""
+      clientCaFile: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+  # ---- Adapter (cmd/envoy-adapter) ----------------------------------------
+  adapter:
+    image:
+      pullPolicy: ""   # "" => inherit image.pullPolicy
+    listen: ":50051"                 # ext_proc gRPC (Envoy connects here)
+    engineAddr: "127.0.0.1:50052"    # must equal engine.grpcAddr
+    inline: true                     # hold canary touches for the verdict
+    # Attrition floor for inline Tier 2/3:
+    #   0 = passive (tarpit/velocity only)
+    #   1 = moderate (+poison_field / fake_tree)
+    #   2 = aggressive (+token_bait / exploit_bait / op_exposure)
+    # Aggressive is operator-elective; keep the conservative default (0/1).
+    stingFloor: 1
+    # Expose the adapter's ext_proc port on the NODE (hostPort) so mesh sidecar
+    # Envoys can reach it at <nodeIP>:<hostPort>. null/absent = no hostPort (the
+    # port stays inside the pod). This is the narrow alternative to hostNetwork.
+    # NOTE: wiring a mesh's Envoys to this endpoint (e.g. an Istio EnvoyFilter
+    # ext_proc cluster) is OUT OF SCOPE for this chart and is exactly what the
+    # socket-cookie-join-under-a-CNI spike must prove. See README.md.
+    hostPort: null
+    # Optional mTLS to the engine (client side). Set all three to dial mTLS.
+    tls:
+      certFile: ""
+      keyFile: ""
+      caFile: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+  # ---- Baseline persistence -----------------------------------------------
+  # The engine's bbolt baseline + interaction-event store. hostPath keeps it
+  # durable across pod restarts on the node (matches the systemd StateDirectory
+  # model: /var/lib/canarysting). Set enabled=false for an ephemeral emptyDir
+  # (loses the learned baseline on restart — observe-before-enforce restarts).
+  persistence:
+    enabled: true
+    hostPath: /var/lib/canarysting
+    hostPathType: DirectoryOrCreate
+
+  # ---- Host mounts (eBPF requirements) ------------------------------------
+  # cgroup-v2 unified hierarchy (attach point) and BTF (CO-RE). Both are host
+  # paths. cgroup is mounted read-only: cgroup BPF attach only needs the cgroup
+  # directory fd, not write access. Flip cgroup.readOnly=false if your kernel/
+  # runtime rejects the read-only attach.
+  hostMounts:
+    cgroup:
+      hostPath: /sys/fs/cgroup
+      readOnly: true
+    btf:
+      hostPath: /sys/kernel/btf
+      readOnly: true
+
+  # updateStrategy for the DaemonSet.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  # Extra volumes / mounts (e.g. to mount TLS secrets referenced above).
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  serviceAccount:
+    create: true
+    name: ""          # "" => generated (<fullname>-node-agent)
+    annotations: {}
+
+  # Per-workload overrides (fall back to top-level values when empty).
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
+  priorityClassName: ""
