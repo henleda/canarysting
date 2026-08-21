@@ -27,14 +27,18 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/canarysting/canarysting/internal/llm/anthropic"
 	"github.com/canarysting/canarysting/internal/llm/attacker"
+	"github.com/canarysting/canarysting/internal/llm/openai"
 )
 
 func main() {
 	var (
 		target        = flag.String("target", "http://10.20.1.24:8080", "server Envoy base URL (private IP)")
 		srcIP         = flag.String("src-ip", "10.20.1.111", "local bind IP — the declared attacker (empty = OS default)")
-		model         = flag.String("model", string(sdk.ModelClaudeOpus4_8), "model ID")
+		model         = flag.String("model", string(sdk.ModelClaudeOpus4_8), "Anthropic model ID (backend=anthropic)")
 		effort        = flag.String("effort", "high", "thinking effort: low|medium|high|xhigh|max")
+		backend       = flag.String("backend", envOr("ATTACKER_BACKEND", "anthropic"), "LLM backend: anthropic|openai (openai = local OpenAI-compatible server, e.g. Ollama/DGX)")
+		openaiBase    = flag.String("openai-base", envOr("OPENAI_BASE_URL", openai.DefaultBaseURL), "openai backend: base URL incl. /v1 (default local Ollama)")
+		openaiModel   = flag.String("openai-model", envOr("OPENAI_MODEL", "llama3.1"), "openai backend: model name pulled on the server (must support tool-calling)")
 		hardCapUSD    = flag.Float64("hard-cap-usd", 5.0, "hard dollar ceiling per run")
 		maxTurns      = flag.Int("max-turns", 30, "turn limit")
 		maxTokens     = flag.Int64("max-tokens", 16000, "max_tokens per response")
@@ -87,6 +91,18 @@ func main() {
 		log.Printf("llm-attacker: REPLAY cassette %s (%d recorded responses; $0, deterministic)", *cassetteFile, rc.Remaining())
 	case *scripted:
 		// client stays nil (the deterministic zero-API HTTP walk)
+	case strings.EqualFold(*backend, "openai"):
+		// Local OpenAI-compatible backend (Ollama / DGX Spark). No hosted-LLM key
+		// is required; OPENAI_API_KEY is sent as a Bearer only if set (Ollama
+		// ignores it). The request model comes from -openai-model.
+		if *openaiModel != "" {
+			cfg.Model = sdk.Model(*openaiModel)
+		}
+		client = openai.New(*openaiBase, os.Getenv("OPENAI_API_KEY"))
+		if *recordFile != "" {
+			recorder = anthropic.NewRecordingClient(client, *openaiModel)
+			client = recorder // transparent: same behavior, captures each response
+		}
 	default:
 		key, err := resolveKey(*keyFile)
 		if err != nil {
@@ -105,7 +121,8 @@ func main() {
 	// turn (rate-limited). Raw JSON, no shared types — keeps the import rule.
 	if *tapAddr != "" {
 		meter := newMeter(*tapAddr, *meterInterval)
-		agent.SetProgressHook(func(s attacker.Snapshot) { meter.post(s, *model) })
+		activeModel := string(cfg.Model) // reflects -openai-model when backend=openai
+		agent.SetProgressHook(func(s attacker.Snapshot) { meter.post(s, activeModel) })
 	}
 
 	// Kill switch: SIGINT/SIGTERM cancels the context; an in-flight API call
@@ -114,13 +131,16 @@ func main() {
 	defer stop()
 
 	mode := "LLM(" + *model + ", effort=" + *effort + ")"
+	if strings.EqualFold(*backend, "openai") {
+		mode = "LLM-OpenAI(" + *openaiModel + " @ " + *openaiBase + ")"
+	}
 	switch {
 	case *cassetteFile != "":
 		mode = "REPLAY(" + *cassetteFile + ", $0)"
 	case *scripted:
 		mode = "SCRIPTED(zero-API)"
 	case *recordFile != "":
-		mode = "LLM(" + *model + ", effort=" + *effort + ") RECORDING->" + *recordFile
+		mode = mode + " RECORDING->" + *recordFile
 	}
 	log.Printf("llm-attacker: mode=%s target=%s src-ip=%s cap=$%.2f max-turns=%d",
 		mode, *target, *srcIP, *hardCapUSD, *maxTurns)
@@ -170,6 +190,15 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// envOr returns the environment value for key, or def when unset/empty. Used to
+// let ATTACKER_BACKEND / OPENAI_BASE_URL / OPENAI_MODEL seed flag defaults.
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
 }
 
 // resolveKey reads the API key from -key-file (trimmed), else ANTHROPIC_API_KEY.
