@@ -62,7 +62,7 @@ func run() error {
 		targetLabels = flag.String("target-labels", "", "target endpointSelector labels as k=v,k=v (e.g. app=srv)")
 		scope        = flag.String("scope", "", "CanarySting scope key stamped on the CNP")
 		action       = flag.String("action", "apply", "apply | release")
-		tier         = flag.Int("tier", 0, "engine tier to route through the SAME containment.ActionForTier seam the adapter uses; when >0 it takes precedence over -action (Tier-3 => drop CNP, Tier-2 => no CNP, Tier-0/1 => release)")
+		tier         = flag.Int("tier", -1, "engine tier to route through the SAME containment.ActionForTier seam the adapter uses; when >=0 it takes precedence over -action (Tier-3 => drop CNP, Tier-2 => no CNP, Tier-0/1 => release). -1 (default) means unset — use -action instead")
 	)
 	flag.Parse()
 
@@ -131,11 +131,11 @@ func run() error {
 	}
 	name := cnp.Name(params)
 
-	// Tier path (takes precedence when >0): route through the EXACT seam the adapter
-	// runs — a, ok := containment.ActionForTier(tier); if !ok Release else Apply(v,a).
-	// This proves, live, that Tier-3 -> drop CNP, Tier-2 -> no CNP (L7 concern), and
-	// Tier-0/1 -> release, all through the real enforcer.
-	if *tier > 0 {
+	// Tier path (takes precedence when >=0; -1 means unset): route through the EXACT
+	// seam the adapter runs — a, ok := containment.ActionForTier(tier); if !ok Release
+	// else Apply(v,a). This proves, live, that Tier-3 -> drop CNP, Tier-2 -> no CNP (L7
+	// concern), and Tier-0/1 -> release, all through the real enforcer.
+	if *tier >= 0 {
 		vt := contract.Verdict{
 			Flow: contract.FlowIdentity{
 				SocketCookie: syntheticCookie(ip),
