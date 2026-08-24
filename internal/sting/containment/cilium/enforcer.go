@@ -129,12 +129,21 @@ func New(cfg Config) (*Enforcer, error) {
 // (containment.Jail / containment.HardDeny) writes a deny CNP. A Tier-2
 // containment.RateLimit is an L7 velocity-attrition concern handled by the adapter's
 // attritor (the tarpit), NOT by the CNI: turning it into a hard-deny CNP would over-
-// enforce, dropping a flow the tier only meant to throttle. For a rate-limit action
-// Apply is a deliberate no-op (nil). This is the honest split: the CNI does drops,
-// L7 does throttling.
+// enforce, dropping a flow the tier only meant to throttle. This is the honest split:
+// the CNI does drops, L7 does throttling.
+//
+// A non-drop action is not merely a no-op, though: on a Tier-3 -> Tier-2 DE-ESCALATION
+// the engine downgraded a jailed flow to throttle, so any drop CNP this enforcer wrote
+// for the flow must be LIFTED — otherwise Cilium keeps dropping the flow before it can
+// reach L7 and the throttle can never engage. The kernel enforcer gets this for free
+// (its Apply reprograms the verdict map from jail to rate-limit); we mirror it by
+// Releasing the drop. Release is idempotent, so a never-jailed flow is a cheap no-op.
 func (e *Enforcer) Apply(v contract.Verdict, a containment.Action) error {
 	if !isDropAction(a) {
-		log.Printf("cilium enforcer: tier-2 rate-limit is an L7 concern; no CNI policy written (action=%s cookie=%#x)", a, v.Flow.SocketCookie)
+		if err := e.Release(v); err != nil {
+			return err
+		}
+		log.Printf("cilium enforcer: non-drop action is an L7 concern; no CNI drop, lifted any prior jail (action=%s cookie=%#x)", a, v.Flow.SocketCookie)
 		return nil
 	}
 	p, err := e.params(v, a)
@@ -209,6 +218,16 @@ func (e *Enforcer) Release(v contract.Verdict) error {
 // belongs to the caller that built it — so Close is a no-op.
 func (e *Enforcer) Close() error { return nil }
 
+// maxWritten bounds the in-memory tracking map. A contained flow that never receives
+// a sub-TierContain verdict (an attacker flow that simply ends while still jailed —
+// the common case) is only removed on Release, so without a cap the map would grow
+// unbounded in a long-lived adapter. Contained flows are rare, so this ceiling is far
+// above any real working set; on the pathological path an evicted entry only costs its
+// flow the keyed-delete fast path (Release falls back to the deterministic-name
+// recompute, still correct for the stable cookie/IP source). Mirrors the self-bounding
+// discipline of the adapter's verdictSequencer.
+const maxWritten = 4096
+
 // recordWritten remembers the object Apply Ensured for a flow, keyed by the flow's
 // stable verdict key, so Release can delete precisely it (Finding #2). A flow with
 // no stable key (no cookie and no source IP) is never written in the first place, so
@@ -219,8 +238,19 @@ func (e *Enforcer) recordWritten(v contract.Verdict, ns, name string) {
 		return
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Bound the map: if at capacity and this is a new key, evict one arbitrary entry
+	// (Go map iteration order is unspecified) before inserting. Evicting a tracking
+	// record only degrades that flow's Release to the recompute fallback, never leaks
+	// the live CNP itself.
+	if _, exists := e.written[key]; !exists && len(e.written) >= maxWritten {
+		for k := range e.written {
+			delete(e.written, k)
+			break
+		}
+		log.Printf("cilium enforcer: written-map at cap %d; evicted one tracking entry (Release for that flow falls back to name recompute)", maxWritten)
+	}
 	e.written[key] = writtenCNP{namespace: ns, name: name}
-	e.mu.Unlock()
 }
 
 // verdictKey is a STABLE identity for a flow across an Apply/Release pair, chosen so

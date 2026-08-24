@@ -149,3 +149,34 @@ func TestSeamTier0ReleasesPriorCNP(t *testing.T) {
 		t.Fatalf("Tier-0 de-escalation must remove the prior CNP, still present: %d", len(items))
 	}
 }
+
+// TestSeamTier3ThenTier2LiftsDropCNP is the regression for the de-escalation bug: a
+// Tier-3 jail writes a drop CNP; a later Tier-2 (RateLimit) verdict for the SAME flow
+// downgraded the flow to throttle, so the drop CNP must be LIFTED (else Cilium keeps
+// dropping the flow before it can reach the L7 tarpit and the throttle never engages).
+// The seam routes Tier-2 to Apply(RateLimit), which must release the prior jail.
+func TestSeamTier3ThenTier2LiftsDropCNP(t *testing.T) {
+	enf, fc := newCNPSeamEnforcer(t)
+
+	// Jail at Tier-3.
+	if _, applied, _, err := enforceVerdict(enf, cnpSeamVerdict(contract.TierJail)); err != nil || !applied {
+		t.Fatalf("seed Tier-3 apply: applied=%v err=%v", applied, err)
+	}
+	if items := listCNPs(t, fc); len(items) != 1 {
+		t.Fatalf("precondition: want one CNP after Tier-3, got %d", len(items))
+	}
+
+	// Downgrade to Tier-2: the seam calls Apply(RateLimit), which must LIFT the drop.
+	act, applied, released, err := enforceVerdict(enf, cnpSeamVerdict(contract.TierContain))
+	if err != nil {
+		t.Fatalf("enforceVerdict (downgrade): %v", err)
+	}
+	// The seam still reports applied=true (ActionForTier(Tier-2) => RateLimit, ok), but
+	// the CNI wrote nothing new and must have removed the jail CNP.
+	if !applied || released || act.String() != "rate-limit" {
+		t.Fatalf("Tier-2 downgrade: applied=%v released=%v act=%s", applied, released, act)
+	}
+	if items := listCNPs(t, fc); len(items) != 0 {
+		t.Fatalf("Tier-3->Tier-2 downgrade must lift the drop CNP, still present: %d", len(items))
+	}
+}
