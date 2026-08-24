@@ -219,6 +219,68 @@ func TestNewRejectsEmptyTarget(t *testing.T) {
 	}
 }
 
+// driftResolver returns a fixed label set until it is flipped off, after which it
+// resolves nothing (ok=false) — modeling a SourceResolver whose answer drifts
+// between Apply and Release.
+type driftResolver struct {
+	labels map[string]string
+	off    bool
+}
+
+func (d *driftResolver) SourceLabels(contract.Verdict) (map[string]string, bool) {
+	if d.off {
+		return nil, false
+	}
+	return d.labels, true
+}
+
+// TestReleaseDeletesExactObjectUnderResolverDrift is the Finding #2 regression: Apply
+// resolves labels (writing object A, the fromEndpoints name), then the resolver flips
+// to !ok before Release. A recompute-and-delete would now address the IP-path name
+// (object B) and leak A. Release MUST delete A — the exact object Apply recorded.
+func TestReleaseDeletesExactObjectUnderResolverDrift(t *testing.T) {
+	w := newFakeWriter()
+	r := &driftResolver{labels: map[string]string{"app": "cli"}}
+	e := mustEnforcer(t, w, r)
+	v := attributedVerdict() // carries a source IP too, so the IP path is reachable
+
+	if err := e.Apply(v, containment.Jail); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	// Object A: the label (fromEndpoints) name that Apply actually wrote.
+	nameA := cnp.Name(cnp.Params{
+		Scope: "m7-window", SourceLabels: map[string]string{"app": "cli"},
+		TargetNamespace: "default", TargetLabels: map[string]string{"app": "srv"},
+	})
+	if _, ok := w.ensured["default/"+nameA]; !ok {
+		t.Fatalf("Apply did not write the label-path object A (%s); wrote: %v", nameA, keys(w.ensured))
+	}
+	// Object B: what a recompute AFTER the drift would (wrongly) address — the IP path.
+	nameB := cnp.Name(cnp.Params{
+		Scope: "m7-window", SourceIP: "10.0.0.235",
+		TargetNamespace: "default", TargetLabels: map[string]string{"app": "srv"},
+	})
+	if nameA == nameB {
+		t.Fatalf("test precondition broken: label and IP names collide (%s)", nameA)
+	}
+
+	// The resolver drifts: it now resolves nothing.
+	r.off = true
+
+	if err := e.Release(v); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if len(w.deleted) != 1 {
+		t.Fatalf("want exactly one delete, got %v", w.deleted)
+	}
+	if w.deleted[0] != "default/"+nameA {
+		t.Fatalf("Release deleted the WRONG object under resolver drift: deleted %s, want the applied object default/%s (recompute-B would have been default/%s)", w.deleted[0], nameA, nameB)
+	}
+	if _, still := w.ensured["default/"+nameA]; still {
+		t.Fatal("applied object A still present after Release (stale-CNP leak)")
+	}
+}
+
 func keys(m map[string]*unstructured.Unstructured) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

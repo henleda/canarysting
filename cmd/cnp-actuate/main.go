@@ -18,6 +18,14 @@
 //	cnp-actuate -kubeconfig /etc/rancher/k3s/k3s.yaml \
 //	  -source-cidr 10.0.0.235 -target-ns default -target-labels app=srv \
 //	  -scope m7-window -action release
+//
+// Or drive the SAME tier->action->CNI seam the adapter uses via -tier (takes
+// precedence over -action): -tier 3 => drop CNP, -tier 2 => no CNP (L7 concern),
+// -tier 0 => release. This proves the wiring, not just the raw apply/release:
+//
+//	cnp-actuate ... -scope m7-window -tier 3   # writes the drop CNP
+//	cnp-actuate ... -scope m7-window -tier 2   # writes NO CNP (Tier-2 is L7)
+//	cnp-actuate ... -scope m7-window -tier 0   # releases
 package main
 
 import (
@@ -54,6 +62,7 @@ func run() error {
 		targetLabels = flag.String("target-labels", "", "target endpointSelector labels as k=v,k=v (e.g. app=srv)")
 		scope        = flag.String("scope", "", "CanarySting scope key stamped on the CNP")
 		action       = flag.String("action", "apply", "apply | release")
+		tier         = flag.Int("tier", 0, "engine tier to route through the SAME containment.ActionForTier seam the adapter uses; when >0 it takes precedence over -action (Tier-3 => drop CNP, Tier-2 => no CNP, Tier-0/1 => release)")
 	)
 	flag.Parse()
 
@@ -121,6 +130,48 @@ func run() error {
 		TargetLabels:    tl,
 	}
 	name := cnp.Name(params)
+
+	// Tier path (takes precedence when >0): route through the EXACT seam the adapter
+	// runs — a, ok := containment.ActionForTier(tier); if !ok Release else Apply(v,a).
+	// This proves, live, that Tier-3 -> drop CNP, Tier-2 -> no CNP (L7 concern), and
+	// Tier-0/1 -> release, all through the real enforcer.
+	if *tier > 0 {
+		vt := contract.Verdict{
+			Flow: contract.FlowIdentity{
+				SocketCookie: syntheticCookie(ip),
+				L7Attributes: map[string]string{contract.AttrSourceAddress: ip},
+			},
+			Scope: contract.ScopeKey(*scope),
+			Tier:  contract.Tier(*tier),
+			Mode:  contract.ModeAsync,
+		}
+		act, ok := containment.ActionForTier(vt.Tier)
+		if !ok {
+			fmt.Printf("SEAM tier=%d (below contain): enforcer.Release deleting CiliumNetworkPolicy %s/%s\n", *tier, *targetNS, name)
+			if err := enf.Release(vt); err != nil {
+				return err
+			}
+			fmt.Printf("OK: released %s/%s at %s (NotFound is treated as success)\n", *targetNS, name, time.Now().Format(time.RFC3339))
+			return nil
+		}
+		if act == containment.RateLimit {
+			// Finding #1: the CNI has no rate-limit primitive; Tier-2 throttling is an
+			// L7 concern (the tarpit). enforcer.Apply is a deliberate no-op here.
+			fmt.Printf("SEAM tier=%d -> rate-limit (L7 concern): enforcer.Apply writes NO CiliumNetworkPolicy\n", *tier)
+			if err := enf.Apply(vt, act); err != nil {
+				return err
+			}
+			fmt.Printf("OK: tier-2 routed; no CNP written at %s (verify: kubectl -n %s get ciliumnetworkpolicy %s => NotFound expected)\n", time.Now().Format(time.RFC3339), *targetNS, name)
+			return nil
+		}
+		fmt.Printf("SEAM tier=%d -> %s (drop): enforcer.Apply writing CiliumNetworkPolicy %s/%s (source %s/32 -> target %s)\n", *tier, act, *targetNS, name, ip, labelString(tl))
+		if err := enf.Apply(vt, act); err != nil {
+			return err
+		}
+		fmt.Printf("OK: applied %s/%s at %s\n", *targetNS, name, time.Now().Format(time.RFC3339))
+		fmt.Printf("verify: kubectl -n %s get ciliumnetworkpolicy %s -o yaml\n", *targetNS, name)
+		return nil
+	}
 
 	switch *action {
 	case "apply":

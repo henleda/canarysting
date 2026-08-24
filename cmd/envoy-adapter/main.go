@@ -281,6 +281,16 @@ func main() {
 		engineTLSCert = flag.String("engine-tls-cert", "", "client certificate (PEM) the adapter presents to the engine; requires -engine-tls-key and -engine-tls-ca")
 		engineTLSKey  = flag.String("engine-tls-key", "", "client private key (PEM)")
 		engineTLSCA   = flag.String("engine-tls-ca", "", "CA bundle (PEM) the engine's server certificate must chain to (enables mTLS dial)")
+
+		// Containment enforcer selection. The KERNEL eBPF enforcer is the DEFAULT (no
+		// flags => existing behavior). -cni-enforce swaps in the CiliumNetworkPolicy
+		// (CNI) enforcer instead: it writes a namespaced deny CNP for DROP-intent
+		// (Tier-3) verdicts, while Tier-2 velocity attrition stays an L7 concern (the
+		// tarpit) — the CNI does drops, L7 does throttling.
+		cniEnforce      = flag.Bool("cni-enforce", false, "use the CiliumNetworkPolicy (CNI) containment enforcer instead of the kernel eBPF enforcer (requires -cni-target-namespace and -cni-target-labels)")
+		kubeconfig      = flag.String("kubeconfig", "", "path to kubeconfig for the CNI enforcer; empty => in-cluster config (adapter-as-pod). Only used with -cni-enforce")
+		cniTargetNS     = flag.String("cni-target-namespace", "", "namespace of the decoy (target) workload the CNP protects; REQUIRED with -cni-enforce")
+		cniTargetLabels = flag.String("cni-target-labels", "", "target endpointSelector labels as k=v,k=v (e.g. app=srv); REQUIRED with -cni-enforce")
 	)
 	flag.Parse()
 	if *scopeFlag == "" {
@@ -371,9 +381,37 @@ func main() {
 	}
 	defer resolver.Close()
 
-	enf, err := newEnforcer()
-	if err != nil {
-		log.Fatalf("envoy-adapter: kernel enforcer: %v", err)
+	// Select the containment enforcer. The KERNEL eBPF enforcer is the DEFAULT so
+	// existing behavior/tests are untouched; -cni-enforce swaps in the
+	// CiliumNetworkPolicy enforcer. Everything downstream (enforceVerdictOrdered,
+	// defer enf.Close()) is identical — the whole point is the interface swap.
+	var enf enforcer
+	if *cniEnforce {
+		if *cniTargetNS == "" || *cniTargetLabels == "" {
+			log.Fatalf("envoy-adapter: -cni-enforce requires -cni-target-namespace and -cni-target-labels (a CNP must not select every pod)")
+		}
+		tl, perr := parseKVLabels(*cniTargetLabels)
+		if perr != nil {
+			log.Fatalf("envoy-adapter: -cni-target-labels: %v", perr)
+		}
+		if len(tl) == 0 {
+			log.Fatalf("envoy-adapter: -cni-target-labels must set at least one k=v (a CNP must not select every pod)")
+		}
+		enf, err = newCNIEnforcer(cniEnforcerConfig{
+			Kubeconfig:      *kubeconfig,
+			Scope:           *scopeFlag,
+			TargetNamespace: *cniTargetNS,
+			TargetLabels:    tl,
+		})
+		if err != nil {
+			log.Fatalf("envoy-adapter: CNI enforcer: %v", err)
+		}
+		log.Printf("envoy-adapter: CNI (CiliumNetworkPolicy) enforcer active: target ns=%s labels=%q (kernel eBPF enforcer bypassed; CNI does Tier-3 drops, L7 attrition does Tier-2 throttling)", *cniTargetNS, *cniTargetLabels)
+	} else {
+		enf, err = newEnforcer()
+		if err != nil {
+			log.Fatalf("envoy-adapter: kernel enforcer: %v", err)
+		}
 	}
 	defer enf.Close()
 
