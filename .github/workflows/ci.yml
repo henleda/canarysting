@@ -34,9 +34,14 @@ jobs:
       - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          # Keep this exact version aligned with package.json's bundled npm pin.
+          node-version: "24.19.0"
           cache: npm
           cache-dependency-path: dashboard/app/package-lock.json
+      - name: Verify frontend toolchain
+        run: |
+          test "$(node --version)" = "v24.19.0"
+          test "$(npm --version)" = "11.17.0"
       - name: Install locked dashboard dependencies
         working-directory: dashboard/app
         run: npm ci
