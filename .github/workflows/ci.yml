@@ -11,10 +11,37 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up pinned protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "35.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned protobuf generators
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+      - run: make generated-check
       - run: make fmt-check
       - run: make vet
       - run: make build
       - run: make test
+
+  frontend:
+    name: frontend (lint, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Node.js 24 LTS
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: dashboard/app/package-lock.json
+      - name: Install locked dashboard dependencies
+        working-directory: dashboard/app
+        run: npm ci
+      - name: Lint and build dashboard
+        run: make frontend-check
 
   ebpf:
     name: ebpf (clang build)
