@@ -70,10 +70,17 @@ jobs:
             n=$((n + 1))
           done
           echo "placed vmlinux.h ($(wc -l < "$RUNNER_TEMP/vmlinux.h") lines) into $n bpf source dir(s)"
-      # Compiles bpf/enforce/*.bpf.c to BPF objects. While the kernel C is a
-      # stub this is a toolchain smoke test; it does real work as enforce.bpf.c
-      # is implemented (see docs/STING.md, docs/TECHNICAL_ARCHITECTURE.md).
-      - run: make bpf
+      # Compile every checked-in CanarySting eBPF source through the normal target:
+      # enforce (containment), observe (baseline), and sockops (socket-cookie join).
+      # The object assertion makes omission from BPF_SRC a hard CI failure instead
+      # of silently trusting the committed bpf2go runtime objects.
+      - name: Compile all checked-in eBPF C sources
+        run: |
+          make bpf
+          for src in bpf/enforce/*.bpf.c bpf/observe/*.bpf.c bpf/sockops/*.bpf.c; do
+            obj="${src%.bpf.c}.bpf.o"
+            test -s "$obj" || { echo "missing compiled object for $src: $obj"; exit 1; }
+          done
 
   # B4: privileged job that actually RUNS the kernel datapath. The ebpf job above
   # only COMPILES the C; this job loads the committed *_bpfel.o objects into the

@@ -1,5 +1,5 @@
 # CanarySting — developer Makefile.
-# See docs/ROADMAP.md for the build plan and CLAUDE.md for the rules.
+# See docs/DEVELOPMENT_PLAN.md for the build plan and AGENTS.md for the rules.
 #
 # Pure-Go targets (build/vet/test/fmt/tidy/run-engine) work everywhere,
 # including this repo's macOS dev machines. The eBPF target (bpf) compiles the
@@ -11,10 +11,9 @@ CLANG     ?= clang
 BIN_DIR   := bin
 GOBIN     := $(abspath $(BIN_DIR))
 
-# eBPF sources -> objects. *.bpf.o is gitignored. Covers the enforcement path
-# (bpf/enforce) and the M7 OBSERVE-ONLY baseline path (bpf/observe); the observe
-# source lands in the on-box phase, the glob picks it up automatically.
-BPF_SRC   := $(wildcard bpf/enforce/*.bpf.c bpf/observe/*.bpf.c)
+# eBPF sources -> objects. *.bpf.o is gitignored. Source discovery is deliberately
+# narrow: enforcement, observe-only flow accounting, and the socket-cookie join.
+BPF_SRC   := $(wildcard bpf/enforce/*.bpf.c bpf/observe/*.bpf.c bpf/sockops/*.bpf.c)
 BPF_OBJ   := $(BPF_SRC:.bpf.c=.bpf.o)
 BPF_CFLAGS ?= -O2 -g -target bpf -Wall -Wno-unused-function
 
@@ -126,7 +125,7 @@ ifneq ($(UNAME_S),Linux)
 	@echo "bpf: (the engine, sting userspace, and tests are platform-independent; develop those here.)"
 else
 	@command -v $(CLANG) >/dev/null 2>&1 || { echo "bpf: clang not found — install clang/llvm + libbpf headers."; exit 1; }
-	@if [ -z "$(strip $(BPF_SRC))" ]; then echo "bpf: no bpf/enforce/*.bpf.c sources found."; exit 0; fi
+	@if [ -z "$(strip $(BPF_SRC))" ]; then echo "bpf: no eBPF sources found under bpf/{enforce,observe,sockops}."; exit 0; fi
 	@$(MAKE) $(BPF_OBJ)
 	@echo "bpf: built $(BPF_OBJ)"
 endif
