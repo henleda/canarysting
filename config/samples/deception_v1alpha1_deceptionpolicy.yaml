@@ -1,0 +1,16 @@
+apiVersion: deception.canarysting.io/v1alpha1
+kind: DeceptionPolicy
+metadata:
+  name: orders-decoys
+  namespace: default
+spec:
+  selector:
+    namespace: default
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: orders
+  decoys:
+    - type: fake_secret
+      count: 2
+    - type: planted_credential
+      count: 1
