@@ -12,7 +12,7 @@ Preferred flow:
 
 1. Select one task and validation tier from `docs/DEVELOPMENT_PLAN.md`.
 2. Edit and complete Tier A validation on the Mac.
-3. Cross-build Linux/ARM64 artifacts on the Mac.
+3. Cross-build only named Linux/ARM64 artifacts on the Mac with `scripts/dgx/build.sh`.
 4. Run `scripts/dgx/check.sh` before any remote mutation.
 5. Transfer only named artifacts to a run-specific directory beneath `/var/tmp/canarysting/`.
 6. Execute a repository script; collect logs and before/after state.
@@ -54,7 +54,8 @@ Facts above are observations, not permanent assumptions. Re-run `scripts/dgx/che
 The repository-owned entry points are:
 
 - `check.sh` — read-only host, cluster, Cilium, BPF, policy, and CanarySting inventory.
-- `build.sh` — future deterministic Mac Linux/ARM64 artifact build.
+- `build.sh` — deterministic, offline Mac Linux/ARM64 builds from an allowlisted target catalog. It requires an explicit destination outside the repository whose parent already exists, refuses to overwrite it, separates `product/` from `test/`, and writes `manifest.tsv` plus `SHA256SUMS` with source-state evidence. Here `product/` means a deployable-component artifact rather than a test diagnostic; it does not assert production maturity. Use `--list` to inspect the catalog; for example: `scripts/dgx/build.sh --output-dir /tmp/canarysting-build-m1b2 --target cookiespike`. The local Go toolchain and module cache must already satisfy the build; the script never downloads or installs them.
+- `build_test.sh` — focused local regression proof for the build harness. It verifies input refusals, product/test separation, ARM64 ELF output, manifest checksums, overwrite protection, and byte-identical repeated builds.
 - `copy.sh` — future checksum-verified transfer to an isolated staging directory.
 - `cookiespike.sh` — future observe-only socket-cookie correlation proof.
 - `enforcespike.sh` — future precise containment/Cilium coexistence proof.
@@ -62,7 +63,7 @@ The repository-owned entry points are:
 - `collect.sh` — future redacted log and before/after evidence collection.
 - `cleanup.sh` — future idempotent removal of explicitly owned run artifacts.
 
-Except for `check.sh`, these scripts are bootstrap scaffolds and currently fail closed. They must not grow ad hoc hidden state. Test resources and product deployments require separate labels, namespaces, directories, and cleanup paths.
+`copy.sh`, `cookiespike.sh`, `enforcespike.sh`, `deploy.sh`, `collect.sh`, and `cleanup.sh` remain bootstrap scaffolds and currently fail closed. They must not grow ad hoc hidden state. Test resources and product deployments require separate labels, namespaces, directories, and cleanup paths.
 
 ## Validation tiers
 
