@@ -131,6 +131,8 @@ jobs:
       # structured test results, not on human-readable log strings that could drift.
       # We run as root inside the privileged container.
       - name: Run kernel datapath tests
+        # Container jobs default to sh; this pipeline requires Bash's pipefail.
+        shell: bash
         run: |
           set -o pipefail
           go test -json -count=1 ./bpf/enforce/... ./bpf/observe/... ./bpf/sockops/... 2>&1 | tee /tmp/ebpf-test.json
