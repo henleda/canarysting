@@ -124,7 +124,11 @@ generate_proto() {
 
 generate_operator() {
 	local controller_version
-	if ! controller_version="$($go_bin tool controller-gen --version 2>&1)"; then
+	# Capture only controller-gen's stdout. On a clean Go module cache, `go tool`
+	# writes dependency-download progress to stderr before executing the pinned
+	# tool; folding that diagnostic stream into the version string makes a valid
+	# first CI run look like a version mismatch.
+	if ! controller_version="$($go_bin tool controller-gen --version)"; then
 		fail "controller-gen is unavailable; keep the go.mod tool directive at $CONTROLLER_GEN_VERSION and ensure module dependencies are available"
 	fi
 	require_version "controller-gen" "Version: $CONTROLLER_GEN_VERSION" "$controller_version" \
