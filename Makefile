@@ -8,17 +8,16 @@
 
 GO        ?= go
 CLANG     ?= clang
+NPM       ?= npm
 BIN_DIR   := bin
 GOBIN     := $(abspath $(BIN_DIR))
+DASHBOARD_DIR := dashboard/app
 
 # eBPF sources -> objects. *.bpf.o is gitignored. Source discovery is deliberately
 # narrow: enforcement, observe-only flow accounting, and the socket-cookie join.
 BPF_SRC   := $(wildcard bpf/enforce/*.bpf.c bpf/observe/*.bpf.c bpf/sockops/*.bpf.c)
 BPF_OBJ   := $(BPF_SRC:.bpf.c=.bpf.o)
 BPF_CFLAGS ?= -O2 -g -target bpf -Wall -Wno-unused-function
-
-# Protobuf (api/proto). Codegen lands under api/gen per the go_package option.
-PROTO_SRC := $(wildcard api/proto/*.proto)
 
 UNAME_S := $(shell uname -s)
 
@@ -102,20 +101,38 @@ selfcheck:
 	$(GO) run ./cmd/sting-selfcheck
 	$(GO) run ./cmd/envoy-selfcheck
 
-## check: the full local gate (fmt-check + vet + build + test + selfcheck)
-.PHONY: check
-check: fmt-check vet build test selfcheck
+## frontend-check: lint and build the dashboard from an existing lockfile install
+.PHONY: frontend-check
+frontend-check:
+	@command -v $(NPM) >/dev/null 2>&1 || { echo "frontend-check: npm not found — install Node.js/npm first."; exit 1; }
+	@test -f $(DASHBOARD_DIR)/package-lock.json || { echo "frontend-check: missing $(DASHBOARD_DIR)/package-lock.json."; exit 1; }
+	@test -d $(DASHBOARD_DIR)/node_modules || { echo "frontend-check: dependencies missing — run 'cd $(DASHBOARD_DIR) && npm ci' explicitly first."; exit 1; }
+	cd $(DASHBOARD_DIR) && NEXT_TELEMETRY_DISABLED=1 $(NPM) run lint
+	cd $(DASHBOARD_DIR) && NEXT_TELEMETRY_DISABLED=1 $(NPM) run build
 
-## proto: regenerate Go from api/proto (requires protoc + protoc-gen-go)
+## check: the full local gate (generated drift + frontend + fmt + vet + build + test + selfcheck)
+.PHONY: check
+check: generated-check frontend-check fmt-check vet build test selfcheck
+
+## proto: regenerate committed protobuf Go output with pinned tool versions
 .PHONY: proto
 proto:
-	@command -v protoc >/dev/null 2>&1 || { \
-		echo "protoc not found — install protobuf compiler + protoc-gen-go to regenerate."; \
-		echo "  (codegen is committed; you only need this when changing api/proto/*.proto)"; exit 1; }
-	@mkdir -p api/gen
-	protoc --go_out=. --go_opt=module=github.com/canarysting/canarysting \
-		--go-grpc_out=. --go-grpc_opt=module=github.com/canarysting/canarysting \
-		$(PROTO_SRC)
+	@./scripts/generated.sh write proto
+
+## operator-generate: regenerate committed Kubernetes deepcopy and CRD output
+.PHONY: operator-generate
+operator-generate:
+	@./scripts/generated.sh write operator
+
+## generated: regenerate all committed protobuf and Kubernetes output
+.PHONY: generated
+generated:
+	@./scripts/generated.sh write all
+
+## generated-check: fail when committed protobuf or Kubernetes output has drifted
+.PHONY: generated-check
+generated-check:
+	@./scripts/generated.sh check all
 
 ## bpf: compile the eBPF kernel programs with clang (real work on Linux only)
 .PHONY: bpf
