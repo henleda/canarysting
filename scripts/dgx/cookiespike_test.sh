@@ -32,10 +32,16 @@ awk '
 ' "${proof_script}" | bash -n || fail 'embedded remote proof program has invalid Bash syntax'
 
 awk '
-  /^sudo -n bash .*<<.ROOT./ { capture = 1; next }
+  /<<.ROOT./ { capture = 1; next }
   /^ROOT$/ { capture = 0 }
   capture { print }
 ' "${proof_script}" | bash -n || fail 'embedded privileged proof helper has invalid Bash syntax'
+
+awk '
+  /<<.SNAPSHOT./ { capture = 1; next }
+  /^SNAPSHOT$/ { capture = 0 }
+  capture { print }
+' "${proof_script}" | bash -n || fail 'embedded privileged snapshot cleanup helper has invalid Bash syntax'
 
 capture_definition="$(awk '
   /^bounded_capture\(\) \{$/ { capture = 1 }
@@ -49,6 +55,27 @@ cleanup_fixture() {
   rm -rf -- "${capture_fixture}"
 }
 trap cleanup_fixture EXIT
+
+snapshot_definition="$(awk '
+  /^prepare_verified_snapshot\(\) \{$/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${proof_script}")"
+[[ -n "${snapshot_definition}" ]] || fail 'verified privileged snapshot implementation is missing'
+snapshot_runner='proof_fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''timeout() { shift 3; "$@"; }'$'\n''cp() { [[ "$1" == --no-preserve=* && "$2" == "--" ]]; command cp -- "${test_source}" "$4"; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n''stat() { if [[ "$1" == "-Lc" && "$2" == "%F" ]]; then [[ -f "${test_source}" ]] && printf "regular file\n"; elif [[ "$1" == "-c" && "$2" == "%s" ]]; then wc -c <"$3" | tr -d " "; elif [[ "$1" == "-c" && "$2" == "%a" ]]; then command stat -f %Lp "$3"; else return 1; fi; }'$'\n'"${snapshot_definition}"$'\n''test_source="$1"; snapshot_artifact="$2/cookiespike"; snapshot_tmp="${snapshot_artifact}.tmp"; expected_size="$3"; expected_sha256="$4"; prepare_verified_snapshot "$1"'
+snapshot_source="${capture_fixture}/snapshot-source"
+snapshot_valid_dir="${capture_fixture}/snapshot-valid"
+snapshot_invalid_dir="${capture_fixture}/snapshot-invalid"
+printf 'verified artifact bytes\n' >"${snapshot_source}"
+mkdir -m 700 "${snapshot_valid_dir}" "${snapshot_invalid_dir}"
+snapshot_size="$(wc -c <"${snapshot_source}" | tr -d ' ')"
+snapshot_sha256="$(sha256sum "${snapshot_source}" | awk '{ print $1 }')"
+bash -c "${snapshot_runner}" -- "${snapshot_source}" "${snapshot_valid_dir}" "${snapshot_size}" "${snapshot_sha256}"
+[[ "$(sha256sum "${snapshot_valid_dir}/cookiespike" | awk '{ print $1 }')" == "${snapshot_sha256}" ]] ||
+  fail 'privileged snapshot changed verified artifact bytes'
+printf 'tampered artifact bytes\n' >"${snapshot_source}"
+expect_failure snapshot_checksum_mismatch 'privileged artifact snapshot checksum mismatch' \
+  bash -c "${snapshot_runner}" -- "${snapshot_source}" "${snapshot_invalid_dir}" "${snapshot_size}" "${snapshot_sha256}"
 
 printf 'bounded-output\n' | bash -c "${capture_runner}" -- \
   "${capture_fixture}/short.log" "${capture_fixture}/short.state"
@@ -206,6 +233,15 @@ grep -F 'require_no_quarantined_evidence "${evidence_quarantine}"' "${proof_scri
   fail 'proof inspection does not reject interrupted quarantine residue'
 grep -F 'evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")" ||' "${proof_script}" >/dev/null ||
   fail 'cleanup caller does not explicitly propagate command-substitution failure'
+grep -F '"${snapshot_artifact}" -cgroup "${cgroup}" -proof' "${proof_script}" >/dev/null ||
+  fail 'privileged helper does not execute the verified root-owned snapshot'
+if grep -F '"${artifact}" -cgroup "${cgroup}" -proof' "${proof_script}" >/dev/null; then
+  fail 'privileged helper still executes the mutable staged artifact path'
+fi
+grep -F 'privileged_snapshot_residue' "${proof_script}" >/dev/null ||
+  fail 'proof evidence does not record privileged snapshot cleanup'
+[[ "$(grep -Fc "privileged snapshot parent must be the root-owned mode-1777 /var/tmp directory" "${proof_script}")" == '2' ]] ||
+  fail 'privileged run and cleanup helpers do not both verify the sticky root-owned snapshot parent'
 
 output="$(${proof_script} --run-id m1c-local-test --dry-run)"
 [[ "${output}" == *'DGX was not accessed'* ]] || fail 'dry run did not stay local'
@@ -214,6 +250,8 @@ output="$(${proof_script} --run-id m1c-local-test --dry-run)"
   fail 'dry run reported the wrong evidence path'
 [[ "${output}" == *'remote_cgroup=/sys/fs/cgroup/canarysting-dgx/m1c-local-test'* ]] ||
   fail 'dry run reported the wrong child cgroup'
+[[ "${output}" == *'remote_privileged_snapshot=/var/tmp/canarysting-privileged/cookiespike-m1c-local-test'* ]] ||
+  fail 'dry run reported the wrong privileged snapshot path'
 [[ "${output}" == *$'attach_scope=run-owned-child-cgroup\n'* ]] || fail 'dry run omitted the minimal attach scope'
 [[ "${output}" == *$'traffic=loopback-only\n'* ]] || fail 'dry run omitted the bounded traffic contract'
 [[ "${output}" == *'enforcement=none'* ]] || fail 'dry run omitted the observe-only contract'
