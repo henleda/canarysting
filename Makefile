@@ -110,9 +110,19 @@ frontend-check:
 	cd $(DASHBOARD_DIR) && NEXT_TELEMETRY_DISABLED=1 $(NPM) run lint
 	cd $(DASHBOARD_DIR) && NEXT_TELEMETRY_DISABLED=1 $(NPM) run build
 
-## check: the full local gate (generated drift + frontend + fmt + vet + build + test + selfcheck)
+## dgx-harness-check: validate local-only DGX harness contracts and negative cases
+.PHONY: dgx-harness-check
+dgx-harness-check:
+	bash -n scripts/dgx/*.sh
+	scripts/dgx/build_test.sh
+	scripts/dgx/copy_test.sh
+	scripts/dgx/run_test.sh
+	scripts/dgx/collect_test.sh
+	scripts/dgx/cleanup_test.sh
+
+## check: the full local gate (generated + frontend + DGX harness + Go gates + selfcheck)
 .PHONY: check
-check: generated-check frontend-check fmt-check vet build test selfcheck
+check: generated-check frontend-check dgx-harness-check fmt-check vet build test selfcheck
 
 ## proto: regenerate committed protobuf Go output with pinned tool versions
 .PHONY: proto

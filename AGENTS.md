@@ -120,6 +120,8 @@ Monorepo. Top-level map (existing unless marked **partial** or **absent/planned*
 - Every task declares a validation tier before implementation; kernel, Kubernetes, Cilium, and identity changes require DGX validation.
 - A task is not complete until every acceptance criterion and required validation tier passes.
 - Update `docs/DEVELOPMENT_PLAN.md` whenever work changes project status.
+- Put repository changes through a pull request and wait for the GitHub Actions `ci` suite to be created and for every required job to pass before merging. A queued third-party check suite with zero check runs is not CI evidence. If the normal event is delayed or absent, use the manual `workflow_dispatch` trigger and record the resulting run URL rather than merging without a green run.
+- GitHub plan limitations currently prevent enforcing branch protection/rulesets on this private repository, so the green-PR rule above is a mandatory operating procedure until server-side enforcement is available. Keep automatic deletion of merged remote branches enabled and preserve unmerged prototypes through an issue or plan record before deleting a branch.
 
 ## Status
 
