@@ -117,6 +117,7 @@ dgx-harness-check:
 	scripts/dgx/build_test.sh
 	scripts/dgx/copy_test.sh
 	scripts/dgx/run_test.sh
+	scripts/dgx/cookiespike_test.sh
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh
 

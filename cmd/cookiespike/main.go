@@ -27,6 +27,7 @@
 //
 //	sudo /tmp/cookiespike -cgroup /sys/fs/cgroup
 //	sudo /tmp/cookiespike -cgroup /sys/fs/cgroup -resolve '10.42.0.6:12345->10.42.0.5:80'
+//	sudo /tmp/cookiespike -cgroup /sys/fs/cgroup/canarysting-run -proof
 package main
 
 import (
@@ -44,9 +45,11 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 
 	"github.com/canarysting/canarysting/adapters/envoy/identity"
 	"github.com/canarysting/canarysting/bpf/sockops"
+	"github.com/canarysting/canarysting/internal/contract"
 )
 
 // flowKey / flowVal are byte-for-byte copies of the bpf2go-generated
@@ -85,9 +88,13 @@ func main() {
 
 	cgroup := flag.String("cgroup", "/sys/fs/cgroup", "cgroup-v2 unified hierarchy path to attach the sockops program to")
 	interval := flag.Duration("interval", time.Second, "how often to dump the flow_cookies map")
+	proof := flag.Bool("proof", false, "run one bounded loopback socket-cookie join proof and exit with explicit PASS/FAIL")
 	var resolves stringList
 	flag.Var(&resolves, "resolve", "join assertion: 'SRCIP:SPORT->DSTIP:DPORT' — reconstruct the adapter's map key and report the cookie (repeatable)")
 	flag.Parse()
+	if *proof && len(resolves) != 0 {
+		log.Fatal("-proof cannot be combined with -resolve")
+	}
 
 	// Parse the -resolve tuples up front so bad input fails before we touch the kernel.
 	type probe struct {
@@ -109,6 +116,21 @@ func main() {
 	res, err := sockops.NewMapResolver(*cgroup)
 	if err != nil {
 		log.Fatalf("NewMapResolver(%q): %v\n(need root/CAP_BPF+CAP_NET_ADMIN, a cgroup-v2 unified hierarchy, and kernel >= 5.10)", *cgroup, err)
+	}
+	if *proof {
+		proofErr := runProof(res)
+		closeErr := res.Close()
+		switch {
+		case proofErr != nil:
+			fmt.Printf("RESULT FAIL diagnostic=%q\n", proofErr)
+			os.Exit(1)
+		case closeErr != nil:
+			fmt.Printf("RESULT FAIL diagnostic=%q\n", fmt.Errorf("detach sockops: %w", closeErr))
+			os.Exit(1)
+		default:
+			fmt.Println("RESULT PASS")
+			return
+		}
 	}
 	defer res.Close()
 	log.Printf("attached sockops to cgroup %s — capturing PASSIVE_ESTABLISHED (server accept-side) cookies", *cgroup)
@@ -143,6 +165,161 @@ func main() {
 			return
 		}
 	}
+}
+
+// runProof performs the bounded M1C integration proof without enforcement. It
+// creates one loopback TCP connection, reconstructs the server-side tuple exactly
+// as the Envoy adapter does, resolves it through the production staleness guard,
+// and compares the result with the accepted socket's independent SO_COOKIE oracle.
+// A deliberately absent tuple must remain a MISS, and closing both sockets must
+// remove the captured entry. The caller owns resolver teardown.
+func runProof(res *sockops.MapResolver) error {
+	guarded := identity.NewStaleGuard(res)
+	missing, ok := identity.TupleFromAddrs("192.0.2.10", 62001, "192.0.2.20", 62002)
+	if !ok {
+		return fmt.Errorf("construct missing-attribution fixture")
+	}
+	if got, hit := guarded.Resolve(missing); hit {
+		return fmt.Errorf("missing-attribution fixture unexpectedly resolved cookie %d", got.Cookie)
+	}
+	fmt.Println("PROOF missing_attribution=PASS result=MISS enforcement=refused")
+
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return fmt.Errorf("listen on bounded loopback fixture: %w", err)
+	}
+	defer listener.Close()
+
+	type acceptResult struct {
+		conn *net.TCPConn
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		conn, acceptErr := listener.AcceptTCP()
+		accepted <- acceptResult{conn: conn, err: acceptErr}
+	}()
+
+	client, err := net.DialTCP("tcp4", nil, listener.Addr().(*net.TCPAddr))
+	if err != nil {
+		return fmt.Errorf("dial bounded loopback fixture: %w", err)
+	}
+	defer client.Close()
+
+	var server *net.TCPConn
+	select {
+	case result := <-accepted:
+		if result.err != nil {
+			return fmt.Errorf("accept bounded loopback fixture: %w", result.err)
+		}
+		server = result.conn
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("accept bounded loopback fixture: timed out")
+	}
+	defer server.Close()
+
+	tuple, err := tupleFromServerConn(server)
+	if err != nil {
+		return err
+	}
+	wantCookie, err := socketCookie(server)
+	if err != nil {
+		return err
+	}
+	if wantCookie == 0 {
+		return fmt.Errorf("SO_COOKIE oracle returned zero")
+	}
+
+	var resolution identity.Resolution
+	resolved := false
+	for i := 0; i < 250; i++ {
+		if resolution, resolved = guarded.Resolve(tuple); resolved {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !resolved {
+		return fmt.Errorf("adapter tuple remained unattributable after bounded capture wait: %s", formatTuple(tuple))
+	}
+	if resolution.Cookie == 0 {
+		return fmt.Errorf("adapter tuple resolved a zero cookie")
+	}
+	if resolution.Cookie != wantCookie {
+		return fmt.Errorf("socket-cookie mismatch: resolver=%d SO_COOKIE=%d", resolution.Cookie, wantCookie)
+	}
+
+	flow := contract.FlowIdentity{
+		SocketCookie: resolution.Cookie,
+		CgroupID:     resolution.CgroupID,
+		PID:          resolution.PID,
+	}
+	if flow.SocketCookie == 0 {
+		return fmt.Errorf("resolved contract flow identity is unattributable")
+	}
+	fmt.Printf("PROOF tuple_direction=PASS semantics=remote-to-local tuple=%s\n", formatTuple(tuple))
+	fmt.Printf("PROOF flow_identity=PASS socket_cookie=%d oracle_cookie=%d resolver=envoy-stale-guard\n",
+		flow.SocketCookie, wantCookie)
+
+	if err := client.Close(); err != nil {
+		return fmt.Errorf("close loopback client: %w", err)
+	}
+	if err := server.Close(); err != nil {
+		return fmt.Errorf("close loopback server: %w", err)
+	}
+
+	deleted := false
+	for i := 0; i < 200; i++ {
+		if _, hit := res.Resolve(tuple); !hit {
+			deleted = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !deleted {
+		return fmt.Errorf("captured tuple remained after both sockets closed: %s", formatTuple(tuple))
+	}
+	fmt.Println("PROOF close_delete=PASS result=MISS")
+	return nil
+}
+
+func tupleFromServerConn(conn *net.TCPConn) (identity.FourTuple, error) {
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok || remote.Port < 1 || remote.Port > 65535 {
+		return identity.FourTuple{}, fmt.Errorf("invalid loopback remote address: %v", conn.RemoteAddr())
+	}
+	local, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok || local.Port < 1 || local.Port > 65535 {
+		return identity.FourTuple{}, fmt.Errorf("invalid loopback local address: %v", conn.LocalAddr())
+	}
+	tuple, ok := identity.TupleFromAddrs(remote.IP.String(), uint16(remote.Port), local.IP.String(), uint16(local.Port))
+	if !ok {
+		return identity.FourTuple{}, fmt.Errorf("build adapter tuple from %s -> %s", remote, local)
+	}
+	return tuple, nil
+}
+
+func socketCookie(conn *net.TCPConn) (uint64, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, fmt.Errorf("access accepted socket: %w", err)
+	}
+	var cookie uint64
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		cookie, socketErr = unix.GetsockoptUint64(int(fd), unix.SOL_SOCKET, unix.SO_COOKIE)
+	}); err != nil {
+		return 0, fmt.Errorf("control accepted socket: %w", err)
+	}
+	if socketErr != nil {
+		return 0, fmt.Errorf("read SO_COOKIE oracle: %w", socketErr)
+	}
+	return cookie, nil
+}
+
+func formatTuple(tuple identity.FourTuple) string {
+	return fmt.Sprintf("%s:%d->%s:%d",
+		ipString(tuple.Family, tuple.SrcIP), tuple.SrcPort,
+		ipString(tuple.Family, tuple.DstIP), tuple.DstPort)
 }
 
 // flowCookiesMap extracts the *ebpf.Map behind the (unexported) MapResolver.objs
