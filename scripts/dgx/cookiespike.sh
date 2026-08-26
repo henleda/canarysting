@@ -217,18 +217,19 @@ bounded_capture() {
 
 validate_evidence() {
   local require_complete="$1"
-  [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" ]] ||
-    fail "evidence must be an owned, non-symlink directory: ${evidence}"
+  local evidence_dir="${2:-${evidence}}"
+  [[ -d "${evidence_dir}" && ! -L "${evidence_dir}" && -O "${evidence_dir}" ]] ||
+    fail "evidence must be an owned, non-symlink directory: ${evidence_dir}"
   local path entry size actual_files expected_stdout_sha256 expected_stderr_sha256
   local expected_artifact_sha256 actual_stdout_bytes actual_stderr_bytes
-  for path in "${evidence}"/* "${evidence}"/.[!.]* "${evidence}"/..?*; do
+  for path in "${evidence_dir}"/* "${evidence_dir}"/.[!.]* "${evidence_dir}"/..?*; do
     [[ -e "${path}" || -L "${path}" ]] || continue
     [[ -f "${path}" && ! -L "${path}" ]] || fail "evidence contains a symlink or unsupported entry: ${path}"
     [[ -O "${path}" ]] || fail "evidence contains an entry not owned by the current user: ${path}"
     entry="${path##*/}"
     case "${entry}" in
       stdout.log|stderr.log|result.tsv|.result.tsv.tmp|.stdout.capture|.stderr.capture) ;;
-      *) fail "evidence contains an undeclared entry: ${evidence}/${entry}" ;;
+      *) fail "evidence contains an undeclared entry: ${evidence_dir}/${entry}" ;;
     esac
     if [[ "${require_complete}" == 'yes' ]]; then
       size="$(stat -c %s "${path}")"
@@ -237,18 +238,18 @@ validate_evidence() {
   done
 
   if [[ "${require_complete}" == 'yes' ]]; then
-    [[ -f "${evidence}/stdout.log" && -f "${evidence}/stderr.log" && -f "${evidence}/result.tsv" ]] ||
+    [[ -f "${evidence_dir}/stdout.log" && -f "${evidence_dir}/stderr.log" && -f "${evidence_dir}/result.tsv" ]] ||
       fail 'complete evidence must contain stdout.log, stderr.log, and result.tsv'
-    actual_files="$(find "${evidence}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+    actual_files="$(find "${evidence_dir}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
     [[ "${actual_files}" == $'result.tsv\nstderr.log\nstdout.log' ]] || fail 'complete evidence inventory is not exact'
-    [[ "$(stat -c %a "${evidence}")" == '700' ]] || fail 'complete evidence directory mode must be 0700'
+    [[ "$(stat -c %a "${evidence_dir}")" == '700' ]] || fail 'complete evidence directory mode must be 0700'
     for entry in stdout.log stderr.log result.tsv; do
-      [[ "$(stat -c %a "${evidence}/${entry}")" == '600' ]] || fail "complete evidence file mode must be 0600: ${entry}"
+      [[ "$(stat -c %a "${evidence_dir}/${entry}")" == '600' ]] || fail "complete evidence file mode must be 0600: ${entry}"
     done
     [[ -f "${artifact}" && ! -L "${artifact}" && -O "${artifact}" ]] || fail 'verified artifact is unavailable during evidence inspection'
     expected_artifact_sha256="$(sha256sum "${artifact}" | awk '{ print $1 }')"
-    actual_stdout_bytes="$(stat -c %s "${evidence}/stdout.log")"
-    actual_stderr_bytes="$(stat -c %s "${evidence}/stderr.log")"
+    actual_stdout_bytes="$(stat -c %s "${evidence_dir}/stdout.log")"
+    actual_stderr_bytes="$(stat -c %s "${evidence_dir}/stderr.log")"
     awk -F '\t' -v expected="${run_id}" -v expected_artifact="${artifact_relative}" \
       -v expected_artifact_sha256="${expected_artifact_sha256}" \
       -v actual_stdout_bytes="${actual_stdout_bytes}" -v actual_stderr_bytes="${actual_stderr_bytes}" '
@@ -296,18 +297,67 @@ validate_evidence() {
             length(before) != 64 || before ~ /[^0-9a-f]/ || after != before ||
             length(bpf_before) != 64 || bpf_before ~ /[^0-9a-f]/ || bpf_after != bpf_before) exit 1
       }
-    ' "${evidence}/result.tsv" || fail "evidence result is malformed, failed, or belongs to another run"
-    expected_stdout_sha256="$(awk -F '\t' '$1 == "stdout_sha256" { count++; value = $2 } END { if (count != 1) exit 1; print value }' "${evidence}/result.tsv")" ||
+    ' "${evidence_dir}/result.tsv" || fail "evidence result is malformed, failed, or belongs to another run"
+    expected_stdout_sha256="$(awk -F '\t' '$1 == "stdout_sha256" { count++; value = $2 } END { if (count != 1) exit 1; print value }' "${evidence_dir}/result.tsv")" ||
       fail 'evidence result must contain one stdout checksum'
-    expected_stderr_sha256="$(awk -F '\t' '$1 == "stderr_sha256" { count++; value = $2 } END { if (count != 1) exit 1; print value }' "${evidence}/result.tsv")" ||
+    expected_stderr_sha256="$(awk -F '\t' '$1 == "stderr_sha256" { count++; value = $2 } END { if (count != 1) exit 1; print value }' "${evidence_dir}/result.tsv")" ||
       fail 'evidence result must contain one stderr checksum'
     [[ "${expected_stdout_sha256}" =~ ^[0-9a-f]{64}$ && "${expected_stderr_sha256}" =~ ^[0-9a-f]{64}$ ]] ||
       fail 'evidence result contains a malformed log checksum'
-    [[ "$(sha256sum "${evidence}/stdout.log" | awk '{print $1}')" == "${expected_stdout_sha256}" ]] ||
+    [[ "$(sha256sum "${evidence_dir}/stdout.log" | awk '{print $1}')" == "${expected_stdout_sha256}" ]] ||
       fail 'stdout evidence checksum mismatch'
-    [[ "$(sha256sum "${evidence}/stderr.log" | awk '{print $1}')" == "${expected_stderr_sha256}" ]] ||
+    [[ "$(sha256sum "${evidence_dir}/stderr.log" | awk '{print $1}')" == "${expected_stderr_sha256}" ]] ||
       fail 'stderr evidence checksum mismatch'
   fi
+}
+
+cleanup_evidence() {
+  local root_dir="$1"
+  local evidence_name="$2"
+  local quarantine_name=".cleanup-${evidence_name}"
+  [[ "${evidence_name}" == "cookiespike-${run_id}" && "${evidence_name}" != */* ]] ||
+    fail 'cleanup evidence name is outside the fixed run scope'
+  [[ "${quarantine_name}" != */* ]] || fail 'cleanup quarantine name is unsafe'
+
+  if [[ ! -e "${root_dir}" && ! -L "${root_dir}" ]]; then
+    printf 'absent\n'
+    return
+  fi
+  [[ -d "${root_dir}" && ! -L "${root_dir}" && -O "${root_dir}" ]] ||
+    fail "cleanup root must be an owned, non-symlink directory: ${root_dir}"
+
+  (
+    cd -P -- "${root_dir}"
+    [[ "$(pwd -P)" == "${root_dir}" && ! -L "${root_dir}" && . -ef "${root_dir}" ]] ||
+      fail "cleanup root is not anchored at the fixed path: ${root_dir}"
+    [[ ! ( -e "${evidence_name}" || -L "${evidence_name}" ) ||
+      ! ( -e "${quarantine_name}" || -L "${quarantine_name}" ) ]] ||
+      fail 'both live and quarantined evidence exist; refusing ambiguous cleanup'
+
+    if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
+      validate_evidence no "${evidence_name}"
+      mv -T -- "${evidence_name}" "${quarantine_name}"
+    elif [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]]; then
+      printf 'absent\n'
+      return
+    fi
+
+    [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
+      fail 'quarantined evidence is not an owned, non-symlink directory'
+    (
+      cd -P -- "${quarantine_name}"
+      [[ ! -L "../${quarantine_name}" && . -ef "../${quarantine_name}" ]] ||
+        fail 'quarantined evidence changed before anchored cleanup'
+      validate_evidence no .
+      for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
+        [[ ! -e "${file}" && ! -L "${file}" ]] || rm -- "${file}"
+      done
+    )
+    [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
+      fail 'quarantined evidence changed after anchored cleanup'
+    rmdir -- "${quarantine_name}"
+    printf 'removed\n'
+  )
 }
 
 if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
@@ -329,8 +379,8 @@ if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
   fi
 
   evidence_state='absent'
-  if [[ -e "${evidence}" || -L "${evidence}" ]]; then
-    if [[ "${mode}" == 'inspect' ]]; then
+  if [[ "${mode}" == 'inspect' ]]; then
+    if [[ -e "${evidence}" || -L "${evidence}" ]]; then
       validate_evidence yes
       evidence_state='validated'
       awk -F '\t' '
@@ -346,18 +396,14 @@ if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
         }
       ' "${evidence}/result.tsv"
     else
-      # Cleanup is recoverable even when a prior run left oversized or malformed
-      # contents, after the exact directory, ownership, type, and file allowlist
-      # have been validated above.
-      validate_evidence no
-      for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
-        [[ ! -e "${evidence}/${file}" && ! -L "${evidence}/${file}" ]] || rm -- "${evidence}/${file}"
-      done
-      rmdir "${evidence}"
-      evidence_state='removed'
+      fail "evidence is absent: ${evidence}"
     fi
-  elif [[ "${mode}" == 'inspect' ]]; then
-    fail "evidence is absent: ${evidence}"
+  else
+    # Rename into a fixed run-scoped quarantine before the second validation,
+    # then delete only relative to anchored physical working directories. This
+    # keeps oversized/malformed recovery exact without following ancestor or
+    # leaf substitutions between validation and deletion.
+    evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")"
   fi
 
   if [[ "${mode}" == 'cleanup' ]] && sudo -n test -d "${cgroup_parent}"; then

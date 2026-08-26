@@ -65,11 +65,54 @@ validation_definition="$(awk '
   capture && /^}$/ { exit }
 ' "${proof_script}")"
 [[ -n "${validation_definition}" ]] || fail 'evidence validation implementation is missing'
-cleanup_evidence="${capture_fixture}/oversized-cleanup"
+cleanup_definition="$(awk '
+  /^cleanup_evidence\(\) \{$/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${proof_script}")"
+[[ -n "${cleanup_definition}" ]] || fail 'anchored evidence cleanup implementation is missing'
+cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n'"${validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; cleanup_evidence "$2" "cookiespike-${run_id}"'
+
+cleanup_root="${capture_fixture}/cleanup-root"
+mkdir -m 700 "${cleanup_root}"
+cleanup_root="$(cd -P "${cleanup_root}" && pwd -P)"
+cleanup_run_id='m1c-oversized-test'
+cleanup_evidence="${cleanup_root}/cookiespike-${cleanup_run_id}"
 mkdir -m 700 "${cleanup_evidence}"
 head -c 1048577 /dev/zero >"${cleanup_evidence}/stdout.log"
-bash -c 'fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n'"${validation_definition}"$'\n''evidence="$1"; validate_evidence no' -- \
-  "${cleanup_evidence}" || fail 'cleanup validation rejected exact owned evidence with an oversized legacy log'
+cleanup_state="$(bash -c "${cleanup_runner}" -- "${cleanup_run_id}" "${cleanup_root}")" ||
+  fail 'anchored cleanup rejected exact owned evidence with an oversized legacy log'
+[[ "${cleanup_state}" == 'removed' ]] || fail "oversized cleanup reported an unexpected state: ${cleanup_state}"
+[[ ! -e "${cleanup_evidence}" && ! -L "${cleanup_evidence}" ]] || fail 'oversized evidence remains after cleanup'
+
+redirect_target="${capture_fixture}/redirect-target"
+mkdir -m 700 "${redirect_target}"
+redirect_run_id='m1c-ancestor-test'
+redirect_evidence="${redirect_target}/cookiespike-${redirect_run_id}"
+mkdir -m 700 "${redirect_evidence}"
+head -c 1048577 /dev/zero >"${redirect_evidence}/stdout.log"
+redirect_root="${capture_fixture}/redirected-root"
+ln -s "${redirect_target}" "${redirect_root}"
+expect_failure ancestor_symlink 'cleanup root must be an owned, non-symlink directory' \
+  bash -c "${cleanup_runner}" -- "${redirect_run_id}" "${redirect_root}"
+[[ "$(wc -c <"${redirect_evidence}/stdout.log" | tr -d ' ')" == '1048577' ]] ||
+  fail 'ancestor-symlink refusal changed redirected evidence'
+
+leaf_root="${capture_fixture}/leaf-root"
+leaf_target="${capture_fixture}/leaf-target"
+mkdir -m 700 "${leaf_root}" "${leaf_target}"
+leaf_root="$(cd -P "${leaf_root}" && pwd -P)"
+leaf_run_id='m1c-leaf-test'
+head -c 1048577 /dev/zero >"${leaf_target}/stdout.log"
+ln -s "${leaf_target}" "${leaf_root}/cookiespike-${leaf_run_id}"
+expect_failure leaf_symlink 'evidence must be an owned, non-symlink directory' \
+  bash -c "${cleanup_runner}" -- "${leaf_run_id}" "${leaf_root}"
+[[ "$(wc -c <"${leaf_target}/stdout.log" | tr -d ' ')" == '1048577' ]] ||
+  fail 'leaf-symlink refusal changed redirected evidence'
+
+grep -F 'cd -P -- "${root_dir}"' "${proof_script}" >/dev/null || fail 'cleanup does not anchor the physical root directory'
+grep -F 'mv -T -- "${evidence_name}" "${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup quarantine rename may follow a substituted destination'
+grep -F '. -ef "../${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup does not bind deletion to the quarantined directory inode'
 
 output="$(${proof_script} --run-id m1c-local-test --dry-run)"
 [[ "${output}" == *'DGX was not accessed'* ]] || fail 'dry run did not stay local'
