@@ -139,18 +139,19 @@ mode="$2"
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
 [[ "$(hostname)" == 'spark-5343' ]] || fail "unexpected hostname: $(hostname)"
 [[ "$(uname -m)" == 'aarch64' ]] || fail "unexpected architecture: $(uname -m)"
-for tool in awk bash bpftool date env find grep head hostname id mkdir mv readlink rm rmdir sha256sum sleep sort stat sudo timeout uname wc; do
+for tool in awk bash bpftool date dd env find grep head hostname id mkdir mv readlink rm rmdir sha256sum sleep sort stat sudo timeout uname wc; do
   command -v "${tool}" >/dev/null 2>&1 || fail "missing remote prerequisite: ${tool}"
 done
 
 root='/var/tmp/canarysting'
 stage="${root}/${run_id}"
 evidence="${root}/cookiespike-${run_id}"
+evidence_quarantine="${root}/.cleanup-cookiespike-${run_id}"
 cgroup_parent='/sys/fs/cgroup/canarysting-dgx'
 cgroup="${cgroup_parent}/${run_id}"
 artifact_relative='test/cookiespike'
 artifact="${stage}/${artifact_relative}"
-readonly root stage evidence cgroup_parent cgroup artifact_relative artifact
+readonly root stage evidence evidence_quarantine cgroup_parent cgroup artifact_relative artifact
 
 process_state() {
   local artifact_path="$1"
@@ -201,10 +202,10 @@ bpf_object_ids() {
 bounded_capture() {
   local destination="$1"
   local state_file="$2"
-  local head_status=0 count_status=0 discarded=''
-  head -c 1048576 >"${destination}" || head_status=$?
+  local capture_status=0 count_status=0 discarded=''
+  dd bs=1048576 count=1 iflag=fullblock status=none >"${destination}" || capture_status=$?
   discarded="$(wc -c | awk '{ print $1 }')" || count_status=$?
-  if [[ "${head_status}" -ne 0 || "${count_status}" -ne 0 || ! "${discarded}" =~ ^[0-9]+$ ]]; then
+  if [[ "${capture_status}" -ne 0 || "${count_status}" -ne 0 || ! "${discarded}" =~ ^[0-9]+$ ]]; then
     printf 'error\n' >"${state_file}"
     return 1
   fi
@@ -311,6 +312,15 @@ validate_evidence() {
   fi
 }
 
+require_fresh_evidence_state() {
+  local live_path="$1"
+  local quarantine_path="$2"
+  [[ ! -e "${live_path}" && ! -L "${live_path}" ]] ||
+    fail "proof evidence already exists: ${live_path}"
+  [[ ! -e "${quarantine_path}" && ! -L "${quarantine_path}" ]] ||
+    fail "quarantined proof evidence already exists; run cleanup first: ${quarantine_path}"
+}
+
 cleanup_evidence() {
   local root_dir="$1"
   local evidence_name="$2"
@@ -327,36 +337,37 @@ cleanup_evidence() {
     fail "cleanup root must be an owned, non-symlink directory: ${root_dir}"
 
   (
-    cd -P -- "${root_dir}"
+    cd -P -- "${root_dir}" || fail "could not enter cleanup root: ${root_dir}"
     [[ "$(pwd -P)" == "${root_dir}" && ! -L "${root_dir}" && . -ef "${root_dir}" ]] ||
       fail "cleanup root is not anchored at the fixed path: ${root_dir}"
-    [[ ! ( -e "${evidence_name}" || -L "${evidence_name}" ) ||
-      ! ( -e "${quarantine_name}" || -L "${quarantine_name}" ) ]] ||
-      fail 'both live and quarantined evidence exist; refusing ambiguous cleanup'
+    local_removed='no'
+    while [[ -e "${evidence_name}" || -L "${evidence_name}" ||
+      -e "${quarantine_name}" || -L "${quarantine_name}" ]]; do
+      if [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]]; then
+        validate_evidence no "${evidence_name}"
+        mv -T -- "${evidence_name}" "${quarantine_name}" ||
+          fail 'could not quarantine exact evidence before cleanup'
+      fi
 
-    if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
-      validate_evidence no "${evidence_name}"
-      mv -T -- "${evidence_name}" "${quarantine_name}"
-    elif [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]]; then
-      printf 'absent\n'
-      return
-    fi
-
-    [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
-      fail 'quarantined evidence is not an owned, non-symlink directory'
-    (
-      cd -P -- "${quarantine_name}"
-      [[ ! -L "../${quarantine_name}" && . -ef "../${quarantine_name}" ]] ||
-        fail 'quarantined evidence changed before anchored cleanup'
-      validate_evidence no .
-      for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
-        [[ ! -e "${file}" && ! -L "${file}" ]] || rm -- "${file}"
-      done
-    )
-    [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
-      fail 'quarantined evidence changed after anchored cleanup'
-    rmdir -- "${quarantine_name}"
-    printf 'removed\n'
+      [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
+        fail 'quarantined evidence is not an owned, non-symlink directory'
+      (
+        cd -P -- "./${quarantine_name}" || fail 'could not enter quarantined evidence directory'
+        [[ ! -L "../${quarantine_name}" && . -ef "../${quarantine_name}" ]] ||
+          fail 'quarantined evidence changed before anchored cleanup'
+        validate_evidence no .
+        for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
+          if [[ -e "${file}" || -L "${file}" ]]; then
+            rm -- "${file}" || fail "could not remove allowlisted evidence file: ${file}"
+          fi
+        done
+      ) || fail 'anchored evidence-file cleanup failed'
+      [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] ||
+        fail 'quarantined evidence changed after anchored cleanup'
+      rmdir -- "${quarantine_name}" || fail 'could not remove empty quarantined evidence directory'
+      local_removed='yes'
+    done
+    [[ "${local_removed}" == 'yes' ]] && printf 'removed\n' || printf 'absent\n'
   )
 }
 
@@ -403,7 +414,8 @@ if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
     # then delete only relative to anchored physical working directories. This
     # keeps oversized/malformed recovery exact without following ancestor or
     # leaf substitutions between validation and deletion.
-    evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")"
+    evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")" ||
+      fail 'anchored evidence cleanup failed'
   fi
 
   if [[ "${mode}" == 'cleanup' ]] && sudo -n test -d "${cgroup_parent}"; then
@@ -419,7 +431,7 @@ fi
   fail "remote root must be an owned, writable, non-symlink directory: ${root}"
 [[ -d "${stage}" && ! -L "${stage}" && -O "${stage}" ]] ||
   fail "artifact stage must be an owned, non-symlink directory: ${stage}"
-[[ ! -e "${evidence}" && ! -L "${evidence}" ]] || fail "proof evidence already exists: ${evidence}"
+require_fresh_evidence_state "${evidence}" "${evidence_quarantine}"
 sudo -n test ! -e "${cgroup}" || fail "run-owned cgroup already exists: ${cgroup}"
 [[ "$(process_state "${artifact}")" == 'none' ]] || fail 'cookiespike process is already running'
 preexisting_bpf_state="$(canarysting_bpf_state)" || fail 'could not complete pre-proof program/map/link BPF inventory'

@@ -43,18 +43,19 @@ capture_definition="$(awk '
   capture && /^}$/ { exit }
 ' "${proof_script}")"
 [[ -n "${capture_definition}" ]] || fail 'bounded log-capture implementation is missing'
+capture_runner='dd() { command dd bs=1 count=1048576 2>/dev/null; }'$'\n'"${capture_definition}"$'\n''bounded_capture "$1" "$2"'
 capture_fixture="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-cookiespike-capture.XXXXXX")"
 cleanup_fixture() {
   rm -rf -- "${capture_fixture}"
 }
 trap cleanup_fixture EXIT
 
-printf 'bounded-output\n' | bash -c "${capture_definition}"$'\n''bounded_capture "$1" "$2"' -- \
+printf 'bounded-output\n' | bash -c "${capture_runner}" -- \
   "${capture_fixture}/short.log" "${capture_fixture}/short.state"
 [[ "$(<"${capture_fixture}/short.log")" == 'bounded-output' ]] || fail 'bounded capture changed short output'
 [[ "$(<"${capture_fixture}/short.state")" == 'complete' ]] || fail 'bounded capture did not mark short output complete'
 
-head -c 1048577 /dev/zero | bash -c "${capture_definition}"$'\n''bounded_capture "$1" "$2"' -- \
+head -c 1048577 /dev/zero | bash -c "${capture_runner}" -- \
   "${capture_fixture}/large.log" "${capture_fixture}/large.state"
 [[ "$(wc -c <"${capture_fixture}/large.log" | tr -d ' ')" == '1048576' ]] || fail 'bounded capture exceeded its 1 MiB file cap'
 [[ "$(<"${capture_fixture}/large.state")" == 'truncated' ]] || fail 'bounded capture did not report discarded output'
@@ -71,7 +72,15 @@ cleanup_definition="$(awk '
   capture && /^}$/ { exit }
 ' "${proof_script}")"
 [[ -n "${cleanup_definition}" ]] || fail 'anchored evidence cleanup implementation is missing'
-cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n'"${validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; cleanup_evidence "$2" "cookiespike-${run_id}"'
+cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n'"${validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; cleanup_result="$(cleanup_evidence "$2" "cookiespike-${run_id}")" || fail "anchored evidence cleanup failed"; printf "%s\n" "${cleanup_result}"'
+
+preflight_definition="$(awk '
+  /^require_fresh_evidence_state\(\) \{$/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${proof_script}")"
+[[ -n "${preflight_definition}" ]] || fail 'proof evidence preflight implementation is missing'
+preflight_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n'"${preflight_definition}"$'\n''require_fresh_evidence_state "$1" "$2"'
 
 cleanup_root="${capture_fixture}/cleanup-root"
 mkdir -m 700 "${cleanup_root}"
@@ -110,9 +119,66 @@ expect_failure leaf_symlink 'evidence must be an owned, non-symlink directory' \
 [[ "$(wc -c <"${leaf_target}/stdout.log" | tr -d ' ')" == '1048577' ]] ||
   fail 'leaf-symlink refusal changed redirected evidence'
 
+cdpath_root="${capture_fixture}/cdpath-root"
+cdpath_external="${capture_fixture}/cdpath-external"
+mkdir -m 700 "${cdpath_root}" "${cdpath_external}"
+cdpath_root="$(cd -P "${cdpath_root}" && pwd -P)"
+cdpath_run_id='m1c-cdpath-test'
+cdpath_quarantine=".cleanup-cookiespike-${cdpath_run_id}"
+mkdir -m 700 "${cdpath_root}/${cdpath_quarantine}" "${cdpath_external}/${cdpath_quarantine}"
+printf 'owned quarantine\n' >"${cdpath_root}/${cdpath_quarantine}/stdout.log"
+printf 'external sentinel\n' >"${cdpath_external}/${cdpath_quarantine}/stdout.log"
+cdpath_state="$(CDPATH="${cdpath_external}" bash -c "${cleanup_runner}" -- "${cdpath_run_id}" "${cdpath_root}")" ||
+  fail 'anchored cleanup failed with an inherited CDPATH'
+[[ "${cdpath_state}" == 'removed' ]] || fail "CDPATH cleanup reported an unexpected state: ${cdpath_state}"
+[[ ! -e "${cdpath_root}/${cdpath_quarantine}" ]] || fail 'CDPATH cleanup left the run-owned quarantine'
+[[ "$(<"${cdpath_external}/${cdpath_quarantine}/stdout.log")" == 'external sentinel' ]] ||
+  fail 'CDPATH cleanup changed the external same-named quarantine'
+
+dual_root="${capture_fixture}/dual-root"
+mkdir -m 700 "${dual_root}"
+dual_root="$(cd -P "${dual_root}" && pwd -P)"
+dual_run_id='m1c-dual-test'
+dual_evidence="${dual_root}/cookiespike-${dual_run_id}"
+dual_quarantine="${dual_root}/.cleanup-cookiespike-${dual_run_id}"
+mkdir -m 700 "${dual_evidence}" "${dual_quarantine}"
+printf 'live residue\n' >"${dual_evidence}/stdout.log"
+printf 'interrupted cleanup residue\n' >"${dual_quarantine}/stderr.log"
+dual_state="$(bash -c "${cleanup_runner}" -- "${dual_run_id}" "${dual_root}")" ||
+  fail 'cleanup could not recover coexisting exact live and quarantined evidence'
+[[ "${dual_state}" == 'removed' ]] || fail "dual-state cleanup reported an unexpected state: ${dual_state}"
+[[ ! -e "${dual_evidence}" && ! -e "${dual_quarantine}" ]] ||
+  fail 'cleanup left exact live or quarantined evidence after recovery'
+
+preflight_root="${capture_fixture}/preflight-root"
+mkdir -m 700 "${preflight_root}"
+preflight_live="${preflight_root}/cookiespike-m1c-preflight-test"
+preflight_quarantine="${preflight_root}/.cleanup-cookiespike-m1c-preflight-test"
+mkdir -m 700 "${preflight_quarantine}"
+expect_failure quarantine_preflight 'quarantined proof evidence already exists; run cleanup first' \
+  bash -c "${preflight_runner}" -- "${preflight_live}" "${preflight_quarantine}"
+
+failure_root="${capture_fixture}/failure-root"
+mkdir -m 700 "${failure_root}"
+failure_root="$(cd -P "${failure_root}" && pwd -P)"
+failure_run_id='m1c-failure-test'
+failure_quarantine="${failure_root}/.cleanup-cookiespike-${failure_run_id}"
+mkdir -m 700 "${failure_quarantine}"
+printf 'must remain after failed deletion\n' >"${failure_quarantine}/stdout.log"
+chmod 500 "${failure_quarantine}"
+expect_failure mutation_failure 'anchored evidence cleanup failed' \
+  bash -c "${cleanup_runner}" -- "${failure_run_id}" "${failure_root}"
+[[ -f "${failure_quarantine}/stdout.log" ]] || fail 'failed deletion removed or lost quarantined evidence'
+chmod 700 "${failure_quarantine}"
+
 grep -F 'cd -P -- "${root_dir}"' "${proof_script}" >/dev/null || fail 'cleanup does not anchor the physical root directory'
 grep -F 'mv -T -- "${evidence_name}" "${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup quarantine rename may follow a substituted destination'
+grep -F 'cd -P -- "./${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup quarantine entry may honor an inherited CDPATH'
 grep -F '. -ef "../${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup does not bind deletion to the quarantined directory inode'
+grep -F 'quarantined proof evidence already exists; run cleanup first' "${proof_script}" >/dev/null ||
+  fail 'proof preflight does not block a same-ID rerun while quarantine exists'
+grep -F 'evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")" ||' "${proof_script}" >/dev/null ||
+  fail 'cleanup caller does not explicitly propagate command-substitution failure'
 
 output="$(${proof_script} --run-id m1c-local-test --dry-run)"
 [[ "${output}" == *'DGX was not accessed'* ]] || fail 'dry run did not stay local'
