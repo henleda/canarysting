@@ -75,12 +75,14 @@ cleanup_definition="$(awk '
 cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n'"${validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; cleanup_result="$(cleanup_evidence "$2" "cookiespike-${run_id}")" || fail "anchored evidence cleanup failed"; printf "%s\n" "${cleanup_result}"'
 
 preflight_definition="$(awk '
-  /^require_fresh_evidence_state\(\) \{$/ { capture = 1 }
+  /^require_no_quarantined_evidence\(\) \{$/ { capture = 1 }
   capture { print }
-  capture && /^}$/ { exit }
+  /^require_fresh_evidence_state\(\) \{$/ { fresh = 1 }
+  capture && fresh && /^}$/ { exit }
 ' "${proof_script}")"
 [[ -n "${preflight_definition}" ]] || fail 'proof evidence preflight implementation is missing'
 preflight_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n'"${preflight_definition}"$'\n''require_fresh_evidence_state "$1" "$2"'
+quarantine_check_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n'"${preflight_definition}"$'\n''require_no_quarantined_evidence "$1"'
 
 cleanup_root="${capture_fixture}/cleanup-root"
 mkdir -m 700 "${cleanup_root}"
@@ -135,6 +137,25 @@ cdpath_state="$(CDPATH="${cdpath_external}" bash -c "${cleanup_runner}" -- "${cd
 [[ "$(<"${cdpath_external}/${cdpath_quarantine}/stdout.log")" == 'external sentinel' ]] ||
   fail 'CDPATH cleanup changed the external same-named quarantine'
 
+swap_root="${capture_fixture}/swap-root"
+swap_external="${capture_fixture}/swap-external"
+mkdir -m 700 "${swap_root}" "${swap_external}"
+swap_root="$(cd -P "${swap_root}" && pwd -P)"
+swap_external="$(cd -P "${swap_external}" && pwd -P)"
+swap_run_id='m1c-swap-test'
+swap_quarantine=".cleanup-cookiespike-${swap_run_id}"
+mkdir -m 700 "${swap_root}/${swap_quarantine}"
+printf 'run-owned sentinel\n' >"${swap_root}/${swap_quarantine}/stdout.log"
+printf 'external sentinel\n' >"${swap_external}/stdout.log"
+swap_cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'$'\n''cd() { if [[ "$*" == *"./${SWAP_NAME}"* ]]; then command mv -- "${SWAP_ROOT}/${SWAP_NAME}" "${SWAP_ROOT}/${SWAP_NAME}.saved"; command ln -s "${SWAP_EXTERNAL}" "${SWAP_ROOT}/${SWAP_NAME}"; fi; builtin cd "$@"; }'$'\n'"${validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; cleanup_result="$(cleanup_evidence "$2" "cookiespike-${run_id}")" || fail "anchored evidence cleanup failed"; printf "%s\n" "${cleanup_result}"'
+expect_failure quarantine_swap 'quarantined evidence resolved outside the fixed cleanup root' \
+  env SWAP_ROOT="${swap_root}" SWAP_EXTERNAL="${swap_external}" SWAP_NAME="${swap_quarantine}" \
+  bash -c "${swap_cleanup_runner}" -- "${swap_run_id}" "${swap_root}"
+[[ "$(<"${swap_external}/stdout.log")" == 'external sentinel' ]] ||
+  fail 'quarantine-swap refusal changed external evidence'
+[[ "$(<"${swap_root}/${swap_quarantine}.saved/stdout.log")" == 'run-owned sentinel' ]] ||
+  fail 'quarantine-swap refusal changed run-owned evidence'
+
 dual_root="${capture_fixture}/dual-root"
 mkdir -m 700 "${dual_root}"
 dual_root="$(cd -P "${dual_root}" && pwd -P)"
@@ -157,6 +178,8 @@ preflight_quarantine="${preflight_root}/.cleanup-cookiespike-m1c-preflight-test"
 mkdir -m 700 "${preflight_quarantine}"
 expect_failure quarantine_preflight 'quarantined proof evidence already exists; run cleanup first' \
   bash -c "${preflight_runner}" -- "${preflight_live}" "${preflight_quarantine}"
+expect_failure quarantine_inspect 'quarantined proof evidence already exists; run cleanup first' \
+  bash -c "${quarantine_check_runner}" -- "${preflight_quarantine}"
 
 failure_root="${capture_fixture}/failure-root"
 mkdir -m 700 "${failure_root}"
@@ -174,9 +197,13 @@ chmod 700 "${failure_quarantine}"
 grep -F 'cd -P -- "${root_dir}"' "${proof_script}" >/dev/null || fail 'cleanup does not anchor the physical root directory'
 grep -F 'mv -T -- "${evidence_name}" "${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup quarantine rename may follow a substituted destination'
 grep -F 'cd -P -- "./${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup quarantine entry may honor an inherited CDPATH'
-grep -F '. -ef "../${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup does not bind deletion to the quarantined directory inode'
+grep -F '"$(pwd -P)" == "${root_dir}/${quarantine_name}"' "${proof_script}" >/dev/null ||
+  fail 'cleanup does not bind the working directory to the fixed quarantine path'
+grep -F '. -ef "${root_dir}/${quarantine_name}"' "${proof_script}" >/dev/null || fail 'cleanup does not bind deletion to the quarantined directory inode'
 grep -F 'quarantined proof evidence already exists; run cleanup first' "${proof_script}" >/dev/null ||
   fail 'proof preflight does not block a same-ID rerun while quarantine exists'
+grep -F 'require_no_quarantined_evidence "${evidence_quarantine}"' "${proof_script}" >/dev/null ||
+  fail 'proof inspection does not reject interrupted quarantine residue'
 grep -F 'evidence_state="$(cleanup_evidence "${root}" "cookiespike-${run_id}")" ||' "${proof_script}" >/dev/null ||
   fail 'cleanup caller does not explicitly propagate command-substitution failure'
 

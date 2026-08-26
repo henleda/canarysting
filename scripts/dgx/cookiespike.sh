@@ -312,13 +312,18 @@ validate_evidence() {
   fi
 }
 
+require_no_quarantined_evidence() {
+  local quarantine_path="$1"
+  [[ ! -e "${quarantine_path}" && ! -L "${quarantine_path}" ]] ||
+    fail "quarantined proof evidence already exists; run cleanup first: ${quarantine_path}"
+}
+
 require_fresh_evidence_state() {
   local live_path="$1"
   local quarantine_path="$2"
   [[ ! -e "${live_path}" && ! -L "${live_path}" ]] ||
     fail "proof evidence already exists: ${live_path}"
-  [[ ! -e "${quarantine_path}" && ! -L "${quarantine_path}" ]] ||
-    fail "quarantined proof evidence already exists; run cleanup first: ${quarantine_path}"
+  require_no_quarantined_evidence "${quarantine_path}"
 }
 
 cleanup_evidence() {
@@ -353,7 +358,9 @@ cleanup_evidence() {
         fail 'quarantined evidence is not an owned, non-symlink directory'
       (
         cd -P -- "./${quarantine_name}" || fail 'could not enter quarantined evidence directory'
-        [[ ! -L "../${quarantine_name}" && . -ef "../${quarantine_name}" ]] ||
+        [[ "$(pwd -P)" == "${root_dir}/${quarantine_name}" ]] ||
+          fail 'quarantined evidence resolved outside the fixed cleanup root'
+        [[ ! -L "${root_dir}/${quarantine_name}" && . -ef "${root_dir}/${quarantine_name}" ]] ||
           fail 'quarantined evidence changed before anchored cleanup'
         validate_evidence no .
         for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
@@ -391,6 +398,7 @@ if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
 
   evidence_state='absent'
   if [[ "${mode}" == 'inspect' ]]; then
+    require_no_quarantined_evidence "${evidence_quarantine}"
     if [[ -e "${evidence}" || -L "${evidence}" ]]; then
       validate_evidence yes
       evidence_state='validated'
