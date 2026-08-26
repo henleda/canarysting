@@ -1,40 +1,81 @@
 ---
 name: canarysting-dev
-description: Execute one plan-driven CanarySting task for requests to continue, keep developing, resume, work on the next task, Kubernetes milestone, DGX integration, or current CanarySting task.
+description: Execute one plan-driven CanaryPlatform task across CanaryView, CanarySting, CanaryAttacker, shared platform, or development infrastructure for requests to continue, resume, take the next task, or work on Kubernetes/DGX integration.
 ---
 
-# CanarySting Development
+# CanaryPlatform Development
 
-Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly one coherent CanarySting development task. `AGENTS.md` remains authoritative for architecture and safety.
+Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly one coherent task. `AGENTS.md` remains authoritative for coding, architecture, and safety invariants.
 
 ## Orient and select
 
-1. Read the repository `AGENTS.md` fully.
-2. Read `docs/DEVELOPMENT_PLAN.md` fully.
-3. Read `docs/DEVELOPMENT_ENVIRONMENT.md` when work involves environment, Kubernetes, Cilium, kernel, eBPF, deployment, identity, or the DGX.
+1. Read `AGENTS.md` and `docs/DEVELOPMENT_PLAN.md` fully.
+2. Read `docs/DEVELOPMENT_ENVIRONMENT.md` for environment, Kubernetes, Cilium, kernel, eBPF, deployment, identity, DGX, attacker, or correlation work.
+3. Read the applicable product architecture:
+   - CanaryPlatform/CanaryView/shared model: `docs/CANARY_PLATFORM_ARCHITECTURE.md` and `docs/CANARYVIEW_DATA_MODEL.md`.
+   - Persistence, evidence lifecycle, graph history, cases, retention, or model work: `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`.
+   - CanarySting: `docs/ARCHITECTURE.md` plus the layer guidance required by `AGENTS.md`.
+   - CanaryAttacker: `docs/CANARYATTACKER_ARCHITECTURE.md`.
+   - Any operator-facing task: `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md`.
 4. Inspect `git status` and relevant diffs. Treat all uncommitted and untracked work as user-owned; never overwrite, discard, reset, clean, stash, or silently reformat it.
 5. If one task is `IN_PROGRESS`, resume it. Otherwise select the first `TODO` task in document order whose dependencies are all `DONE`. Do not start a second task while another is `IN_PROGRESS`.
-6. Determine the task's validation tier before editing and record the selected task and tier in the plan.
+6. Classify and record the selected task before editing:
+   - **PRODUCT AREA:** `CanaryView`, `CanarySting`, `CanaryAttacker`, `Shared platform`, or `Development infrastructure`.
+   - **VALIDATION TIER:** `local`, `DGX integration`, `DGX Kubernetes end-to-end`, or `DGX attacker/correlation`.
 7. Inspect the relevant architecture, implementation, tests, and `internal/contract/` when cross-layer behavior is involved.
-8. Before editing, state the objective, acceptance criteria, expected files, validation tier, whether DGX participation is required, and safety considerations. Then mark only that task `IN_PROGRESS`.
+8. Before editing, state the objective, acceptance criteria, expected files, product area, validation tier, DGX requirement, safety considerations, and—when operator-facing—the operator job, interaction path, and expected click count. Then mark only that task `IN_PROGRESS`.
+
+## Product-area rules
+
+### CanaryView
+
+- Preserve scope isolation, provenance, explicit confidence, and immutable source observations.
+- Keep vendor-specific details as evidence without making them canonical requirements.
+- Retain raw-event references; distinguish source observation, correlation, inference, model interpretation, recommendation, and action.
+- Reuse the existing observation path and models where appropriate; do not create a parallel source of truth.
+- Keep recommendations advisory and never auto-enforce them.
+
+### Persistent data
+
+- Before creating or changing persistent data, identify its data class, sensitivity, retention profile, `expires_at` behavior, legal-hold behavior, deletion propagation or derived-data invalidation, residency, encryption/key boundary, model-use permission, derivation lineage, and estimated storage impact.
+- Preserve source and collector-observed timestamps. Keep raw-event references and integrity hashes when available; do not copy full vendor payloads by default.
+- Do not retain secrets, actual canary secret values, request bodies, or sensitive payloads by default. Diagnostic retention must be redacted, bounded, authorized, and visibly expiring.
+- Keep operational retention permission separate from model-use authorization. Do not enable cross-tenant learning without explicit opt-in, de-identification, cohort, regional, provenance, purpose, and deletion controls.
+- Keep synthetic attacker evidence isolated from production baselines and customer models.
+- Do not mark a persistence task `DONE` until lifecycle and deletion behavior are documented and deterministically tested.
+
+### CanarySting
+
+- Preserve canary-touch-only punitive triggering, engine-side scope authority, bounded response, and precise socket-cookie containment.
+- Consume CanaryView opportunities conservatively and only through reviewed contracts and approval.
+- Publish placement, touch, verdict, response, containment, and outcome back to CanaryView as provenance-bearing evidence.
+
+### CanaryAttacker
+
+- Constrain execution to designated lab targets and reviewed bounded tools. Never expose arbitrary host shell or unrestricted network/control-plane access to the model.
+- Emit `AttackerIntent` before and `AttackerAction` after execution; attacker/model output is ground truth about the harness, not trusted telemetry.
+- Enforce budgets outside the model, clean run-owned state, and preserve reproducible scenario IDs/evidence.
+
+### Operator-facing work
+
+- Identify the operator job and keep explanation beside evidence, recommendation beside explanation, and preview/rollback visible.
+- Lead with application, identity, flow, risk, and action; expose raw implementation identifiers only through progressive disclosure.
+- Core paths require no query, YAML, JSON, CLI, or prompt.
+- Add frontend validation appropriate to the workflow and fixture-driven Playwright tests for critical paths.
+- Do not mark the task `DONE` until its operator workflow and interaction budget pass.
 
 ## Implement and validate
 
-- Make the smallest implementation that satisfies the selected task. Preserve every architectural and security invariant in `AGENTS.md`.
-- Add or update deterministic tests for changed behavior. Run focused validation first, then the broader gates appropriate to the task.
-- Never bypass, skip, or weaken a failing gate. Never weaken security behavior to make a test pass.
-- Do not install dependencies without approval. Do not commit or push unless explicitly requested.
-- For Tier B or C, complete Tier A first and then run the required DGX validation. Never mark kernel/Kubernetes/Cilium/identity work done from local evidence alone.
-- Do not access or modify the DGX unless the selected task requires it. Before remote mutation run `scripts/dgx/check.sh`, inspect local status, state the exact change and cleanup, and confirm it fits the task.
-- Reuse repository DGX scripts once a deterministic path exists. Treat unexpected Kubernetes, Cilium, BPF, or host state as a reason to inspect and report, not to repair unrelated infrastructure.
-- Preserve full cleanup evidence for privileged tests. Never replace Cilium attachments or silently alter K3s, Cilium, firewall, SSH, kernel, or host packages.
+- Make the smallest coherent change that satisfies the task. Add or update deterministic tests; run focused validation first, then all broader gates required by the selected tier.
+- Never bypass, skip, or weaken a failing gate or security invariant. Do not install dependencies without approval. Do not commit or push unless explicitly requested.
+- For DGX work, complete local gates first. Before mutation run `scripts/dgx/check.sh`, inspect local status, state exact remote changes and cleanup, and confirm scope. Reuse repository scripts instead of ad hoc SSH once a deterministic path exists.
+- Treat unexpected Kubernetes, Cilium, BPF, or host state as a reason to inspect and report, not repair unrelated infrastructure. Never replace Cilium attachments or implicitly alter K3s, Cilium, firewall, SSH, kernel, or host packages.
+- For DGX correlation: gather before-state; execute the scenario; gather independent observations; correlate; compare with ground truth; clean up; gather after-state; report trace completeness, join/identity accuracy, missing/conflicting evidence, time alignment, and cleanup.
+- Preserve full cleanup evidence for privileged tests. Never mark kernel/Kubernetes/Cilium/identity/attacker-correlation work complete from local evidence alone.
 
 ## Record the outcome
 
-- At completion, update `docs/DEVELOPMENT_PLAN.md` with status, validation results, completion evidence, and newly identified follow-up work.
-- Record the implementation summary as well as the exact validation results; update architecture documentation only when architecture or intended behavior changes.
-- Mark the task `DONE` only when every acceptance criterion is satisfied and every required validation gate passes.
-- Never mark a task `DONE` merely because its code was written.
-- Mark the task `BLOCKED` when completion depends on something unavailable; record the exact blocker, attempted safe checks, and what would unblock it.
-- If work remains locally incomplete but is not externally blocked, leave the task `IN_PROGRESS` and record the remaining work and latest validation results.
+- Update `docs/DEVELOPMENT_PLAN.md` with status, product area, validation results, implementation summary, completion evidence, and discovered follow-up work. Update architecture docs only when architecture or intended behavior changes.
+- Mark `DONE` only when every acceptance criterion, required validation tier, cleanup proof, and applicable operator interaction budget passes—not merely because code was written.
+- Mark `BLOCKED` only when completion depends on something unavailable; record the exact blocker, safe checks attempted, and unblock condition. Otherwise keep incomplete work `IN_PROGRESS` with remaining work and latest results.
 - Stop after completing one coherent task unless the user explicitly instructs you to continue.

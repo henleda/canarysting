@@ -6,7 +6,9 @@ This document defines the supported development split between the Mac workstatio
 
 The Mac is the canonical source and build environment. Source editing, Go development, unit tests, static analysis, generated-code checks, cross-compilation, CI-equivalent checks, and Git operations happen here. Do not make the DGX the canonical checkout and do not edit source on it unless the user explicitly requests that exception.
 
-The DGX Spark is the canonical Linux ARM64 integration environment. It is used for K3s, Cilium coexistence, Envoy integration, eBPF load/attach, socket-cookie and cgroup behavior, kernel enforcement, workload identity, NetworkPolicy, operator/DaemonSet deployment, and end-to-end validation.
+The DGX Spark is the canonical Linux ARM64 integration environment. It is used for K3s, Cilium coexistence, Envoy integration, eBPF load/attach, socket-cookie and cgroup behavior, kernel enforcement, workload identity, NetworkPolicy, operator/DaemonSet deployment, and end-to-end validation. It is also CanaryPlatform's initial correlation laboratory: CanaryView will compare observations from the local Kubernetes/Cilium/Hubble/Envoy/kernel/CanarySting stack against controlled CanaryAttacker ground truth there. Synthetic lab evidence remains execution output governed by `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; it is not canonical source and must remain isolated from production baselines and customer models.
+
+The build/execution boundary is deliberate. The Mac owns source, builds, tests, manifests, and Git history. The DGX executes checksum-identified ARM64 artifacts and declarative lab fixtures from repository scripts. Do not create a canonical source checkout or edit source directly on the DGX; a remote staging directory is an execution input, not a development workspace.
 
 Preferred flow:
 
@@ -44,6 +46,7 @@ Read-only verification on 2026-08-24 found:
 - kernel support for `sock_ops` and `cgroup_skb`.
 - root cgroup attachments were Cilium-owned multi-attach programs; no CanarySting attachment was observed.
 - Docker, `bpftool`, K3s, kubectl, Cilium CLI, and Ollama were present. Go and Clang were absent.
+- The local Ollama model `qwen3-coder:30b-a3b-q8_0` was observed in an earlier environment review. Its current presence, version, loopback binding, and readiness were not re-verified by this architecture bootstrap and must be checked read-only before a future CanaryAttacker task depends on it.
 - no CanarySting Kubernetes resources, matching test pods, NetworkPolicies, CiliumNetworkPolicies, process, or named BPF program/map was found.
 - an earlier interrupted validation left `/tmp/canarysting-m15.Nq0THn` and the Docker image `ubuntu:24.04`. These are historical test artifacts, not a source checkout or product deployment; remove them only through an explicitly authorized cleanup task.
 
@@ -60,13 +63,14 @@ The repository-owned entry points are:
 - `copy_test.sh` — focused local negative coverage for transfer inputs, including corrupt or missing artifacts, unexpected files, symlinks, unsafe manifest paths, malformed inventories, and invalid run IDs.
 - `run.sh` — deterministic execution of one fixed profile from a verified immutable artifact stage. It accepts no arbitrary command, argument, timeout, path, or privilege. The initial `engine-selfcheck` and `engine-timeout-probe` profiles are unprivileged, in-memory, listener-free, database-free, and BPF-free. Each profile has a hardcoded timeout and expected outcome. Bounded logs plus an atomic `result.tsv` are written to the explicit sibling `/var/tmp/canarysting/execution-<run-id>` directory; an existing evidence directory is never overwritten, and the script verifies no artifact process remains.
 - `run_test.sh` — focused local coverage for the execution profile catalog, dry-run contract, input validation, and arbitrary-command/argument/privilege refusals.
+- `cleanup.sh` — exact-run, idempotent cleanup for the generic M1B harness. A required strict run ID resolves only `/var/tmp/canarysting/.incoming-<run-id>`, `/var/tmp/canarysting/<run-id>`, and `/var/tmp/canarysting/execution-<run-id>`. Before removing any candidate, the remote half verifies the expected host/architecture, root and entry ownership, non-symlink types, fixed artifact/evidence schemas, published-stage checksums, evidence run identity, and absence of a process executing from the stage. `--inspect` validates remotely without mutation; `--dry-run` does not access the DGX. A normal cleanup proves each exact path absent and runs the full read-only DGX checker afterward. Repeating it against absent state is a successful no-op.
+- `cleanup_test.sh` — focused local coverage for exact path derivation, excluded state, strict run IDs, mutually exclusive modes, and refusal of arbitrary paths, broad cleanup, historical cleanup, or privilege escalation.
 - `cookiespike.sh` — future observe-only socket-cookie correlation proof.
 - `enforcespike.sh` — future precise containment/Cilium coexistence proof.
 - `deploy.sh` — future declarative product deployment, distinct from test fixtures.
 - `collect.sh` — future redacted log and before/after evidence collection.
-- `cleanup.sh` — future idempotent removal of explicitly owned run artifacts.
 
-`cookiespike.sh`, `enforcespike.sh`, `deploy.sh`, `collect.sh`, and `cleanup.sh` remain bootstrap scaffolds and currently fail closed. They must not grow ad hoc hidden state. Test resources and product deployments require separate labels, namespaces, directories, and cleanup paths. `run.sh` retains its named evidence directory for M1B.5 collection; until M1B.6 implements generalized cleanup, validation must remove only the exact stage and evidence paths it created and prove their absence.
+`cookiespike.sh`, `enforcespike.sh`, and `deploy.sh` remain bootstrap scaffolds and currently fail closed. The user-provided project baseline records M1B.5 collection as completed, but this checkout still contains the fail-closed `collect.sh` scaffold and lacks its detailed implementation evidence. This architecture task did not replay or alter that work; reconcile the authoritative implementation/history before a future collection-dependent run. The generic cleanup intentionally excludes Kubernetes resources, BPF objects and attachments, containers and images, system configuration, product deployments, and historical artifacts. Those require separate ownership labels/manifests and narrowly scoped cleanup in their responsible M1C, M1D, deployment, or explicitly authorized maintenance workflow.
 
 ## Validation tiers
 
@@ -81,6 +85,16 @@ Required for `bpf/`, socket cookies, cgroups, kernel enforcement, Cilium interac
 ### Tier C: local plus DGX Kubernetes end-to-end
 
 Required for identity, Kubernetes ingestion, the operator, CRDs/manifests, DeceptionPolicy reconciliation, workload scope mapping, policy ingestion, Kubernetes-derived graphs, complete request-to-verdict behavior, and Kubernetes enforcement. Tier A and relevant Tier B primitives must pass before the DGX K3s end-to-end test.
+
+### Tier D: DGX attacker/correlation
+
+Required for CanaryAttacker scenarios, Ollama/Qwen execution, ground-truth emission, and correlation-quality claims. Tier A and any relevant Tier B/C primitives must pass first. A Tier D run gathers before-state, emits intent, executes only bounded allowlisted tools, gathers independent observations, correlates them against ground truth, calculates declared metrics, cleans run-owned state, and gathers after-state.
+
+## CanaryAttacker safety boundary
+
+The DGX model may plan only through a reviewed structured tool catalog such as bounded HTTP requests, DNS lookups, TCP connects, endpoint enumeration, same-target link following, explicit lab-fixture credential attempts, and response inspection. The model does not receive arbitrary shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network access. The executor—not the model—enforces target allowlists, method/payload rules, redirects, timeouts, concurrency, request/body/token budgets, credential references, and cancellation.
+
+Every scenario is confined to a dedicated CanarySting lab fixture and emits `AttackerIntent` before an action and `AttackerAction` after it. These records are declared harness ground truth, never trusted network telemetry. Independent Cilium/Hubble, Envoy, kernel, Kubernetes, and CanarySting observations determine correlation quality. Versioned synthetic ground truth may be retained indefinitely as a development-lab evaluation corpus, but it must be marked synthetic and remain outside production baselines, customer behavior models, and production incident statistics. Scenarios must stop processes, remove only run-labeled execution state, verify connectivity/Cilium/BPF after cleanup, and never retain secret values in evidence. See `docs/CANARYATTACKER_ARCHITECTURE.md` and `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`.
 
 ## Operating and cleanup rules
 
