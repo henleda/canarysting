@@ -11,7 +11,15 @@ Two product components:
 - **Canary** — the detection surface: canary object generation, placement, and observation of interaction.
 - **Sting** — the response: containment (blocking, rate-limiting, jailing) and multi-dimensional attrition (velocity disruption, information poisoning, opportunity-cost injection, exploit-inventory burn, operational exposure). See `docs/STING.md`.
 
-The authoritative product and architecture specification is `docs/ARCHITECTURE.md`. The deep technical architecture, the eBPF baseline-learning capability, and the differentiated-technology rationale are in `docs/TECHNICAL_ARCHITECTURE.md` — read it before working on the engine, the canary seeder, or the eBPF layer. The exact math for how the baseline weights a canary touch (bounded, floored-at-one, multiplicative) is specified in `docs/BASELINE_MULTIPLIER.md`. The intelligence layer — how CanarySting turns its vantage point into a proprietary, compounding data asset (adversary profiling, attacker-cost metric, the cross-customer network, the threat feed) — is specified in `docs/INTELLIGENCE.md`; read it before working anything under `internal/intelligence/`. If anything here conflicts with those documents, the architecture docs win for *intent*; this file wins for *how we build*. When they disagree on intent, stop and ask rather than guessing.
+The authoritative CanarySting product and architecture specification is `docs/ARCHITECTURE.md`. The deep technical architecture, the eBPF baseline-learning capability, and the differentiated-technology rationale are in `docs/TECHNICAL_ARCHITECTURE.md` — read it before working on the engine, the canary seeder, or the eBPF layer. The exact math for how the baseline weights a canary touch (bounded, floored-at-one, multiplicative) is specified in `docs/BASELINE_MULTIPLIER.md`. The intelligence layer — how CanarySting turns its vantage point into a proprietary, compounding data asset (adversary profiling, attacker-cost metric, the cross-customer network, the threat feed) — is specified in `docs/INTELLIGENCE.md`; read it before working anything under `internal/intelligence/`. If anything here conflicts with those documents, the architecture docs win for *intent*; this file wins for *how we build*. When they disagree on intent, stop and ask rather than guessing.
+
+## CanaryPlatform product architecture
+
+CanaryPlatform is the overall product architecture. **CanaryView** is its vendor-neutral intelligence plane, **CanarySting** remains its deception, high-confidence detection, containment, and bounded-response system, and **CanaryAttacker** is its bounded synthetic-adversary and validation harness. These are architectural boundaries, not a mandate to mass-rename or move working packages.
+
+Read `docs/CANARY_PLATFORM_ARCHITECTURE.md` for product boundaries and dependencies, `docs/CANARYVIEW_DATA_MODEL.md` for canonical intelligence concepts, `docs/CANARYVIEW_STORAGE_AND_RETENTION.md` for data lifecycle, retention, model-use, and logical storage principles, `docs/CANARYATTACKER_ARCHITECTURE.md` for the attacker laboratory, and `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md` for unified operator workflows. `docs/DEVELOPMENT_PLAN.md` remains the execution sequence and status source of truth; `docs/DEVELOPMENT_ENVIRONMENT.md` defines the Mac/DGX development model. This file remains authoritative for coding and safety invariants. The product architecture documents do not override the eleven rules below.
+
+Every new persistent data type must define its data class, retention and expiration, legal-hold behavior, deletion or derived-data invalidation, residency and encryption boundary, model-use permission, derivation lineage, and estimated storage impact before implementation is complete.
 
 ## Build target: Kubernetes-native (current phase)
 
@@ -20,7 +28,7 @@ The current build target is **Kubernetes-only**. CanarySting stays proxy-agnosti
 Three documents govern the pivot and sit alongside the existing architecture docs. Read them before working on anything Kubernetes-native or anything in the graph/operator/identity layers:
 
 - `docs/ARCHITECTURE_SPEC_K8S.md` — the target-state Kubernetes-native architecture (deployment model, the blast-radius graph, narrow vs. medium capability split, the K8s API surface, mesh-vs-no-mesh identity, the hardest problems). This is the destination.
-- `docs/BUILD_TASK_PLAN.md` — the sequenced milestones to get there.
+- `docs/BUILD_TASK_PLAN.md` — the original Kubernetes-pivot decomposition. It remains useful design context; `docs/DEVELOPMENT_PLAN.md` is the active cross-product execution sequence and status authority.
 - `docs/GAP_REPORT.md` — how this repo maps against the target (written from the README + AGENTS.md, so it under-counts how much is built).
 - `docs/GAP_VERIFICATION.md` — the **code-grounded** correction to the gap report: the verified stub-vs-implemented status of every package, the load-bearing-invariant verdicts, and the agreed package layout. Read this before assuming anything is or isn't built.
 
@@ -97,7 +105,7 @@ Monorepo. Top-level map (existing unless marked **partial** or **absent/planned*
 
 ## How to work in this repo
 
-1. Read this file, then `docs/ARCHITECTURE.md`, then the guidance doc for the layer you're touching. For Kubernetes-native or graph/operator/identity work, also read `docs/ARCHITECTURE_SPEC_K8S.md`, `docs/BUILD_TASK_PLAN.md`, and `docs/GAP_VERIFICATION.md`.
+1. Read this file, then `docs/ARCHITECTURE.md`, then the guidance doc for the layer you're touching. For CanaryPlatform, CanaryView, CanaryAttacker, or operator-facing work, also read the applicable CanaryPlatform documents named above. For Kubernetes-native or graph/operator/identity work, also read `docs/ARCHITECTURE_SPEC_K8S.md`, `docs/BUILD_TASK_PLAN.md`, and `docs/GAP_VERIFICATION.md`.
 2. Check `internal/contract/` before changing any cross-layer behavior.
 3. Make the smallest change that satisfies the task. Respect the layer seams.
 4. If a task would violate a core rule above, stop and surface it rather than working around it.
