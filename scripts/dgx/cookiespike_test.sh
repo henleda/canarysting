@@ -37,6 +37,28 @@ awk '
   capture { print }
 ' "${proof_script}" | bash -n || fail 'embedded privileged proof helper has invalid Bash syntax'
 
+capture_definition="$(awk '
+  /^bounded_capture\(\) \{$/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${proof_script}")"
+[[ -n "${capture_definition}" ]] || fail 'bounded log-capture implementation is missing'
+capture_fixture="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-cookiespike-capture.XXXXXX")"
+cleanup_fixture() {
+  rm -rf -- "${capture_fixture}"
+}
+trap cleanup_fixture EXIT
+
+printf 'bounded-output\n' | bash -c "${capture_definition}"$'\n''bounded_capture "$1" "$2"' -- \
+  "${capture_fixture}/short.log" "${capture_fixture}/short.state"
+[[ "$(<"${capture_fixture}/short.log")" == 'bounded-output' ]] || fail 'bounded capture changed short output'
+[[ "$(<"${capture_fixture}/short.state")" == 'complete' ]] || fail 'bounded capture did not mark short output complete'
+
+head -c 1048577 /dev/zero | bash -c "${capture_definition}"$'\n''bounded_capture "$1" "$2"' -- \
+  "${capture_fixture}/large.log" "${capture_fixture}/large.state"
+[[ "$(wc -c <"${capture_fixture}/large.log" | tr -d ' ')" == '1048576' ]] || fail 'bounded capture exceeded its 1 MiB file cap'
+[[ "$(<"${capture_fixture}/large.state")" == 'truncated' ]] || fail 'bounded capture did not report discarded output'
+
 output="$(${proof_script} --run-id m1c-local-test --dry-run)"
 [[ "${output}" == *'DGX was not accessed'* ]] || fail 'dry run did not stay local'
 [[ "${output}" == *'remote_stage=/var/tmp/canarysting/m1c-local-test'* ]] || fail 'dry run reported the wrong stage'
@@ -71,11 +93,17 @@ expect_failure privilege_override 'unknown argument: --sudo' \
 
 grep -F -- '-proof cannot be combined with -resolve' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
   fail 'cookiespike proof mode does not explicitly exclude manual resolve probes'
-grep -F 'PROOF missing_attribution=PASS result=MISS enforcement=refused' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
+grep -F 'PROOF missing_attribution=PASS result=MISS attribution=refused' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
   fail 'cookiespike binary is missing the unattributable-flow proof marker'
 grep -F 'PROOF flow_identity=PASS socket_cookie=' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
   fail 'cookiespike binary is missing the flow-identity proof marker'
 grep -F 'PROOF close_delete=PASS result=MISS' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
   fail 'cookiespike binary is missing the close-delete proof marker'
+grep -F 'res.ResolveChecked(tuple)' "${script_dir}/../../cmd/cookiespike/main.go" >/dev/null ||
+  fail 'close-delete proof does not preserve map lookup errors'
+grep -F 'for kind in prog map link' "${proof_script}" >/dev/null ||
+  fail 'BPF residue inventory does not cover programs, maps, and links'
+grep -F "PROOF attach_scope=%s child=%s parent=absent root=absent" "${proof_script}" >/dev/null ||
+  fail 'proof harness does not record a live child-versus-parent/root attachment observation'
 
 printf 'PASS: DGX socket-cookie proof local contract checks passed\n'

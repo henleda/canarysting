@@ -117,7 +117,11 @@ func TestSockopsCookieOracle(t *testing.T) {
 	_ = srv.Close()
 	deleted := false
 	for i := 0; i < 200; i++ {
-		if _, ok := r.Resolve(ft); !ok {
+		_, ok, lookupErr := r.ResolveChecked(ft)
+		if lookupErr != nil {
+			t.Fatalf("checked close lookup: %v", lookupErr)
+		}
+		if !ok {
 			deleted = true
 			break
 		}

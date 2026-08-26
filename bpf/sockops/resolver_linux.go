@@ -3,6 +3,7 @@
 package sockops
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -60,6 +61,20 @@ func NewMapResolver(cgroupPath string) (*MapResolver, error) {
 // is built from the generated flow_key struct (whose layout the kernel program
 // wrote), so the Go lookup and the kernel map agree byte-for-byte.
 func (r *MapResolver) Resolve(t identity.FourTuple) (identity.Resolution, bool) {
+	resolution, ok, err := r.ResolveChecked(t)
+	if err != nil {
+		// CookieResolver intentionally fails closed: an unreadable map is
+		// indistinguishable from an unattributable flow to the adapter.
+		return identity.Resolution{}, false
+	}
+	return resolution, ok
+}
+
+// ResolveChecked performs the same tuple lookup as Resolve while preserving map
+// lookup failures. The production adapter uses Resolve's fail-closed MISS; kernel
+// lifecycle diagnostics use this method so a lookup failure cannot be mistaken
+// for proof that a close callback deleted an entry.
+func (r *MapResolver) ResolveChecked(t identity.FourTuple) (identity.Resolution, bool, error) {
 	key := sockopsFlowKey{
 		Family:  t.Family,
 		SrcPort: t.SrcPort,
@@ -69,14 +84,17 @@ func (r *MapResolver) Resolve(t identity.FourTuple) (identity.Resolution, bool) 
 	}
 	var v sockopsFlowVal
 	if err := r.objs.FlowCookies.Lookup(&key, &v); err != nil {
-		return identity.Resolution{}, false
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return identity.Resolution{}, false, nil
+		}
+		return identity.Resolution{}, false, fmt.Errorf("sockops: lookup flow tuple: %w", err)
 	}
 	return identity.Resolution{
 		Cookie:     v.Cookie,
 		CgroupID:   v.CgroupId,
 		PID:        v.Pid,
 		Generation: v.Generation,
-	}, true
+	}, true, nil
 }
 
 // Close detaches the program and releases the objects.

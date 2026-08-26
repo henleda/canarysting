@@ -1,13 +1,14 @@
 //go:build linux
 
-// Command cookiespike is a THROWAWAY diagnostic spike (not production code) that
-// empirically tests whether CanarySting's socket-cookie L7<->kernel join
-// (AGENTS.md rule 4, docs/IDENTITY.md) survives inside Kubernetes pod network
-// namespaces under a CNI. It loads and attaches the real sockops eBPF program via
-// the repo's own bpf/sockops.NewMapResolver, dumps every entry the kernel writes
-// into the flow_cookies map, and — the actual join assertion — reconstructs a map
-// key from a source/destination 4-tuple EXACTLY as the Envoy ext_proc adapter does
-// (identity.TupleFromAddrs + MapResolver.Resolve) and reports the resolved cookie.
+// Command cookiespike is a diagnostic binary (not production code) for empirically
+// testing CanarySting's socket-cookie L7<->kernel join (AGENTS.md rule 4,
+// docs/IDENTITY.md). Its bounded -proof mode covers one host-local child-cgroup
+// loopback flow; it does not claim Kubernetes pod/CNI behavior. The manual mode
+// loads and attaches the real sockops eBPF program via the repo's own
+// bpf/sockops.NewMapResolver, dumps every entry the kernel writes into the
+// flow_cookies map, and reconstructs a map key from a source/destination 4-tuple
+// exactly as the Envoy ext_proc adapter does (identity.TupleFromAddrs +
+// MapResolver.Resolve).
 //
 // Background: the sockops program captures on BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB —
 // the SERVER accept-side socket. The stored key is {src = REMOTE end (the client),
@@ -182,7 +183,11 @@ func runProof(res *sockops.MapResolver) error {
 	if got, hit := guarded.Resolve(missing); hit {
 		return fmt.Errorf("missing-attribution fixture unexpectedly resolved cookie %d", got.Cookie)
 	}
-	fmt.Println("PROOF missing_attribution=PASS result=MISS enforcement=refused")
+	fmt.Println("PROOF missing_attribution=PASS result=MISS attribution=refused")
+	// Keep the resolver attached briefly so the external DGX harness can observe
+	// the live program on this exact child cgroup and confirm it is absent at root.
+	fmt.Println("PROOF resolver_ready=PASS live_attachment_observation=pending")
+	time.Sleep(250 * time.Millisecond)
 
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -269,7 +274,11 @@ func runProof(res *sockops.MapResolver) error {
 
 	deleted := false
 	for i := 0; i < 200; i++ {
-		if _, hit := res.Resolve(tuple); !hit {
+		_, hit, lookupErr := res.ResolveChecked(tuple)
+		if lookupErr != nil {
+			return fmt.Errorf("verify close-driven map deletion: %w", lookupErr)
+		}
+		if !hit {
 			deleted = true
 			break
 		}
