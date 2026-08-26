@@ -219,20 +219,22 @@ validate_evidence() {
   local require_complete="$1"
   [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" ]] ||
     fail "evidence must be an owned, non-symlink directory: ${evidence}"
-  local unsupported unowned entry size actual_files expected_stdout_sha256 expected_stderr_sha256
+  local path entry size actual_files expected_stdout_sha256 expected_stderr_sha256
   local expected_artifact_sha256 actual_stdout_bytes actual_stderr_bytes
-  unsupported="$(find "${evidence}" -mindepth 1 ! -type f -print -quit)"
-  [[ -z "${unsupported}" ]] || fail "evidence contains a symlink or unsupported entry: ${unsupported}"
-  unowned="$(find "${evidence}" -mindepth 1 ! -user "$(id -un)" -print -quit)"
-  [[ -z "${unowned}" ]] || fail "evidence contains an entry not owned by the current user: ${unowned}"
-  while IFS= read -r entry; do
+  for path in "${evidence}"/* "${evidence}"/.[!.]* "${evidence}"/..?*; do
+    [[ -e "${path}" || -L "${path}" ]] || continue
+    [[ -f "${path}" && ! -L "${path}" ]] || fail "evidence contains a symlink or unsupported entry: ${path}"
+    [[ -O "${path}" ]] || fail "evidence contains an entry not owned by the current user: ${path}"
+    entry="${path##*/}"
     case "${entry}" in
       stdout.log|stderr.log|result.tsv|.result.tsv.tmp|.stdout.capture|.stderr.capture) ;;
       *) fail "evidence contains an undeclared entry: ${evidence}/${entry}" ;;
     esac
-    size="$(stat -c %s "${evidence}/${entry}")"
-    [[ "${size}" -le 1048576 ]] || fail "evidence file exceeds 1048576 bytes: ${entry}"
-  done < <(find "${evidence}" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+    if [[ "${require_complete}" == 'yes' ]]; then
+      size="$(stat -c %s "${path}")"
+      [[ "${size}" -le 1048576 ]] || fail "evidence file exceeds 1048576 bytes: ${entry}"
+    fi
+  done
 
   if [[ "${require_complete}" == 'yes' ]]; then
     [[ -f "${evidence}/stdout.log" && -f "${evidence}/stderr.log" && -f "${evidence}/result.tsv" ]] ||
@@ -305,13 +307,6 @@ validate_evidence() {
       fail 'stdout evidence checksum mismatch'
     [[ "$(sha256sum "${evidence}/stderr.log" | awk '{print $1}')" == "${expected_stderr_sha256}" ]] ||
       fail 'stderr evidence checksum mismatch'
-  elif [[ -f "${evidence}/result.tsv" ]]; then
-    awk -F '\t' -v expected="${run_id}" '
-      NR == 1 { if ($0 != "key\tvalue") exit 1; next }
-      NF != 2 || $1 == "" { exit 1 }
-      $1 == "run_id" { count++; if ($2 != expected) exit 1 }
-      END { if (count != 1) exit 1 }
-    ' "${evidence}/result.tsv" || fail "partial evidence result does not belong to run ${run_id}"
   fi
 }
 
@@ -351,6 +346,9 @@ if [[ "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]]; then
         }
       ' "${evidence}/result.tsv"
     else
+      # Cleanup is recoverable even when a prior run left oversized or malformed
+      # contents, after the exact directory, ownership, type, and file allowlist
+      # have been validated above.
       validate_evidence no
       for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
         [[ ! -e "${evidence}/${file}" && ! -L "${evidence}/${file}" ]] || rm -- "${evidence}/${file}"

@@ -59,6 +59,18 @@ head -c 1048577 /dev/zero | bash -c "${capture_definition}"$'\n''bounded_capture
 [[ "$(wc -c <"${capture_fixture}/large.log" | tr -d ' ')" == '1048576' ]] || fail 'bounded capture exceeded its 1 MiB file cap'
 [[ "$(<"${capture_fixture}/large.state")" == 'truncated' ]] || fail 'bounded capture did not report discarded output'
 
+validation_definition="$(awk '
+  /^validate_evidence\(\) \{$/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "${proof_script}")"
+[[ -n "${validation_definition}" ]] || fail 'evidence validation implementation is missing'
+cleanup_evidence="${capture_fixture}/oversized-cleanup"
+mkdir -m 700 "${cleanup_evidence}"
+head -c 1048577 /dev/zero >"${cleanup_evidence}/stdout.log"
+bash -c 'fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n'"${validation_definition}"$'\n''evidence="$1"; validate_evidence no' -- \
+  "${cleanup_evidence}" || fail 'cleanup validation rejected exact owned evidence with an oversized legacy log'
+
 output="$(${proof_script} --run-id m1c-local-test --dry-run)"
 [[ "${output}" == *'DGX was not accessed'* ]] || fail 'dry run did not stay local'
 [[ "${output}" == *'remote_stage=/var/tmp/canarysting/m1c-local-test'* ]] || fail 'dry run reported the wrong stage'
