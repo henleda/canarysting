@@ -19,6 +19,17 @@ sha256_file() {
   fi
 }
 
+mode_bits() {
+  local path="$1"
+  local value
+  value="$(stat -f '%Lp' "${path}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "${value}"
+  else
+    stat -c '%a' "${path}"
+  fi
+}
+
 expect_failure() {
   local name="$1"
   local expected="$2"
@@ -118,11 +129,14 @@ dry_output="$(${collect_script} --run-id "${run_id}" --output-dir "${tmp_root}/d
 collect_output="$(${collect_script} --run-id "${run_id}" --output-dir "${output}" --fixture-dir "${fixture}")"
 [[ "${collect_output}" == *'PASS: collected bounded redacted DGX evidence'* ]] || fail 'fixture collection did not pass'
 [[ -d "${output}" && ! -L "${output}" ]] || fail 'collection output is missing or unsafe'
-[[ "$(stat -f '%Lp' "${output}" 2>/dev/null || stat -c '%a' "${output}")" == '700' ]] || fail 'collection output mode is not 0700'
+[[ "$(mode_bits "${output}")" == '700' ]] || fail 'collection output mode is not 0700'
 
 expected_files=$'SHA256SUMS\nartifact-SHA256SUMS\nartifact-manifest.tsv\ncollection-manifest.tsv\ndgx-check.txt\nexecution-result.tsv\nstderr.log\nstdout.log'
 actual_files="$(cd "${output}" && find . -mindepth 1 -type f -print | sed 's#^\./##' | LC_ALL=C sort)"
 [[ "${actual_files}" == "${expected_files}" ]] || fail 'published collection has an unexpected file inventory'
+while IFS= read -r published_file; do
+  [[ "$(mode_bits "${published_file}")" == '600' ]] || fail "published file mode is not 0600: ${published_file}"
+done < <(find "${output}" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
 (cd "${output}" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c SHA256SUMS >/dev/null; else shasum -a 256 -c SHA256SUMS >/dev/null; fi) ||
   fail 'published collection checksums failed'
 grep -F $'metadata\trun_id\tcollect-test-01\t-' "${output}/collection-manifest.tsv" >/dev/null || fail 'collection manifest omitted run ID'
