@@ -83,7 +83,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   printf 'DRY RUN: precise-enforcement proof contract passed; DGX was not accessed\n'
   printf 'run_id=%s\nstage=%s\nevidence=%s\ncgroup=%s\nsnapshot=%s\n' \
     "${run_id}" "${stage}" "${evidence}" "${cgroup}" "${snapshot}"
-  printf 'attach_scope=run-owned-child-cgroup\nmutation=cgroup-and-transient-bpf-only\ncleanup=exact-run-idempotent\n'
+  printf 'attach_scope=run-owned-child-cgroup\nmutation=run-scoped-cgroup-bpf-snapshot-evidence-and-expiry-units\ncleanup=exact-run-idempotent\n'
   exit 0
 fi
 
@@ -170,7 +170,8 @@ bounded_capture() {
 assert_platform_healthy() {
   local ready desired output
   sudo -n systemctl is-active --quiet k3s || return 1
-  [[ "$(sudo -n k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" == 'True' ]] || return 1
+  output="$(sudo -n k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" || return 1
+  [[ "${output}" == 'True' ]] || return 1
   output="$(sudo -n k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
   read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
@@ -320,21 +321,24 @@ cleanup_evidence() {
     [[ "$(pwd -P)" == "${root}" && ! -L "${root}" && . -ef "${root}" ]] || fail 'cleanup root is not physically anchored'
     local removed='no'
     while [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" || -L "${quarantine_name}" ]]; do
-      if [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]]; then
-        local evidence_identity
+      local evidence_identity evidence_links
+      if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
+        [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'live evidence and quarantine both exist'
+        [[ -d "${evidence_name}" && ! -L "${evidence_name}" && -O "${evidence_name}" ]] || fail 'live evidence directory is unsafe'
         exec 8<"${evidence_name}" || fail 'could not open exact evidence directory'
-        [[ -d /dev/fd/8 ]] || fail 'opened evidence is not a directory'
+        [[ -d /dev/fd/8/. ]] || fail 'opened evidence is not a directory'
         evidence_identity="$(stat -Lc %d:%i /dev/fd/8)" || fail 'could not identify opened evidence directory'
         validate_cleanup_evidence /dev/fd/8/.
         mv -T -- "${evidence_name}" "${quarantine_name}" || fail 'could not quarantine exact evidence'
-        [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${evidence_identity}" ]] || fail 'quarantined evidence is not the validated directory inode'
-        exec 8<&-
+      else
+        [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] || fail 'quarantined evidence is unsafe'
+        exec 8<"${quarantine_name}" || fail 'could not open exact evidence quarantine'
+        evidence_identity="$(stat -Lc %d:%i /dev/fd/8)" || fail 'could not identify opened evidence quarantine'
       fi
-      [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] || fail 'quarantined evidence is unsafe'
+      [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${evidence_identity}" ]] || fail 'quarantined evidence is not the validated directory inode'
       (
-        cd -P -- "./${quarantine_name}" || fail 'could not enter quarantined evidence'
-        [[ "$(pwd -P)" == "${root}/${quarantine_name}" ]] || fail 'quarantined evidence escaped the fixed root'
-        [[ ! -L "${root}/${quarantine_name}" && . -ef "${root}/${quarantine_name}" ]] || fail 'quarantined evidence changed before cleanup'
+        cd -P -- /dev/fd/8/. || fail 'could not enter validated evidence directory'
+        [[ "$(stat -Lc %d:%i .)" == "${evidence_identity}" ]] || fail 'cleanup left the validated evidence directory'
         validate_cleanup_evidence .
         for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
           if [[ -e "${file}" || -L "${file}" ]]; then
@@ -342,31 +346,60 @@ cleanup_evidence() {
           fi
         done
       ) || fail 'anchored evidence-file cleanup failed'
-      [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] || fail 'quarantined evidence changed after cleanup'
+      [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${evidence_identity}" ]] || fail 'quarantined evidence changed after cleanup'
       rmdir -- "${quarantine_name}" || fail 'could not remove empty evidence quarantine'
+      evidence_links="$(stat -Lc %h /dev/fd/8)" || fail 'could not verify evidence unlink'
+      [[ "${evidence_links}" == '0' ]] || fail 'validated evidence directory remains linked after cleanup'
+      exec 8<&-
       removed='yes'
     done
     [[ "${removed}" == 'yes' ]] && printf 'removed' || printf 'absent'
   )
-  rmdir -- "${root}" 2>/dev/null || true
+  local remaining
+  remaining="$(find "${root}" -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect cleanup root after evidence deletion'
+  if [[ -z "${remaining}" ]]; then
+    rmdir -- "${root}" || fail 'could not remove empty evidence root'
+  fi
 }
 
 expiry_timer_active() {
-  [[ "$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null)" == 'loaded' ]] || return 1
+  local load_state
+  load_state="$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null)" || return 1
+  [[ "${load_state}" == 'loaded' ]] || return 1
   sudo -n systemctl is-active --quiet "${expiry_unit}.timer"
 }
 
 cancel_expiry_timer() {
-  local unit load_state
+  local unit load_state active_state attempt
   for unit in "${expiry_unit}.timer" "${expiry_unit}.service"; do
-    load_state="$(sudo -n systemctl show --property=LoadState --value "${unit}" 2>/dev/null || true)"
+    load_state="$(sudo -n systemctl show --property=LoadState --value "${unit}" 2>/dev/null)" || return 1
     if [[ "${load_state}" == 'loaded' ]]; then
       sudo -n systemctl stop "${unit}" || return 1
-      sudo -n systemctl reset-failed "${unit}" >/dev/null 2>&1 || true
-    elif [[ -n "${load_state}" && "${load_state}" != 'not-found' ]]; then
+      active_state="$(sudo -n systemctl show --property=ActiveState --value "${unit}" 2>/dev/null)" || return 1
+      if [[ "${active_state}" == 'failed' ]]; then
+        sudo -n systemctl reset-failed "${unit}" >/dev/null 2>&1 || return 1
+      elif [[ "${active_state}" != 'inactive' ]]; then
+        return 1
+      fi
+    elif [[ "${load_state}" != 'not-found' ]]; then
       return 1
     fi
   done
+  for attempt in $(seq 1 100); do
+    local all_unloaded='yes'
+    for unit in "${expiry_unit}.timer" "${expiry_unit}.service"; do
+      load_state="$(sudo -n systemctl show --property=LoadState --value "${unit}" 2>/dev/null)" || return 1
+      if [[ "${load_state}" != 'not-found' ]]; then
+        [[ "${load_state}" == 'loaded' ]] || return 1
+        active_state="$(sudo -n systemctl show --property=ActiveState --value "${unit}" 2>/dev/null)" || return 1
+        [[ "${active_state}" == 'inactive' ]] || return 1
+        all_unloaded='no'
+      fi
+    done
+    [[ "${all_unloaded}" == 'yes' ]] && return 0
+    sleep 0.05
+  done
+  return 1
 }
 
 schedule_expiry_cleanup() {
@@ -388,7 +421,7 @@ validate_dir() {
   [[ "$(stat -c %u "${dir}")" == "${owner_uid}" ]] || fail 'evidence directory owner changed'
   while IFS= read -r entry; do
     name="${entry##*/}"
-    case "${name}" in result.tsv|stderr.log|stdout.log) ;; *) fail 'evidence contains an unexpected entry' ;; esac
+    case "${name}" in result.tsv|stderr.log|stdout.log|.stdout.capture|.stderr.capture|.result.tsv.tmp) ;; *) fail 'evidence contains an unexpected entry' ;; esac
     type="$(stat -c %F "${entry}")"
     owner="$(stat -c %u "${entry}")"
     [[ "${type}" == 'regular file' && "${owner}" == "${owner_uid}" ]] || fail 'evidence entry is unsafe'
@@ -399,30 +432,41 @@ validate_dir() {
 [[ -d "${root}" && ! -L "${root}" && "$(stat -c %u "${root}")" == "${owner_uid}" ]] || fail 'evidence root is unsafe'
 cd -P -- "${root}" || fail 'could not enter evidence root'
 [[ "$(pwd -P)" == "${root}" && . -ef "${root}" ]] || fail 'evidence root is not physically anchored'
-if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
-  [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'live evidence and quarantine both exist'
-  exec 9<"${evidence_name}" || fail 'could not open evidence directory'
-  identity="$(stat -Lc %d:%i /proc/self/fd/9)" || fail 'could not identify evidence directory'
-  validate_dir /proc/self/fd/9/.
-  mv -T -- "${evidence_name}" "${quarantine_name}" || fail 'could not quarantine evidence'
+if [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" || -L "${quarantine_name}" ]]; then
+  if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
+    [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'live evidence and quarantine both exist'
+    [[ -d "${evidence_name}" && ! -L "${evidence_name}" ]] || fail 'live evidence is unsafe'
+    exec 9<"${evidence_name}" || fail 'could not open evidence directory'
+    identity="$(stat -Lc %d:%i /proc/self/fd/9)" || fail 'could not identify evidence directory'
+    validate_dir /proc/self/fd/9/.
+    mv -T -- "${evidence_name}" "${quarantine_name}" || fail 'could not quarantine evidence'
+  else
+    [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'evidence quarantine is unsafe'
+    exec 9<"${quarantine_name}" || fail 'could not open evidence quarantine'
+    identity="$(stat -Lc %d:%i /proc/self/fd/9)" || fail 'could not identify evidence quarantine'
+  fi
   [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${identity}" ]] ||
     fail 'quarantined evidence is not the validated directory inode'
+  (
+    cd -P -- /proc/self/fd/9/. || fail 'could not enter validated evidence directory'
+    [[ "$(stat -Lc %d:%i .)" == "${identity}" ]] || fail 'expiry left the validated evidence directory'
+    validate_dir .
+    rm -f -- .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log
+  )
+  [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${identity}" ]] || fail 'evidence quarantine changed before unlink'
+  rmdir -- "${quarantine_name}" || fail 'could not remove evidence quarantine'
+  [[ "$(stat -Lc %h /proc/self/fd/9)" == '0' ]] || fail 'validated evidence directory remains linked after expiry'
   exec 9<&-
 fi
-if [[ -e "${quarantine_name}" || -L "${quarantine_name}" ]]; then
-  validate_dir "${quarantine_name}"
-  cd -P -- "./${quarantine_name}" || fail 'could not enter evidence quarantine'
-  [[ "$(pwd -P)" == "${root}/${quarantine_name}" && . -ef "${root}/${quarantine_name}" ]] || fail 'evidence quarantine escaped fixed root'
-  validate_dir .
-  rm -- result.tsv stderr.log stdout.log
-  cd -P -- "${root}"
-  rmdir -- "${quarantine_name}"
+remaining="$(find "${root}" -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect evidence root after expiry'
+if [[ -z "${remaining}" ]]; then
   cd -P -- /run/user/1000
-  rmdir -- "${root}"
+  rmdir -- "${root}" || fail 'could not remove empty evidence root'
 fi
 EXPIRY
   sudo -n systemd-run --quiet --collect --expand-environment=no --unit="${expiry_unit}" --on-active=23h55m \
-    --timer-property=AccuracySec=1s --property=Type=oneshot --property="User=$(id -un)" \
+    --timer-property=AccuracySec=1s --property=Type=oneshot --property=Restart=on-failure \
+    --property=RestartSec=5m --property=StartLimitIntervalSec=0 --property="User=$(id -un)" \
     /usr/bin/bash -c "${expiry_cleanup_program}" _ "${root}" "${evidence_name}" "${quarantine_name}" "${owner_uid}" || return 1
   expiry_timer_active
 }
@@ -436,16 +480,18 @@ cleanup_runtime_residue() {
     sudo -n test -d "${snapshot}" || fail 'snapshot residue is not a directory'
     sudo -n test ! -L "${snapshot}" || fail 'snapshot residue is a symlink'
     snapshot_inventory="$(sudo -n find "${snapshot}" -mindepth 1 -maxdepth 1 -printf '%y:%f\n' | LC_ALL=C sort)"
-    case "${snapshot_inventory}" in
-      ''|'f:.enforcement-active'|'f:.enforcespike.tmp'|'f:.health-checked'|'f:enforcespike'|\
-      $'f:.enforcement-active\nf:enforcespike'|$'f:.health-checked\nf:enforcespike'|\
-      $'f:.enforcement-active\nf:.health-checked\nf:enforcespike') ;;
-      *) fail 'snapshot inventory is unsafe' ;;
-    esac
+    while IFS= read -r snapshot_entry; do
+      [[ -z "${snapshot_entry}" ]] && continue
+      case "${snapshot_entry}" in
+        f:.enforcement-active|f:.enforcespike.tmp|f:.health-checked|f:.health-checked.tmp|f:enforcespike) ;;
+        *) fail 'snapshot inventory is unsafe' ;;
+      esac
+    done <<<"${snapshot_inventory}"
     for proc_exe in /proc/[0-9]*/exe; do
       [[ "$(sudo -n readlink "${proc_exe}" 2>/dev/null || true)" != "${snapshot}/enforcespike" ]] || fail 'privileged snapshot is still executing'
     done
-    sudo -n rm -f "${snapshot}/.enforcement-active" "${snapshot}/.health-checked" "${snapshot}/.enforcespike.tmp" "${snapshot}/enforcespike"
+    sudo -n rm -f "${snapshot}/.enforcement-active" "${snapshot}/.health-checked" \
+      "${snapshot}/.health-checked.tmp" "${snapshot}/.enforcespike.tmp" "${snapshot}/enforcespike"
     sudo -n rmdir "${snapshot}"
   fi
   if sudo -n test -d "${cgroup_parent}"; then sudo -n rmdir "${cgroup_parent}" 2>/dev/null || true; fi
@@ -484,7 +530,8 @@ else
   mkdir -m 0700 "${root}"
 fi
 [[ ! -e "${evidence}" && ! -L "${evidence}" && ! -e "${evidence_quarantine}" && ! -L "${evidence_quarantine}" ]] || fail 'proof evidence or interrupted quarantine already exists'
-[[ "$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null || true)" != 'loaded' ]] || fail 'proof expiration timer already exists'
+expiry_load_state="$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null)" || fail 'could not inspect proof expiration timer'
+[[ "${expiry_load_state}" == 'not-found' ]] || fail 'proof expiration timer already exists or has unexpected state'
 sudo -n test ! -e "${cgroup}" || fail 'run-owned cgroup already exists'
 sudo -n test ! -e "${snapshot}" || fail 'privileged snapshot already exists'
 bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state before proof'
@@ -495,6 +542,7 @@ root_before="$(sudo -n bpftool cgroup show /sys/fs/cgroup 2>/dev/null | sha256su
 bpf_before="$(bpf_ids)"
 bpf_before_sha="$(printf '%s\n' "${bpf_before}" | sha256sum | awk '{print $1}')"
 created_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+schedule_expiry_cleanup || fail 'could not schedule automatic evidence expiration'
 mkdir -m 0700 "${evidence}"
 stdout_log="${evidence}/stdout.log"
 stderr_log="${evidence}/stderr.log"
@@ -525,7 +573,8 @@ proof_fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 platform_healthy() {
   local ready desired output
   systemctl is-active --quiet k3s || return 1
-  [[ "$(k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" == 'True' ]] || return 1
+  output="$(k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" || return 1
+  [[ "${output}" == 'True' ]] || return 1
   output="$(k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
   read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
@@ -543,7 +592,7 @@ cleanup() {
     if [[ -z "$(awk 'NF { print; exit }' "${cgroup}/cgroup.procs")" ]]; then rmdir "${cgroup}" || failed=1; else failed=1; fi
   fi
   if [[ -d "${snapshot}" && ! -L "${snapshot}" ]]; then
-    rm -f "${health_ready}" "${health_ack}" "${snapshot_artifact}" || failed=1
+    rm -f "${health_ready}" "${health_ack}" "${health_ack}.tmp" "${snapshot_artifact}" || failed=1
     rmdir "${snapshot}" || failed=1
   fi
   [[ ! -e "${cgroup}" && ! -L "${cgroup}" && ! -e "${snapshot}" && ! -L "${snapshot}" ]] || failed=1
@@ -600,8 +649,9 @@ for _ in $(seq 1 500); do
         "$(<"${health_ready}")" == 'enforcement-active' ]] && platform_healthy; then
         child_after_health="$(bpftool cgroup show "${cgroup}" 2>/dev/null)" || proof_fail 'could not recheck child attachments after Cilium health'
         if grep -q 'canary_sockops' <<<"${child_after_health}" && grep -q 'enforce_egress' <<<"${child_after_health}" && grep -q 'enforce_release' <<<"${child_after_health}"; then
-          printf 'cilium-health-pass\n' >"${health_ack}"
-          chmod 0600 "${health_ack}"
+          health_ack_tmp="${health_ack}.tmp"
+          (umask 077; printf 'cilium-health-pass\n' >"${health_ack_tmp}") || proof_fail 'could not create health acknowledgement'
+          mv -T -- "${health_ack_tmp}" "${health_ack}" || proof_fail 'could not publish health acknowledgement'
           cilium_window='PASS'
           break
         fi
@@ -642,8 +692,9 @@ stderr_sha256="$(sha256sum "${stderr_log}" | awk '{print $1}')"
 root_after="$(sudo -n bpftool cgroup show /sys/fs/cgroup 2>/dev/null | sha256sum | awk '{print $1}')"
 bpf_after="$(bpf_ids)"
 bpf_after_sha="$(printf '%s\n' "${bpf_after}" | sha256sum | awk '{print $1}')"
-completed_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-expires_at_utc="$(date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)"
+completed_epoch="$(date -u +%s)"
+completed_at_utc="$(date -u -d "@${completed_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+expires_at_utc="$(date -u -d "@$((completed_epoch + 86400))" +%Y-%m-%dT%H:%M:%SZ)"
 assert_platform_healthy || fail 'K3s node or Cilium is unhealthy after proof'
 runtime_cleanup='FAIL'
 bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state after proof'
@@ -692,7 +743,6 @@ fi
 chmod 0600 "${evidence}/result.tsv"
 
 [[ "${status}" == 'PASS' ]] || fail "proof failed; inspect ${evidence}"
-schedule_expiry_cleanup || fail 'could not schedule automatic evidence expiration'
 validate_evidence
 printf 'mode=run\nrun_id=%s\nstatus=PASS\nevidence=%s\nruntime_residue=none\n' "${run_id}" "${evidence}"
 REMOTE
