@@ -6,6 +6,8 @@ Status: conceptual specification for architecture review. This document delibera
 
 The CanaryView model gives human and non-human consumers one vendor-neutral language for security activity without throwing away source-specific evidence. It must support passive intelligence before CanarySting is enabled and preserve the existing CanarySting `OBSERVED`, `PERMITTED`, and `ADVERSARIAL` graph semantics.
 
+Connector category contracts, capability manifests, health, and the collector/action boundary are specified in `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`. They consume this model; they do not redefine it per vendor.
+
 The model is optimized for explainability:
 
 - immutable source observations are retained as facts about what a source reported;
@@ -101,6 +103,7 @@ Every entity has a stable canonical ID, an operator-facing display name when kno
 - **PolicyDecision** — a control's allow, deny, route, authenticate, authorize, inspect, or other decision.
 - **Verdict** — CanarySting or another engine's assessed outcome, preserving producer semantics.
 - **ActionRecommendation** — evidence-backed proposal; a specialization of `Recommendation`.
+- **SecurityIntent** — vendor-neutral desired security outcome, scope, duration, and preservation constraints; it coordinates rather than replaces vendor-native policy.
 - **Action** — intended mutation type independent of its plan/execution state.
 
 ### Deception and adversarial concepts
@@ -117,7 +120,8 @@ Every entity has a stable canonical ID, an operator-facing display name when kno
 - **Explanation** — evidence-backed answer to why CanaryPlatform believes a claim.
 - **ImpactAssessment** — observed effect and potential blast radius, with uncertainty.
 - **Recommendation** — advisory next step, distinct from authority or execution.
-- **ActionPlan** — immutable, previewed mutation proposal with validation and rollback.
+- **ConnectorCapabilityManifest** — versioned declaration of what a connector can observe or an adapter can plan, preview, apply, verify, expire, and roll back; available to operators and agents.
+- **ActionPlan** — immutable, previewed vendor-native mutation proposal with validation and rollback, optionally derived from a `SecurityIntent`.
 - **ActionExecution** — approved execution, result, validation, and rollback history.
 - **CanaryOpportunity** — evidence-backed candidate for human-approved CanarySting placement.
 - **DataClass** — classification that binds sensitivity and lifecycle requirements to an object.
@@ -142,6 +146,7 @@ An `Observation` minimally contains:
 - assertion mode;
 - raw evidence reference;
 - canonical attributes produced by normalization;
+- a bounded, versioned extension/evidence envelope for vendor-specific fields;
 - confidence in the normalization, distinct from confidence in later correlation;
 - missing expected fields and parser warnings.
 
@@ -300,6 +305,7 @@ A `SecurityCase` is the incident/finding workspace root:
 - `Explanation`;
 - `ImpactAssessment`;
 - current `Recommendation` objects;
+- current `SecurityIntent` objects;
 - available `ActionPlan` objects;
 - current containment and rollback state;
 - owner, approvals, audit, and evidence access policy.
@@ -343,11 +349,28 @@ A `Recommendation` contains:
 
 No recommendation ends with an unqualified “investigate elsewhere.” It provides evidence and a concrete next step, even when that next step is to acquire named missing evidence.
 
+### SecurityIntent
+
+A `SecurityIntent` expresses the operator outcome without pretending that several native control planes share one policy language. It contains:
+
+- intended outcome and affected scope;
+- protected traffic, identities, assets, or business functions that must remain available;
+- duration/expiry and urgency;
+- constraints, risk, and acceptable impact;
+- supporting recommendation, explanation, and evidence;
+- capability requirements and the manifest versions used during planning;
+- one or more proposed vendor-native `ActionPlan` references;
+- approval policy and plan coordination/rollback-order requirements; and
+- state (proposed, planned, previewed, approved, executing, partially applied, verified, expired, rolled back, failed, or superseded).
+
+An intent is advisory until the exact derived plans are previewed and approved. It never authorizes a capability absent from the active connector manifest.
+
 ### ActionPlan
 
 An `ActionPlan`, shown before approval, contains:
 
-- target and executing control plane;
+- parent `SecurityIntent` where applicable, target, and executing native control plane;
+- connector/action-adapter identity, capability-manifest version, and native action type;
 - expected concrete changes;
 - expected traffic effect;
 - affected workloads/applications/identities;
@@ -360,7 +383,7 @@ An `ActionPlan`, shown before approval, contains:
 
 ### ActionExecution
 
-An `ActionExecution` contains the immutable approved plan/version, approver and executing principal, authorization decision, start/end time, control-plane request/reference, before/after state, result, validation evidence, audit provenance, errors, current effect, and rollback availability/state. An agent uses this same contract and cannot bypass approval.
+An `ActionExecution` contains the immutable approved plan/version, approver and executing principal, authorization decision, start/end time, control-plane request/reference and vendor change identifier, before/after state, result, validation evidence, expiry/removal verification, audit provenance, errors, partial-failure state, current effect, and rollback availability/state. An agent uses this same contract and cannot bypass approval.
 
 ### CanaryOpportunity
 

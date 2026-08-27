@@ -6,6 +6,8 @@ Status: product-experience contract for architecture review. It defines workflow
 
 CanaryPlatform is architecturally modular and experientially unified. CanaryView and CanarySting appear as capabilities in one console, preserve investigation context, and use the same evidence, confidence, recommendation, approval, action, and rollback contracts.
 
+Connector category, capability, health, and authority semantics come from `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`; the interface displays those contracts rather than inferring support from successful authentication.
+
 The primary user is a traditional security or network operator. Core workflows assume no software-development, Kubernetes, eBPF, distributed-tracing, query-language, schema, or vendor-API expertise. The product speaks first in incidents, applications, identities, flows, risk, policies, canaries, recommendations, actions, approvals, and rollback.
 
 Every significant finding answers, in one workspace:
@@ -53,7 +55,7 @@ The top-level navigation is intentionally small:
 3. **Flows** — security traces, topology paths, identity journeys, policy decisions, and raw evidence drilldown.
 4. **Canaries** — opportunities, recommendations, placements, touches, lifecycle, and signal value.
 5. **Actions** — previews, approvals, execution, validation, rollback, and audit.
-6. **Integrations** — collectors/control planes, permissions, freshness, field coverage, errors, and onboarding.
+6. **Integrations** — category/vendor browsing, collectors and native control planes, capability manifests, read/write authority, permissions, freshness, field coverage, health, errors, onboarding, replay, rotation, and disconnect.
 
 Vendor names/logos communicate provenance within these views; they are not the navigation model. Context persists when moving from incident to flow, canary, action, or integration evidence and back.
 
@@ -102,18 +104,19 @@ The placement then appears with pending/executing/completed/failed state, eviden
 
 ## Action approval workflow
 
-Every recommendation is adjacent to its explanation and evidence. **Preview action** opens an ActionPlan without mutation. The preview names the executing control plane and shows:
+Every recommendation is adjacent to its explanation and evidence. **Preview action** opens a `SecurityIntent` and its one or more vendor-native `ActionPlan` objects without mutation. The operator sees one coordinated plan while every native change remains separately identified. The preview names each executing control plane and shows:
 
 - exact target and expected changes;
 - expected traffic effect;
 - affected workloads/applications/identities;
 - estimated blast radius and uncertainty;
-- required authorization/approval;
+- required permissions, separate read/write authority, and authorization/approval;
 - validation success/failure plan;
-- rollback plan and trigger;
+- expiration and removal-verification behavior;
+- rollback plan, ordering, and trigger;
 - evidence and recommendation provenance.
 
-Approval is one confirmation step and produces an immutable approved plan version. Material changes invalidate the preview and require re-approval. Execution state is explicit; “requested” is not displayed as “completed.” Failed validation offers rollback or a named safe next step.
+Approval is one confirmation step and produces immutable approved plan versions. Material changes or lost manifest capabilities invalidate the preview and require re-approval. Execution state and partial failure are explicit; “requested” is not displayed as “completed.” Vendor change identifiers remain visible. Failed validation or expiration offers rollback or a named safe next step, and an expired action is not shown removed until removal is verified.
 
 ## Rollback workflow
 
@@ -142,7 +145,7 @@ The claim, explanation, confidence, and evidence summary remain adjacent. Select
 
 A `Recommendation` includes recommended action, reason, expected result, affected scope, risk, urgency, confidence, executing control plane, approval requirement, reversibility, rollback plan, constraints, and supporting evidence.
 
-An `ActionPlan` includes target, expected changes, expected traffic effect, affected workloads, estimated blast radius, validation plan, and rollback plan. An `ActionExecution` records approval, authorization, executor, before/after state, result, validation, audit, and rollback state.
+A `SecurityIntent` expresses the desired outcome, scope, duration, preservation constraints, and risk without pretending to be a generic vendor policy. Each vendor-native `ActionPlan` includes target, exact native change, expected traffic effect, affected workloads, estimated blast radius, required permissions, validation, expiration, and rollback. An `ActionExecution` records approval, authorization, executor, vendor change identifier, before/after state, result, validation, expiration/removal evidence, audit, partial failure, and rollback state.
 
 The canonical definitions live in `docs/CANARYVIEW_DATA_MODEL.md`. Human and agent users consume those same concepts.
 
@@ -158,6 +161,7 @@ The canonical definitions live in `docs/CANARYVIEW_DATA_MODEL.md`. Human and age
 | CanaryView recommendation to approved CanarySting placement | No more than two interaction steps. |
 | Claim to raw evidence | One click. |
 | Complete correlated trace | Available within the incident/flow workspace. |
+| Integration capability/authority answers | Available together on the integration overview; no vendor/API navigation. |
 
 Click counts start from the visible summary/recommendation and exclude authentication only when a still-valid authenticated session exists. Modal open/close gymnastics, vendor navigation, copying IDs, and query construction count as failures, not hidden steps.
 
@@ -208,18 +212,30 @@ The interface visibly distinguishes:
 
 AI-generated text summarizes but never replaces the deterministic evidence, confidence, correlation method, or authorization record. Operators can use every core workflow without prompts or prompt engineering. Agent suggestions appear under the same recommendation contract and cannot execute through hidden authority.
 
-## Connector onboarding
+## Connector onboarding and Integrations workspace
 
-Integrations uses a guided visual workflow:
+Integrations uses a guided click-ops workflow that requires no CLI, YAML, raw JSON, query language, or vendor API expertise:
 
-1. Select a source/control-plane type and deployment scope.
-2. Review required permissions, data categories, network path, retention, and whether the connector is read-only or action-capable.
-3. Configure secret references without displaying secret values.
-4. Test connectivity/authentication and show collected field coverage using a safe sample.
-5. Map optional application/identity aliases with confidence and source.
-6. Activate observation; show freshness, errors, gaps, and revocation/rollback.
+1. **Browse.** Select a connector category, then vendor/product, deployment pattern, region, and scope. Unsupported, unlicensed, unverified, preview, and supported states are explicit.
+2. **Understand capability.** Review supported data classes, correlation keys, policy/configuration/identity/NAT visibility, expected latency, raw-reference support, historical backfill, regional/licensing constraints, and future action capabilities from the versioned capability manifest.
+3. **Review permission and impact.** See every requested read permission in plain language, the network path, estimated daily volume, retention/storage impact, and missing visibility. Passive onboarding is labeled **Read-only** and never asks for write credentials.
+4. **Configure securely.** Configure a secret reference or approved credential flow without displaying secret values. Read and write credential slots are separate; the write slot remains absent during collector-only setup.
+5. **Test connection.** Validate connectivity, authentication, permission coverage, source clock, latency, schema compatibility, and a safe sample. Successful authentication alone does not mark the connector healthy or supported.
+6. **Activate observation.** Start the approved stream/poll/webhook/file/backfill mode and show checkpoint/backfill progress, field coverage, duplicates/rejections, freshness, lag, rate limits, schema warnings, and gaps.
+7. **Operate.** Provide connection retest, replay/backfill controls, credential rotation, permission re-review, upgrade compatibility, and disconnect. Disconnect explains evidence-retention effects and removes authority without deleting source-owned data.
 
-Action capability is a separate, later authorization from telemetry ingestion. Vendor-specific fields remain in evidence even when no canonical mapping exists.
+The integration overview answers together, without opening a vendor portal:
+
+- What does this connector see?
+- What does it not see?
+- How current is it?
+- What permissions does it have?
+- What actions could it eventually perform?
+- Is CanaryView using read-only or write authority?
+
+The same screen shows category/vendor/product/version; maturity/support status; supported and currently usable capabilities; supported data classes and correlation keys; expected and measured latency; backfill availability/coverage; action plan/preview/apply/verify/expire/rollback capability; health and lag; last successful event; schema/version warnings; missing fields and coverage gaps; rate-limit/permission failures; and data-volume/retention impact.
+
+Action enablement is a separate M7 workflow. It introduces a distinct write principal only after exact capability, required permissions, preview, approval, verification, expiration, rollback, and audit have been reviewed. Vendor-specific fields remain in evidence even when no canonical mapping exists.
 
 ## Retention-profile and data-lifecycle workflow
 
@@ -266,7 +282,8 @@ Every operator-facing development task identifies the operator job, expected int
 - completed action to rollback preview;
 - canary opportunity to approved placement;
 - security trace with partial/conflicting evidence;
-- connector failure and recovery;
+- connector category/vendor browse, capability/authority review, read-only setup, connection test, first-event health, credential rotation, failure/recovery, and disconnect;
+- duplicate/reordered/delayed/partial events, schema drift, rate limiting, backfill gaps, and permission-loss visibility;
 - Standard profile selection, an advanced retention override, separate model-use authorization, expiry visibility, and legal-hold create/release permissions;
 - keyboard and accessible-name checks.
 
