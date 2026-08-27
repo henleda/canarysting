@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly remote_alias='falcon1'
 readonly remote_root='/var/tmp/canarysting'
+readonly remote_evidence_root='/run/user/1000/canarysting'
 readonly cgroup_parent='/sys/fs/cgroup/canarysting-dgx'
 readonly snapshot_root='/var/tmp/canarysting-privileged'
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,7 +75,7 @@ done
 [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid run ID'
 
 readonly stage="${remote_root}/${run_id}"
-readonly evidence="${remote_root}/enforcespike-${run_id}"
+readonly evidence="${remote_evidence_root}/enforcespike-${run_id}"
 readonly cgroup="${cgroup_parent}/${run_id}"
 readonly snapshot="${snapshot_root}/enforcespike-${run_id}"
 
@@ -104,8 +105,9 @@ set -euo pipefail
 
 mode="$1"
 run_id="$2"
-root='/var/tmp/canarysting'
-stage="${root}/${run_id}"
+stage_root='/var/tmp/canarysting'
+root='/run/user/1000/canarysting'
+stage="${stage_root}/${run_id}"
 evidence="${root}/enforcespike-${run_id}"
 evidence_quarantine="${root}/.cleanup-enforcespike-${run_id}"
 cgroup_parent='/sys/fs/cgroup/canarysting-dgx'
@@ -114,7 +116,8 @@ snapshot_root='/var/tmp/canarysting-privileged'
 snapshot="${snapshot_root}/enforcespike-${run_id}"
 artifact_relative='test/enforcespike'
 artifact="${stage}/${artifact_relative}"
-readonly mode run_id root stage evidence evidence_quarantine cgroup_parent cgroup snapshot_root snapshot artifact_relative artifact
+expiry_unit="canarysting-enforcespike-expire-${run_id}"
+readonly mode run_id stage_root root stage evidence evidence_quarantine cgroup_parent cgroup snapshot_root snapshot artifact_relative artifact expiry_unit
 
 fail() {
   printf 'enforcespike(remote): %s\n' "$*" >&2
@@ -123,6 +126,8 @@ fail() {
 
 [[ "$(hostname -s)" == 'spark-5343' ]] || fail 'unexpected remote host'
 [[ "$(uname -m)" == 'aarch64' ]] || fail 'unexpected remote architecture'
+[[ "$(id -u)" == '1000' && -d /run/user/1000 && ! -L /run/user/1000 && -O /run/user/1000 &&
+  "$(stat -fc %T /run/user/1000)" == 'tmpfs' ]] || fail 'expected user-owned runtime tmpfs is unavailable'
 [[ "$(stat -fc %T /sys/fs/cgroup)" == 'cgroup2fs' ]] || fail 'cgroup v2 unified hierarchy is required'
 sudo -n true >/dev/null || fail 'non-interactive sudo is required'
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid mode'
@@ -146,15 +151,34 @@ bpf_ids() {
   done | LC_ALL=C sort
 }
 
+bounded_capture() {
+  local destination="$1" state_file="$2"
+  local capture_status=0 count_status=0 discarded=''
+  dd bs=1048576 count=1 iflag=fullblock status=none >"${destination}" || capture_status=$?
+  discarded="$(wc -c | awk '{ print $1 }')" || count_status=$?
+  if [[ "${capture_status}" -ne 0 || "${count_status}" -ne 0 || ! "${discarded}" =~ ^[0-9]+$ ]]; then
+    printf 'error\n' >"${state_file}"
+    return 1
+  fi
+  if [[ "${discarded}" == '0' ]]; then
+    printf 'complete\n' >"${state_file}"
+  else
+    printf 'truncated\n' >"${state_file}"
+  fi
+}
+
 assert_platform_healthy() {
-  local ready desired
+  local ready desired output
   sudo -n systemctl is-active --quiet k3s || return 1
   [[ "$(sudo -n k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" == 'True' ]] || return 1
-  read -r ready desired <<<"$(sudo -n k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  output="$(sudo -n k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
-  read -r ready desired <<<"$(sudo -n k3s kubectl -n kube-system get daemonset cilium-envoy -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  output="$(sudo -n k3s kubectl -n kube-system get daemonset cilium-envoy -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
-  read -r ready desired <<<"$(sudo -n k3s kubectl -n kube-system get deployment cilium-operator -o jsonpath='{.status.readyReplicas} {.status.replicas}')" || return 1
+  output="$(sudo -n k3s kubectl -n kube-system get deployment cilium-operator -o jsonpath='{.status.readyReplicas} {.status.replicas}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
   KUBECONFIG=/etc/rancher/k3s/k3s.yaml sudo -n -E cilium status --wait=false >/dev/null || return 1
 }
@@ -199,47 +223,81 @@ validate_evidence() {
     [[ ! -L "${evidence}/${f}" && "$(stat -c %a "${evidence}/${f}")" == '600' ]] || fail "unsafe evidence file: ${f}"
     [[ "$(stat -c %s "${evidence}/${f}")" -le 1048576 ]] || fail "oversized evidence file: ${f}"
   done
-  awk -F '\t' -v run="${run_id}" '
-    $1 == "run_id" { r++; if ($2 != run) exit 1 }
-    $1 == "status" { s++; if ($2 != "PASS") exit 1 }
-    $1 == "attach_scope" { a++; if ($2 != "run-owned-child-cgroup") exit 1 }
-    $1 == "runtime_cleanup" { c++; if ($2 != "PASS") exit 1 }
-    $1 == "created_at_utc" { created++; if ($2 !~ /^[0-9TZ:-]+$/) exit 1 }
-    $1 == "completed_at_utc" { completed++; if ($2 !~ /^[0-9TZ:-]+$/) exit 1 }
-    $1 == "expires_at_utc" { expires++; if ($2 !~ /^[0-9TZ:-]+$/) exit 1 }
-    END {
-      if (r != 1 || s != 1 || a != 1 || c != 1 || created != 1 || completed != 1 || expires != 1) exit 1
+  awk -F '\t' -v run="${run_id}" -v artifact="${artifact_sha256}" '
+    BEGIN {
+      expected["format_version"]="1"; expected["run_id"]=run; expected["status"]="PASS"
+      expected["artifact_sha256"]=artifact; expected["attach_scope"]="run-owned-child-cgroup"
+      expected["runtime_cleanup"]="PASS"; expected["stdout_capture"]="complete"; expected["stderr_capture"]="complete"
+      expected["retention"]="run-through-cleanup-with-24-hour-maximum"
+      expected["expiration_cleanup"]="scheduled-systemd-transient-timer"
+      expected["legal_hold"]="unsupported"; expected["deletion"]="exact-run-cleanup-or-scheduled-expiry"
+      expected["residency"]="DGX-host-filesystem"; expected["encryption_boundary"]="operator-managed-host"
+      expected["model_use"]="prohibited"; expected["derivation_lineage"]="artifact-checksum-plus-synthetic-proof"
+      expected["estimated_storage_impact"]="less-than-3MiB"
     }
-  ' "${evidence}/result.tsv" || fail 'evidence result schema is invalid'
-  local expires_at expires_epoch now_epoch
+    NF != 2 || !($1 in expected) && $1 !~ /^(stdout_bytes|stderr_bytes|stdout_sha256|stderr_sha256|root_attachments_before_sha256|root_attachments_after_sha256|bpf_inventory_before_sha256|bpf_inventory_after_sha256|created_at_utc|completed_at_utc|expires_at_utc)$/ { exit 1 }
+    { seen[$1]++; value[$1]=$2 }
+    END {
+      for (key in expected) if (seen[key] != 1 || value[key] != expected[key]) exit 1
+      if (seen["stdout_bytes"] != 1 || value["stdout_bytes"] !~ /^[0-9]+$/ || value["stdout_bytes"] > 1048576) exit 1
+      if (seen["stderr_bytes"] != 1 || value["stderr_bytes"] !~ /^[0-9]+$/ || value["stderr_bytes"] > 1048576) exit 1
+      for (key in seen) {
+        if (key ~ /sha256$/ && value[key] !~ /^[0-9a-f]{64}$/) exit 1
+        if (seen[key] != 1) exit 1
+      }
+      if (seen["created_at_utc"] != 1 || value["created_at_utc"] !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1
+      if (seen["completed_at_utc"] != 1 || value["completed_at_utc"] !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1
+      if (seen["expires_at_utc"] != 1 || value["expires_at_utc"] !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/) exit 1
+      if (value["root_attachments_before_sha256"] != value["root_attachments_after_sha256"]) exit 1
+      if (value["bpf_inventory_before_sha256"] != value["bpf_inventory_after_sha256"]) exit 1
+      if (length(seen) != 28) exit 1
+    }
+  ' "${evidence}/result.tsv" || fail 'evidence result schema is invalid or inconsistent'
+  local created_at completed_at expires_at created_epoch completed_epoch expires_epoch now_epoch
+  local expected_bytes expected_sha actual_bytes actual_sha observe_line target_cookie control_cookie
+  created_at="$(awk -F '\t' '$1 == "created_at_utc" { print $2 }' "${evidence}/result.tsv")"
+  completed_at="$(awk -F '\t' '$1 == "completed_at_utc" { print $2 }' "${evidence}/result.tsv")"
   expires_at="$(awk -F '\t' '$1 == "expires_at_utc" { print $2 }' "${evidence}/result.tsv")"
+  created_epoch="$(date -u -d "${created_at}" +%s)" || fail 'evidence creation timestamp is invalid'
+  completed_epoch="$(date -u -d "${completed_at}" +%s)" || fail 'evidence completion timestamp is invalid'
   expires_epoch="$(date -u -d "${expires_at}" +%s)" || fail 'evidence expiration is invalid'
+  [[ "${completed_epoch}" -ge "${created_epoch}" && $((expires_epoch - completed_epoch)) -eq 86400 ]] || fail 'evidence timestamp ordering or lifetime is invalid'
   now_epoch="$(date -u +%s)"
   [[ "${expires_epoch}" -gt "${now_epoch}" ]] || fail 'evidence expired; exact cleanup is required'
-  local marker
-  for marker in \
-    'PROOF missing_attribution=PASS' \
-    'PROOF shared_destination=PASS' \
-    'PROOF observe_before_enforce=PASS' \
-    'PROOF canary_touch=PASS' \
-    'PROOF target_programmed=PASS' \
-    'PROOF target_only_enforcement=PASS' \
-    'PROOF bystander_fail_open=PASS' \
-    'PROOF release_restore=PASS' \
-    'PROOF attach_scope_observed=PASS' \
-    'PROOF cilium_active_window=PASS' \
-    'PROOF runtime_cleanup=PASS' \
-    'RESULT PASS proof=precise-cookie-enforcement'; do
-    grep -Fq "${marker}" "${evidence}/stdout.log" || fail "missing proof marker: ${marker}"
+  for f in stdout stderr; do
+    expected_bytes="$(awk -F '\t' -v key="${f}_bytes" '$1 == key { print $2 }' "${evidence}/result.tsv")"
+    expected_sha="$(awk -F '\t' -v key="${f}_sha256" '$1 == key { print $2 }' "${evidence}/result.tsv")"
+    actual_bytes="$(stat -c %s "${evidence}/${f}.log")"
+    actual_sha="$(sha256sum "${evidence}/${f}.log" | awk '{print $1}')"
+    [[ "${actual_bytes}" == "${expected_bytes}" && "${actual_sha}" == "${expected_sha}" ]] || fail "${f} evidence does not match result metadata"
   done
+  [[ "$(grep -Fxc 'PROOF missing_attribution=PASS cookie=0 action=refused' "${evidence}/stdout.log")" == '1' ]] || fail 'missing or duplicate unattributable-flow proof'
+  [[ "$(grep -Ec '^PROOF shared_destination=PASS listener=127\.0\.0\.1:[1-9][0-9]* distinct_cookies=PASS$' "${evidence}/stdout.log")" == '1' ]] || fail 'shared-destination proof is malformed'
+  observe_line="$(grep -E '^PROOF observe_before_enforce=PASS target_cookie=[1-9][0-9]* control_cookie=[1-9][0-9]*$' "${evidence}/stdout.log")" || fail 'observe-before-enforce proof is missing'
+  [[ "$(grep -Ec '^PROOF observe_before_enforce=PASS target_cookie=[1-9][0-9]* control_cookie=[1-9][0-9]*$' "${evidence}/stdout.log")" == '1' ]] || fail 'observe-before-enforce proof is duplicated'
+  target_cookie="$(sed -E 's/.*target_cookie=([0-9]+).*/\1/' <<<"${observe_line}")"
+  control_cookie="$(sed -E 's/.*control_cookie=([0-9]+).*/\1/' <<<"${observe_line}")"
+  [[ "${target_cookie}" != "${control_cookie}" ]] || fail 'target/control cookies are not distinct'
+  [[ "$(grep -Fxc "PROOF canary_touch=PASS source=explicit-proof-fixture target_cookie=${target_cookie} baseline_trigger=none" "${evidence}/stdout.log")" == '1' ]] || fail 'canary-touch proof is inconsistent'
+  [[ "$(grep -Fxc "PROOF target_programmed=PASS cookie=${target_cookie} action=jail control_map_entry=absent" "${evidence}/stdout.log")" == '1' ]] || fail 'programmed-target proof is inconsistent'
+  [[ "$(grep -Ec "^PROOF target_only_enforcement=PASS target_cookie=${target_cookie} dropped_pkts=[1-9][0-9]* dropped_bytes=[1-9][0-9]*$" "${evidence}/stdout.log")" == '1' ]] || fail 'target-only enforcement proof is inconsistent'
+  [[ "$(grep -Fxc "PROOF bystander_fail_open=PASS control_cookie=${control_cookie} verdict_map=MISS round_trip=PASS" "${evidence}/stdout.log")" == '1' ]] || fail 'bystander proof is inconsistent'
+  [[ "$(grep -Fxc 'PROOF cilium_active_window_ack=PASS enforcement=programmed traffic=exercised' "${evidence}/stdout.log")" == '1' ]] || fail 'active-window acknowledgement is missing'
+  [[ "$(grep -Fxc "PROOF release_restore=PASS target_cookie=${target_cookie} same_connection=PASS retransmit=PASS" "${evidence}/stdout.log")" == '1' ]] || fail 'release proof is inconsistent'
+  [[ "$(grep -Fxc "PROOF attach_scope_observed=PASS child=${cgroup} parent=absent root=absent programs=sockops,enforce,release" "${evidence}/stdout.log")" == '1' ]] || fail 'attachment-scope proof is inconsistent'
+  [[ "$(grep -Fxc 'PROOF cilium_active_window=PASS node=spark-5343 attachments=live enforcement=programmed traffic=exercised' "${evidence}/stdout.log")" == '1' ]] || fail 'active-window Cilium proof is inconsistent'
+  [[ "$(grep -Fxc 'PROOF runtime_cleanup=PASS cgroup=absent snapshot=absent' "${evidence}/stdout.log")" == '1' ]] || fail 'runtime cleanup proof is inconsistent'
+  [[ "$(grep -Fxc 'RESULT PASS proof=precise-cookie-enforcement' "${evidence}/stdout.log")" == '1' ]] || fail 'explicit proof result is missing or duplicated'
+  ! grep -Eq '^(FAIL:|RESULT FAIL)' "${evidence}/stdout.log" || fail 'failure marker appears in successful evidence'
 }
 
 validate_cleanup_evidence() {
   local evidence_dir="$1" entry name type owner
   [[ -d "${evidence_dir}" && ! -L "${evidence_dir}" && -O "${evidence_dir}" ]] || fail 'cleanup evidence directory is missing or unsafe'
+  evidence_dir="$(cd -P -- "${evidence_dir}" && pwd -P)" || fail 'could not physically resolve cleanup evidence'
   while IFS= read -r entry; do
     name="${entry##*/}"
-    case "${name}" in result.tsv|stderr.log|stdout.log) ;; *) fail 'cleanup evidence has an unexpected entry' ;; esac
+    case "${name}" in result.tsv|stderr.log|stdout.log|.stdout.capture|.stderr.capture|.result.tsv.tmp) ;; *) fail 'cleanup evidence has an unexpected entry' ;; esac
     type="$(stat -c %F "${entry}")"
     owner="$(stat -c %u "${entry}")"
     [[ "${type}" == 'regular file' && "${owner}" == "$(id -u)" ]] || fail 'cleanup evidence entry is unsafe'
@@ -263,8 +321,14 @@ cleanup_evidence() {
     local removed='no'
     while [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" || -L "${quarantine_name}" ]]; do
       if [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]]; then
-        validate_cleanup_evidence "${evidence_name}"
+        local evidence_identity
+        exec 8<"${evidence_name}" || fail 'could not open exact evidence directory'
+        [[ -d /dev/fd/8 ]] || fail 'opened evidence is not a directory'
+        evidence_identity="$(stat -Lc %d:%i /dev/fd/8)" || fail 'could not identify opened evidence directory'
+        validate_cleanup_evidence /dev/fd/8/.
         mv -T -- "${evidence_name}" "${quarantine_name}" || fail 'could not quarantine exact evidence'
+        [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${evidence_identity}" ]] || fail 'quarantined evidence is not the validated directory inode'
+        exec 8<&-
       fi
       [[ -d "${quarantine_name}" && ! -L "${quarantine_name}" && -O "${quarantine_name}" ]] || fail 'quarantined evidence is unsafe'
       (
@@ -272,7 +336,7 @@ cleanup_evidence() {
         [[ "$(pwd -P)" == "${root}/${quarantine_name}" ]] || fail 'quarantined evidence escaped the fixed root'
         [[ ! -L "${root}/${quarantine_name}" && . -ef "${root}/${quarantine_name}" ]] || fail 'quarantined evidence changed before cleanup'
         validate_cleanup_evidence .
-        for file in result.tsv stderr.log stdout.log; do
+        for file in .stdout.capture .stderr.capture .result.tsv.tmp result.tsv stderr.log stdout.log; do
           if [[ -e "${file}" || -L "${file}" ]]; then
             rm -- "${file}" || fail "could not remove allowlisted evidence file: ${file}"
           fi
@@ -284,6 +348,83 @@ cleanup_evidence() {
     done
     [[ "${removed}" == 'yes' ]] && printf 'removed' || printf 'absent'
   )
+  rmdir -- "${root}" 2>/dev/null || true
+}
+
+expiry_timer_active() {
+  [[ "$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null)" == 'loaded' ]] || return 1
+  sudo -n systemctl is-active --quiet "${expiry_unit}.timer"
+}
+
+cancel_expiry_timer() {
+  local unit load_state
+  for unit in "${expiry_unit}.timer" "${expiry_unit}.service"; do
+    load_state="$(sudo -n systemctl show --property=LoadState --value "${unit}" 2>/dev/null || true)"
+    if [[ "${load_state}" == 'loaded' ]]; then
+      sudo -n systemctl stop "${unit}" || return 1
+      sudo -n systemctl reset-failed "${unit}" >/dev/null 2>&1 || true
+    elif [[ -n "${load_state}" && "${load_state}" != 'not-found' ]]; then
+      return 1
+    fi
+  done
+}
+
+schedule_expiry_cleanup() {
+  local evidence_name="enforcespike-${run_id}"
+  local quarantine_name=".cleanup-${evidence_name}"
+  local owner_uid expiry_cleanup_program
+  owner_uid="$(id -u)"
+  read -r -d '' expiry_cleanup_program <<'EXPIRY' || true
+set -euo pipefail
+root="$1"
+evidence_name="$2"
+quarantine_name="$3"
+owner_uid="$4"
+fail() { printf 'enforcespike(expiry): %s\n' "$*" >&2; exit 1; }
+validate_dir() {
+  local dir="$1" entry name type owner
+  [[ -d "${dir}" && ! -L "${dir}" ]] || fail 'evidence directory is missing or unsafe'
+  dir="$(cd -P -- "${dir}" && pwd -P)" || fail 'could not resolve evidence directory'
+  [[ "$(stat -c %u "${dir}")" == "${owner_uid}" ]] || fail 'evidence directory owner changed'
+  while IFS= read -r entry; do
+    name="${entry##*/}"
+    case "${name}" in result.tsv|stderr.log|stdout.log) ;; *) fail 'evidence contains an unexpected entry' ;; esac
+    type="$(stat -c %F "${entry}")"
+    owner="$(stat -c %u "${entry}")"
+    [[ "${type}" == 'regular file' && "${owner}" == "${owner_uid}" ]] || fail 'evidence entry is unsafe'
+  done < <(find "${dir}" -mindepth 1 -maxdepth 1 -print)
+}
+[[ "${root}" == '/run/user/1000/canarysting' && "${evidence_name}" =~ ^enforcespike-[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ &&
+  "${quarantine_name}" == ".cleanup-${evidence_name}" && "${owner_uid}" =~ ^[0-9]+$ ]] || fail 'unsafe expiry scope'
+[[ -d "${root}" && ! -L "${root}" && "$(stat -c %u "${root}")" == "${owner_uid}" ]] || fail 'evidence root is unsafe'
+cd -P -- "${root}" || fail 'could not enter evidence root'
+[[ "$(pwd -P)" == "${root}" && . -ef "${root}" ]] || fail 'evidence root is not physically anchored'
+if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
+  [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'live evidence and quarantine both exist'
+  exec 9<"${evidence_name}" || fail 'could not open evidence directory'
+  identity="$(stat -Lc %d:%i /proc/self/fd/9)" || fail 'could not identify evidence directory'
+  validate_dir /proc/self/fd/9/.
+  mv -T -- "${evidence_name}" "${quarantine_name}" || fail 'could not quarantine evidence'
+  [[ "$(stat -Lc %d:%i "${quarantine_name}")" == "${identity}" ]] ||
+    fail 'quarantined evidence is not the validated directory inode'
+  exec 9<&-
+fi
+if [[ -e "${quarantine_name}" || -L "${quarantine_name}" ]]; then
+  validate_dir "${quarantine_name}"
+  cd -P -- "./${quarantine_name}" || fail 'could not enter evidence quarantine'
+  [[ "$(pwd -P)" == "${root}/${quarantine_name}" && . -ef "${root}/${quarantine_name}" ]] || fail 'evidence quarantine escaped fixed root'
+  validate_dir .
+  rm -- result.tsv stderr.log stdout.log
+  cd -P -- "${root}"
+  rmdir -- "${quarantine_name}"
+  cd -P -- /run/user/1000
+  rmdir -- "${root}"
+fi
+EXPIRY
+  sudo -n systemd-run --quiet --collect --expand-environment=no --unit="${expiry_unit}" --on-active=23h55m \
+    --timer-property=AccuracySec=1s --property=Type=oneshot --property="User=$(id -un)" \
+    /usr/bin/bash -c "${expiry_cleanup_program}" _ "${root}" "${evidence_name}" "${quarantine_name}" "${owner_uid}" || return 1
+  expiry_timer_active
 }
 
 cleanup_runtime_residue() {
@@ -295,11 +436,16 @@ cleanup_runtime_residue() {
     sudo -n test -d "${snapshot}" || fail 'snapshot residue is not a directory'
     sudo -n test ! -L "${snapshot}" || fail 'snapshot residue is a symlink'
     snapshot_inventory="$(sudo -n find "${snapshot}" -mindepth 1 -maxdepth 1 -printf '%y:%f\n' | LC_ALL=C sort)"
-    case "${snapshot_inventory}" in ''|'f:.enforcespike.tmp'|'f:enforcespike') ;; *) fail 'snapshot inventory is unsafe' ;; esac
+    case "${snapshot_inventory}" in
+      ''|'f:.enforcement-active'|'f:.enforcespike.tmp'|'f:.health-checked'|'f:enforcespike'|\
+      $'f:.enforcement-active\nf:enforcespike'|$'f:.health-checked\nf:enforcespike'|\
+      $'f:.enforcement-active\nf:.health-checked\nf:enforcespike') ;;
+      *) fail 'snapshot inventory is unsafe' ;;
+    esac
     for proc_exe in /proc/[0-9]*/exe; do
       [[ "$(sudo -n readlink "${proc_exe}" 2>/dev/null || true)" != "${snapshot}/enforcespike" ]] || fail 'privileged snapshot is still executing'
     done
-    sudo -n rm -f "${snapshot}/.enforcespike.tmp" "${snapshot}/enforcespike"
+    sudo -n rm -f "${snapshot}/.enforcement-active" "${snapshot}/.health-checked" "${snapshot}/.enforcespike.tmp" "${snapshot}/enforcespike"
     sudo -n rmdir "${snapshot}"
   fi
   if sudo -n test -d "${cgroup_parent}"; then sudo -n rmdir "${cgroup_parent}" 2>/dev/null || true; fi
@@ -308,11 +454,14 @@ cleanup_runtime_residue() {
 
 if [[ "${mode}" == 'inspect' ]]; then
   [[ ! -e "${evidence_quarantine}" && ! -L "${evidence_quarantine}" ]] || fail 'interrupted evidence quarantine remains; run cleanup'
+  validate_stage
+  readonly artifact_size artifact_sha256
   validate_evidence
   bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state'
   [[ "${bpf_state}" == 'none' ]] || fail 'named CanarySting BPF state remains'
   sudo -n test ! -e "${cgroup}" || fail 'run-owned cgroup remains'
   sudo -n test ! -e "${snapshot}" || fail 'privileged snapshot remains'
+  expiry_timer_active || fail 'automatic evidence-expiration timer is not active'
   printf 'mode=inspect\nrun_id=%s\nevidence=PASS\nruntime_residue=none\n' "${run_id}"
   exit 0
 fi
@@ -321,6 +470,7 @@ if [[ "${mode}" == 'cleanup' ]]; then
   cleanup_runtime_residue
   bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state after cleanup'
   [[ "${bpf_state}" == 'none' ]] || fail 'named CanarySting BPF state remains after cleanup'
+  cancel_expiry_timer || fail 'could not cancel automatic evidence-expiration timer'
   evidence_state="$(cleanup_evidence)" || fail 'anchored evidence cleanup failed'
   printf 'mode=cleanup\nrun_id=%s\nevidence=%s\nruntime_residue=none\n' "${run_id}" "${evidence_state}"
   exit 0
@@ -328,7 +478,13 @@ fi
 
 validate_stage
 readonly artifact_size artifact_sha256
+if [[ -e "${root}" || -L "${root}" ]]; then
+  [[ -d "${root}" && ! -L "${root}" && -O "${root}" && "$(stat -c %a "${root}")" == '700' ]] || fail 'evidence root is unsafe'
+else
+  mkdir -m 0700 "${root}"
+fi
 [[ ! -e "${evidence}" && ! -L "${evidence}" && ! -e "${evidence_quarantine}" && ! -L "${evidence_quarantine}" ]] || fail 'proof evidence or interrupted quarantine already exists'
+[[ "$(sudo -n systemctl show --property=LoadState --value "${expiry_unit}.timer" 2>/dev/null || true)" != 'loaded' ]] || fail 'proof expiration timer already exists'
 sudo -n test ! -e "${cgroup}" || fail 'run-owned cgroup already exists'
 sudo -n test ! -e "${snapshot}" || fail 'privileged snapshot already exists'
 bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state before proof'
@@ -340,14 +496,17 @@ bpf_before="$(bpf_ids)"
 bpf_before_sha="$(printf '%s\n' "${bpf_before}" | sha256sum | awk '{print $1}')"
 created_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -m 0700 "${evidence}"
-: >"${evidence}/stdout.log"
-: >"${evidence}/stderr.log"
-chmod 0600 "${evidence}/stdout.log" "${evidence}/stderr.log"
+stdout_log="${evidence}/stdout.log"
+stderr_log="${evidence}/stderr.log"
+stdout_capture_state_file="${evidence}/.stdout.capture"
+stderr_capture_state_file="${evidence}/.stderr.capture"
 
 set +e
-(
-  ulimit -f 1024
-  sudo -n bash -s -- "${artifact}" "${artifact_size}" "${artifact_sha256}" "${run_id}" >"${evidence}/stdout.log" 2>"${evidence}/stderr.log" <<'PROOF'
+exec 3> >(bounded_capture "${stdout_log}" "${stdout_capture_state_file}")
+stdout_capture_pid=$!
+exec 4> >(bounded_capture "${stderr_log}" "${stderr_capture_state_file}")
+stderr_capture_pid=$!
+sudo -n bash -s -- "${artifact}" "${artifact_size}" "${artifact_sha256}" "${run_id}" >&3 2>&4 <<'PROOF'
 set -euo pipefail
 artifact="$1"
 expected_size="$2"
@@ -358,18 +517,23 @@ cgroup="${cgroup_parent}/${run_id}"
 snapshot_root='/var/tmp/canarysting-privileged'
 snapshot="${snapshot_root}/enforcespike-${run_id}"
 snapshot_artifact="${snapshot}/enforcespike"
-readonly artifact expected_size expected_sha run_id cgroup_parent cgroup snapshot_root snapshot snapshot_artifact
+health_ready="${snapshot}/.enforcement-active"
+health_ack="${snapshot}/.health-checked"
+readonly artifact expected_size expected_sha run_id cgroup_parent cgroup snapshot_root snapshot snapshot_artifact health_ready health_ack
 
 proof_fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 platform_healthy() {
-  local ready desired
+  local ready desired output
   systemctl is-active --quiet k3s || return 1
   [[ "$(k3s kubectl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')" == 'True' ]] || return 1
-  read -r ready desired <<<"$(k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  output="$(k3s kubectl -n kube-system get daemonset cilium -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
-  read -r ready desired <<<"$(k3s kubectl -n kube-system get daemonset cilium-envoy -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  output="$(k3s kubectl -n kube-system get daemonset cilium-envoy -o jsonpath='{.status.numberReady} {.status.desiredNumberScheduled}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
-  read -r ready desired <<<"$(k3s kubectl -n kube-system get deployment cilium-operator -o jsonpath='{.status.readyReplicas} {.status.replicas}')" || return 1
+  output="$(k3s kubectl -n kube-system get deployment cilium-operator -o jsonpath='{.status.readyReplicas} {.status.replicas}')" || return 1
+  read -r ready desired <<<"${output}" || return 1
   [[ "${desired}" =~ ^[1-9][0-9]*$ && "${ready}" == "${desired}" ]] || return 1
   KUBECONFIG=/etc/rancher/k3s/k3s.yaml cilium status --wait=false >/dev/null || return 1
 }
@@ -379,7 +543,7 @@ cleanup() {
     if [[ -z "$(awk 'NF { print; exit }' "${cgroup}/cgroup.procs")" ]]; then rmdir "${cgroup}" || failed=1; else failed=1; fi
   fi
   if [[ -d "${snapshot}" && ! -L "${snapshot}" ]]; then
-    rm -f "${snapshot_artifact}" || failed=1
+    rm -f "${health_ready}" "${health_ack}" "${snapshot_artifact}" || failed=1
     rmdir "${snapshot}" || failed=1
   fi
   [[ ! -e "${cgroup}" && ! -L "${cgroup}" && ! -e "${snapshot}" && ! -L "${snapshot}" ]] || failed=1
@@ -425,16 +589,19 @@ mkdir "${cgroup}"
 proof_pid=$!
 attach='FAIL'
 cilium_window='FAIL'
-for _ in $(seq 1 150); do
+for _ in $(seq 1 500); do
   child="$(bpftool cgroup show "${cgroup}" 2>/dev/null)" || proof_fail 'could not inventory child cgroup attachments'
   if grep -q 'canary_sockops' <<<"${child}" && grep -q 'enforce_egress' <<<"${child}" && grep -q 'enforce_release' <<<"${child}"; then
     parent="$(bpftool cgroup show "${cgroup_parent}" 2>/dev/null)" || proof_fail 'could not inventory parent cgroup attachments'
     root="$(bpftool cgroup show /sys/fs/cgroup 2>/dev/null)" || proof_fail 'could not inventory root cgroup attachments'
     if ! grep -Eq 'canary_sockops|enforce_(egress|release)' <<<"${parent}" && ! grep -Eq 'canary_sockops|enforce_(egress|release)' <<<"${root}"; then
-      if platform_healthy; then
+      attach='PASS'
+      if [[ -f "${health_ready}" && ! -L "${health_ready}" && "$(stat -c %a "${health_ready}")" == '600' &&
+        "$(<"${health_ready}")" == 'enforcement-active' ]] && platform_healthy; then
         child_after_health="$(bpftool cgroup show "${cgroup}" 2>/dev/null)" || proof_fail 'could not recheck child attachments after Cilium health'
         if grep -q 'canary_sockops' <<<"${child_after_health}" && grep -q 'enforce_egress' <<<"${child_after_health}" && grep -q 'enforce_release' <<<"${child_after_health}"; then
-          attach='PASS'
+          printf 'cilium-health-pass\n' >"${health_ack}"
+          chmod 0600 "${health_ack}"
           cilium_window='PASS'
           break
         fi
@@ -447,14 +614,30 @@ done
 wait "${proof_pid}"
 proof_status=$?
 printf 'PROOF attach_scope_observed=%s child=%s parent=absent root=absent programs=sockops,enforce,release\n' "${attach}" "${cgroup}"
-printf 'PROOF cilium_active_window=%s node=spark-5343 attachments=live\n' "${cilium_window}"
+printf 'PROOF cilium_active_window=%s node=spark-5343 attachments=live enforcement=programmed traffic=exercised\n' "${cilium_window}"
 [[ "${proof_status}" -eq 0 ]] || proof_fail "proof exited ${proof_status}"
 [[ "${attach}" == 'PASS' ]] || proof_fail 'exact child attachment scope was not observed'
 [[ "${cilium_window}" == 'PASS' ]] || proof_fail 'K3s node and Cilium health were not proven during live attachment'
 PROOF
-)
 proof_exit=$?
+exec 3>&-
+exec 4>&-
+stdout_capture_exit=0
+stderr_capture_exit=0
+wait "${stdout_capture_pid}" || stdout_capture_exit=$?
+wait "${stderr_capture_pid}" || stderr_capture_exit=$?
 set -e
+chmod 0600 "${stdout_log}" "${stderr_log}"
+
+stdout_capture='missing'
+stderr_capture='missing'
+[[ ! -f "${stdout_capture_state_file}" ]] || IFS= read -r stdout_capture <"${stdout_capture_state_file}"
+[[ ! -f "${stderr_capture_state_file}" ]] || IFS= read -r stderr_capture <"${stderr_capture_state_file}"
+rm -f -- "${stdout_capture_state_file}" "${stderr_capture_state_file}"
+stdout_bytes="$(stat -c %s "${stdout_log}")"
+stderr_bytes="$(stat -c %s "${stderr_log}")"
+stdout_sha256="$(sha256sum "${stdout_log}" | awk '{print $1}')"
+stderr_sha256="$(sha256sum "${stderr_log}" | awk '{print $1}')"
 
 root_after="$(sudo -n bpftool cgroup show /sys/fs/cgroup 2>/dev/null | sha256sum | awk '{print $1}')"
 bpf_after="$(bpf_ids)"
@@ -470,7 +653,10 @@ if [[ "${proof_exit}" -eq 0 && "${root_before}" == "${root_after}" && "${bpf_bef
 fi
 
 status='FAIL'
-if [[ "${runtime_cleanup}" == 'PASS' ]] && grep -Fq 'RESULT PASS proof=precise-cookie-enforcement' "${evidence}/stdout.log"; then
+if [[ "${runtime_cleanup}" == 'PASS' && "${stdout_capture_exit}" -eq 0 && "${stderr_capture_exit}" -eq 0 &&
+  "${stdout_capture}" == 'complete' && "${stderr_capture}" == 'complete' &&
+  "${stdout_bytes}" -le 1048576 && "${stderr_bytes}" -le 1048576 ]] &&
+  grep -Fxq 'RESULT PASS proof=precise-cookie-enforcement' "${evidence}/stdout.log"; then
   status='PASS'
 fi
 {
@@ -480,6 +666,12 @@ fi
   printf 'artifact_sha256\t%s\n' "${artifact_sha256}"
   printf 'attach_scope\trun-owned-child-cgroup\n'
   printf 'runtime_cleanup\t%s\n' "${runtime_cleanup}"
+  printf 'stdout_capture\t%s\n' "${stdout_capture}"
+  printf 'stderr_capture\t%s\n' "${stderr_capture}"
+  printf 'stdout_bytes\t%s\n' "${stdout_bytes}"
+  printf 'stderr_bytes\t%s\n' "${stderr_bytes}"
+  printf 'stdout_sha256\t%s\n' "${stdout_sha256}"
+  printf 'stderr_sha256\t%s\n' "${stderr_sha256}"
   printf 'root_attachments_before_sha256\t%s\n' "${root_before}"
   printf 'root_attachments_after_sha256\t%s\n' "${root_after}"
   printf 'bpf_inventory_before_sha256\t%s\n' "${bpf_before_sha}"
@@ -488,8 +680,9 @@ fi
   printf 'completed_at_utc\t%s\n' "${completed_at_utc}"
   printf 'expires_at_utc\t%s\n' "${expires_at_utc}"
   printf 'retention\trun-through-cleanup-with-24-hour-maximum\n'
+  printf 'expiration_cleanup\tscheduled-systemd-transient-timer\n'
   printf 'legal_hold\tunsupported\n'
-  printf 'deletion\texact-run-cleanup\n'
+  printf 'deletion\texact-run-cleanup-or-scheduled-expiry\n'
   printf 'residency\tDGX-host-filesystem\n'
   printf 'encryption_boundary\toperator-managed-host\n'
   printf 'model_use\tprohibited\n'
@@ -499,6 +692,7 @@ fi
 chmod 0600 "${evidence}/result.tsv"
 
 [[ "${status}" == 'PASS' ]] || fail "proof failed; inspect ${evidence}"
+schedule_expiry_cleanup || fail 'could not schedule automatic evidence expiration'
 validate_evidence
 printf 'mode=run\nrun_id=%s\nstatus=PASS\nevidence=%s\nruntime_residue=none\n' "${run_id}" "${evidence}"
 REMOTE

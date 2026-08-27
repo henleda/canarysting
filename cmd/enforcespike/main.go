@@ -57,6 +57,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -297,9 +298,6 @@ func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containm
 	}
 	fmt.Println("PROOF missing_attribution=PASS cookie=0 action=refused")
 	fmt.Println("PROOF loaders_ready=PASS live_attachment_observation=pending")
-	// Keep the exact child attachments live long enough for the external harness
-	// to assert Cilium and node health while they are attached.
-	time.Sleep(3 * time.Second)
 
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -377,6 +375,9 @@ func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containm
 	}
 	fmt.Printf("PROOF target_only_enforcement=PASS target_cookie=%d dropped_pkts=%d dropped_bytes=%d\n", target.cookie, droppedPkts, droppedBytes)
 	fmt.Printf("PROOF bystander_fail_open=PASS control_cookie=%d verdict_map=MISS round_trip=PASS\n", control.cookie)
+	if err := awaitActiveWindowHealthAck(); err != nil {
+		return fmt.Errorf("active enforcement health handshake: %w", err)
+	}
 
 	if err := cont.Release(verdict); err != nil {
 		return fmt.Errorf("release target jail: %w", err)
@@ -399,6 +400,57 @@ func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containm
 	}
 	fmt.Printf("PROOF release_restore=PASS target_cookie=%d same_connection=PASS retransmit=PASS\n", target.cookie)
 	return nil
+}
+
+// awaitActiveWindowHealthAck keeps the target verdict programmed after a real
+// kernel drop and same-destination control round trip. The privileged harness
+// performs its node/Cilium checks only after the ready marker appears, then
+// writes the acknowledgement. Both fixed markers live beside the verified
+// snapshot and are removed before the verdict is released.
+func awaitActiveWindowHealthAck() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve proof executable: %w", err)
+	}
+	dir := filepath.Dir(executable)
+	ready := filepath.Join(dir, ".enforcement-active")
+	ack := filepath.Join(dir, ".health-checked")
+	for _, path := range []string{ready, ack} {
+		if _, statErr := os.Lstat(path); statErr == nil {
+			return fmt.Errorf("proof handshake marker already exists: %s", filepath.Base(path))
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect proof handshake marker %s: %w", filepath.Base(path), statErr)
+		}
+	}
+	if err := os.WriteFile(ready, []byte("enforcement-active\n"), 0o600); err != nil {
+		return fmt.Errorf("publish enforcement-active marker: %w", err)
+	}
+	defer os.Remove(ready)
+	defer os.Remove(ack)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		info, statErr := os.Lstat(ack)
+		if statErr == nil {
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				return fmt.Errorf("health acknowledgement is not a mode-0600 regular file")
+			}
+			contents, readErr := os.ReadFile(ack)
+			if readErr != nil {
+				return fmt.Errorf("read health acknowledgement: %w", readErr)
+			}
+			if string(contents) != "cilium-health-pass\n" {
+				return fmt.Errorf("health acknowledgement has invalid contents")
+			}
+			fmt.Println("PROOF cilium_active_window_ack=PASS enforcement=programmed traffic=exercised")
+			return nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect health acknowledgement: %w", statErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for Cilium health acknowledgement")
 }
 
 func newLoopbackPair(listener *net.TCPListener, res identity.CookieResolver) (*loopbackPair, error) {

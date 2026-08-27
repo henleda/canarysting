@@ -36,7 +36,12 @@ for tool in k3s kubectl cilium bpftool docker go clang ollama; do
 done
 
 section kubernetes
-printf 'k3s_service=%s\n' "$(systemctl is-active k3s 2>/dev/null || true)"
+k3s_service="$(systemctl is-active k3s)"
+test "${k3s_service}" = active
+printf 'k3s_service=%s\n' "${k3s_service}"
+node_ready="$(kctl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}')"
+test "${node_ready}" = True
+printf 'node_ready=%s\n' "${node_ready}"
 kctl get nodes -o custom-columns=NAME:.metadata.name,READY:.status.conditions[-1].status,ARCH:.status.nodeInfo.architecture,KUBELET:.status.nodeInfo.kubeletVersion,RUNTIME:.status.nodeInfo.containerRuntimeVersion
 
 section cilium
@@ -48,10 +53,13 @@ printf 'cgroup_fs=%s\n' "$(stat -fc %T /sys/fs/cgroup)"
 printf 'bpffs=%s\n' "$(findmnt -n -o TARGET,FSTYPE /sys/fs/bpf 2>/dev/null || echo unavailable)"
 test -r /sys/kernel/btf/vmlinux && echo 'kernel_btf=readable' || echo 'kernel_btf=unavailable'
 printf 'bpf_jit=%s\n' "$(sysctl -n net.core.bpf_jit_enable 2>/dev/null || echo unknown)"
-sudo -n bpftool feature probe kernel 2>/dev/null | grep -E 'program_type (sock_ops|cgroup_skb) is available' || true
+bpf_features="$(sudo -n bpftool feature probe kernel 2>/dev/null)"
+grep -Fq 'program_type sock_ops is available' <<<"${bpf_features}"
+grep -Fq 'program_type cgroup_skb is available' <<<"${bpf_features}"
+printf 'required_bpf_program_types=available\n'
 
 section root_cgroup_attachments
-sudo -n bpftool cgroup show /sys/fs/cgroup || true
+sudo -n bpftool cgroup show /sys/fs/cgroup
 
 section canarysting_host_state
 found_process=0
@@ -65,8 +73,12 @@ for proc_dir in /proc/[0-9]*; do
   esac
 done
 test "${found_process}" -eq 1 || echo 'canarysting_processes=none'
-sudo -n bpftool prog show 2>/dev/null | grep -i canary || echo 'canarysting_bpf_programs=none_named'
-sudo -n bpftool map show 2>/dev/null | grep -i canary || echo 'canarysting_bpf_maps=none_named'
+bpf_programs="$(sudo -n bpftool prog show 2>/dev/null)"
+bpf_maps="$(sudo -n bpftool map show 2>/dev/null)"
+bpf_links="$(sudo -n bpftool link show 2>/dev/null)"
+grep -Ei 'canary_sockops|enforce_(egress|release)' <<<"${bpf_programs}" || echo 'canarysting_bpf_programs=none_named'
+grep -Ei 'flow_cookies|verdict_map' <<<"${bpf_maps}" || echo 'canarysting_bpf_maps=none_named'
+grep -Ei 'canary_sockops|enforce_(egress|release)' <<<"${bpf_links}" || echo 'canarysting_bpf_links=none_named'
 
 section canarysting_kubernetes_state
 kctl get all,networkpolicy -A -l app.kubernetes.io/part-of=canarysting 2>/dev/null || true
