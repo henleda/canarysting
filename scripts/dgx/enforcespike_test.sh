@@ -58,8 +58,13 @@ cleanup_definition="$(awk '
 cleanup_prelude='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''stat() { case "$1:$2" in -c:%F) [[ -f "$3" && ! -L "$3" ]] && printf "regular file\n" || return 1 ;; -c:%u) id -u ;; -Lc:%d:%i) if [[ "$3" == /dev/fd/8 ]]; then if [[ -e "${quarantine_name}" ]]; then command stat -f %d:%i "${quarantine_name}"; else command stat -f %d:%i "${evidence_name}"; fi; else command stat -f %d:%i "$3"; fi ;; -Lc:%h) if [[ "$3" == /dev/fd/8 && ! -e "${quarantine_name}" ]]; then printf "0\n"; else command stat -f %l "$3"; fi ;; *) command stat "$@" ;; esac; }'$'\n''cd() { if [[ "${@: -1}" == /dev/fd/8/. ]]; then if [[ -e "${quarantine_name}" ]]; then builtin cd -P -- "${quarantine_name}"; else builtin cd -P -- "${evidence_name}"; fi; else builtin cd "$@"; fi; }'
 cleanup_suffix=$'\n'"${cleanup_validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; root="$2"; evidence="${root}/enforcespike-${run_id}"; evidence_quarantine="${root}/.cleanup-enforcespike-${run_id}"; cleanup_evidence'
 normal_mv='mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'
-cleanup_runner="${cleanup_prelude}"$'\n'"${normal_mv}${cleanup_suffix}"
-cleanup_shell="$(command -v zsh || command -v bash)"
+if command -v zsh >/dev/null 2>&1; then
+  cleanup_shell="$(command -v zsh)"
+  cleanup_runner="${cleanup_prelude}"$'\n'"${normal_mv}${cleanup_suffix}"
+else
+  cleanup_shell="$(command -v bash)"
+  cleanup_runner='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'"${cleanup_suffix}"
+fi
 
 cleanup_root="${tmp_dir}/cleanup-root"
 mkdir -m 700 "${cleanup_root}"
