@@ -55,10 +55,11 @@ cleanup_definition="$(awk '
   capture && /^}$/ { exit }
 ' "${subject}")"
 [[ -n "${cleanup_validation_definition}" && -n "${cleanup_definition}" ]] || fail 'anchored evidence cleanup functions are missing'
-cleanup_prelude='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''stat() { case "$1:$2" in -c:%F) [[ -f "$3" && ! -L "$3" ]] && printf "regular file\n" || return 1 ;; -c:%u) id -u ;; -Lc:%d:%i) if [[ "$3" == /dev/fd/8 ]]; then if [[ -e "${quarantine_name}" ]]; then command stat -f %d:%i "${quarantine_name}"; else command stat -f %d:%i "${evidence_name}"; fi; else command stat -f %d:%i "$3"; fi ;; -Lc:%h) if [[ "$3" == /dev/fd/8 && ! -e "${quarantine_name}" ]]; then printf "0\n"; else command stat -f %l "$3"; fi ;; *) command stat "$@" ;; esac; }'$'\n''cd() { if [[ "${@: -1}" == /dev/fd/8/. ]]; then if [[ -e "${quarantine_name}" ]]; then builtin cd -P -- "${quarantine_name}"; else builtin cd -P -- "${evidence_name}"; fi; else builtin cd "$@"; fi; }'
+cleanup_prelude='fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }'$'\n''stat() { case "$1:$2" in -c:%F) [[ -f "$3" && ! -L "$3" ]] && printf "regular file\n" || return 1 ;; -c:%u) id -u ;; -Lc:%d:%i) if [[ "$3" == /dev/fd/7 ]]; then command stat -f %d:%i "${root}"; elif [[ "$3" == /dev/fd/8 ]]; then if [[ -e "${quarantine_name}" ]]; then command stat -f %d:%i "${quarantine_name}"; else command stat -f %d:%i "${evidence_name}"; fi; else command stat -f %d:%i "$3"; fi ;; -Lc:%h) if [[ "$3" == /dev/fd/7 && ! -e "${root}" ]] || [[ "$3" == /dev/fd/8 && ! -e "${quarantine_name}" ]]; then printf "0\n"; else command stat -f %l "$3"; fi ;; *) command stat "$@" ;; esac; }'$'\n''cd() { if [[ "${@: -1}" == /dev/fd/7/. ]]; then builtin cd -P -- "${root}"; elif [[ "${@: -1}" == /dev/fd/8/. ]]; then if [[ -e "${quarantine_name}" ]]; then builtin cd -P -- "${quarantine_name}"; else builtin cd -P -- "${evidence_name}"; fi; else builtin cd "$@"; fi; }'
 cleanup_suffix=$'\n'"${cleanup_validation_definition}"$'\n'"${cleanup_definition}"$'\n''run_id="$1"; root="$2"; evidence="${root}/enforcespike-${run_id}"; evidence_quarantine="${root}/.cleanup-enforcespike-${run_id}"; cleanup_evidence'
 normal_mv='mv() { if [[ "$1" == "-T" && "$2" == "--" ]]; then command mv -- "$3" "$4"; else command mv "$@"; fi; }'
-if command -v zsh >/dev/null 2>&1; then
+if [[ "$(uname -s)" == 'Darwin' ]]; then
+  command -v zsh >/dev/null 2>&1 || fail 'zsh is required for the macOS cleanup portability test'
   cleanup_shell="$(command -v zsh)"
   cleanup_runner="${cleanup_prelude}"$'\n'"${normal_mv}${cleanup_suffix}"
 else
@@ -144,12 +145,20 @@ grep -Fq 'mv -T -- "${evidence_name}" "${quarantine_name}"' "${subject}" || fail
 grep -Fq 'quarantined evidence is not the validated directory inode' "${subject}" || fail 'cleanup does not bind validation to the quarantined inode'
 grep -Fq 'cd -P -- /dev/fd/8/.' "${subject}" || fail 'manual cleanup does not delete through the validated directory descriptor'
 grep -Fq 'validated evidence directory remains linked after cleanup' "${subject}" || fail 'manual cleanup does not verify unlink of the validated inode'
+grep -Fq 'cd -P -- /dev/fd/7/.' "${subject}" || fail 'manual cleanup does not operate through the validated root descriptor'
+grep -Fq 'validated evidence root remains linked after cleanup' "${subject}" || fail 'manual cleanup does not verify unlink of the validated root inode'
 grep -Fq 'cd -P -- /proc/self/fd/9/.' "${subject}" || fail 'expiry cleanup does not delete through the validated directory descriptor'
 grep -Fq 'validated evidence directory remains linked after expiry' "${subject}" || fail 'expiry cleanup does not verify unlink of the validated inode'
+grep -Fq 'cd -P -- /proc/self/fd/7/.' "${subject}" || fail 'expiry cleanup does not operate through the validated root descriptor'
+grep -Fq 'validated evidence root remains linked after expiry' "${subject}" || fail 'expiry cleanup does not verify unlink of the validated root inode'
+grep -Fq 'if [[ ! -e "${root}" && ! -L "${root}" ]]; then' "${subject}" || fail 'cleanup does not treat an already-absent evidence root as success'
 grep -Fq 'mv -T -- "${health_ack_tmp}" "${health_ack}"' "${subject}" || fail 'health acknowledgement is not published atomically'
 grep -Fq 'completed_epoch + 86400' "${subject}" || fail 'expiration is not derived from the captured completion time'
 cancel_definition="$(awk '/^cancel_expiry_timer\(\) \{$/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${subject}")"
 expect_failure 'systemd timer query failure' bash -c 'sudo() { return 42; }'$'\n'"${cancel_definition}"$'\n''expiry_unit=test-unit; cancel_expiry_timer'
+cleanup_call_line="$(grep -n 'evidence_state="$(cleanup_evidence)"' "${subject}" | cut -d: -f1)"
+cancel_call_line="$(grep -n 'cancel_expiry_timer || fail' "${subject}" | cut -d: -f1)"
+[[ "${cleanup_call_line}" -lt "${cancel_call_line}" ]] || fail 'manual cleanup cancels the retry timer before evidence deletion succeeds'
 grep -Fq 'stdout_sha256' "${subject}" || fail 'inspection does not bind result metadata to stdout evidence'
 grep -Fq 'validate_stage' "${subject}" || fail 'inspection does not bind evidence to a verified stage'
 if grep -Eq 'bpftool (prog|map|link|cgroup) show.*\|\| true' "${script_dir}/check.sh"; then fail 'supporting DGX check masks BPF inventory failure'; fi

@@ -308,6 +308,7 @@ validate_cleanup_evidence() {
 cleanup_evidence() {
   local evidence_name="enforcespike-${run_id}"
   local quarantine_name=".cleanup-${evidence_name}"
+  local root_parent="${root%/*}"
   [[ "${evidence}" == "${root}/${evidence_name}" && "${evidence_name}" != */* ]] || fail 'cleanup evidence is outside the fixed run scope'
   [[ "${evidence_quarantine}" == "${root}/${quarantine_name}" && "${quarantine_name}" != */* ]] || fail 'cleanup quarantine is outside the fixed run scope'
   if [[ ! -e "${root}" && ! -L "${root}" ]]; then
@@ -317,8 +318,13 @@ cleanup_evidence() {
   [[ -d "${root}" && ! -L "${root}" && -O "${root}" ]] || fail 'cleanup root is missing or unsafe'
 
   (
-    cd -P -- "${root}" || fail 'could not enter cleanup root'
-    [[ "$(pwd -P)" == "${root}" && ! -L "${root}" && . -ef "${root}" ]] || fail 'cleanup root is not physically anchored'
+    local root_identity root_links remaining
+    exec 7<"${root}" || fail 'could not open cleanup root'
+    [[ -d /dev/fd/7/. && ! -L "${root}" && -O /dev/fd/7/. ]] || fail 'opened cleanup root is unsafe'
+    root_identity="$(stat -Lc %d:%i /dev/fd/7)" || fail 'could not identify cleanup root'
+    [[ "$(stat -Lc %d:%i "${root}")" == "${root_identity}" ]] || fail 'cleanup root changed before entry'
+    cd -P -- /dev/fd/7/. || fail 'could not enter validated cleanup root'
+    [[ "$(stat -Lc %d:%i .)" == "${root_identity}" ]] || fail 'cleanup left the validated root'
     local removed='no'
     while [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" || -L "${quarantine_name}" ]]; do
       local evidence_identity evidence_links
@@ -353,13 +359,17 @@ cleanup_evidence() {
       exec 8<&-
       removed='yes'
     done
+    remaining="$(find . -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect cleanup root after evidence deletion'
+    cd -P -- "${root_parent}" || fail 'could not enter fixed cleanup-root parent'
+    [[ ! -L "${root}" && "$(stat -Lc %d:%i "${root}")" == "${root_identity}" ]] || fail 'cleanup root changed before final verification'
+    if [[ -z "${remaining}" ]]; then
+      rmdir -- "${root}" || fail 'could not remove empty evidence root'
+      root_links="$(stat -Lc %h /dev/fd/7)" || fail 'could not verify evidence-root unlink'
+      [[ "${root_links}" == '0' ]] || fail 'validated evidence root remains linked after cleanup'
+    fi
+    exec 7<&-
     [[ "${removed}" == 'yes' ]] && printf 'removed' || printf 'absent'
   )
-  local remaining
-  remaining="$(find "${root}" -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect cleanup root after evidence deletion'
-  if [[ -z "${remaining}" ]]; then
-    rmdir -- "${root}" || fail 'could not remove empty evidence root'
-  fi
 }
 
 expiry_timer_active() {
@@ -429,9 +439,15 @@ validate_dir() {
 }
 [[ "${root}" == '/run/user/1000/canarysting' && "${evidence_name}" =~ ^enforcespike-[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ &&
   "${quarantine_name}" == ".cleanup-${evidence_name}" && "${owner_uid}" =~ ^[0-9]+$ ]] || fail 'unsafe expiry scope'
+if [[ ! -e "${root}" && ! -L "${root}" ]]; then
+  exit 0
+fi
 [[ -d "${root}" && ! -L "${root}" && "$(stat -c %u "${root}")" == "${owner_uid}" ]] || fail 'evidence root is unsafe'
-cd -P -- "${root}" || fail 'could not enter evidence root'
-[[ "$(pwd -P)" == "${root}" && . -ef "${root}" ]] || fail 'evidence root is not physically anchored'
+exec 7<"${root}" || fail 'could not open evidence root'
+root_identity="$(stat -Lc %d:%i /proc/self/fd/7)" || fail 'could not identify evidence root'
+[[ ! -L "${root}" && "$(stat -Lc %d:%i "${root}")" == "${root_identity}" ]] || fail 'evidence root changed before entry'
+cd -P -- /proc/self/fd/7/. || fail 'could not enter validated evidence root'
+[[ "$(stat -Lc %d:%i .)" == "${root_identity}" && "$(stat -c %u .)" == "${owner_uid}" ]] || fail 'expiry left the validated evidence root'
 if [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" || -L "${quarantine_name}" ]]; then
   if [[ -e "${evidence_name}" || -L "${evidence_name}" ]]; then
     [[ ! -e "${quarantine_name}" && ! -L "${quarantine_name}" ]] || fail 'live evidence and quarantine both exist'
@@ -458,11 +474,14 @@ if [[ -e "${evidence_name}" || -L "${evidence_name}" || -e "${quarantine_name}" 
   [[ "$(stat -Lc %h /proc/self/fd/9)" == '0' ]] || fail 'validated evidence directory remains linked after expiry'
   exec 9<&-
 fi
-remaining="$(find "${root}" -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect evidence root after expiry'
+remaining="$(find . -mindepth 1 -maxdepth 1 -print -quit)" || fail 'could not inspect evidence root after expiry'
+cd -P -- /run/user/1000 || fail 'could not enter fixed evidence-root parent'
+[[ ! -L "${root}" && "$(stat -Lc %d:%i "${root}")" == "${root_identity}" ]] || fail 'evidence root changed before final verification'
 if [[ -z "${remaining}" ]]; then
-  cd -P -- /run/user/1000
   rmdir -- "${root}" || fail 'could not remove empty evidence root'
+  [[ "$(stat -Lc %h /proc/self/fd/7)" == '0' ]] || fail 'validated evidence root remains linked after expiry'
 fi
+exec 7<&-
 EXPIRY
   sudo -n systemd-run --quiet --collect --expand-environment=no --unit="${expiry_unit}" --on-active=23h55m \
     --timer-property=AccuracySec=1s --property=Type=oneshot --property=Restart=on-failure \
@@ -516,8 +535,8 @@ if [[ "${mode}" == 'cleanup' ]]; then
   cleanup_runtime_residue
   bpf_state="$(named_bpf_state)" || fail 'could not inventory named CanarySting BPF state after cleanup'
   [[ "${bpf_state}" == 'none' ]] || fail 'named CanarySting BPF state remains after cleanup'
-  cancel_expiry_timer || fail 'could not cancel automatic evidence-expiration timer'
   evidence_state="$(cleanup_evidence)" || fail 'anchored evidence cleanup failed'
+  cancel_expiry_timer || fail 'could not cancel automatic evidence-expiration timer'
   printf 'mode=cleanup\nrun_id=%s\nevidence=%s\nruntime_residue=none\n' "${run_id}" "${evidence_state}"
   exit 0
 fi
