@@ -268,11 +268,9 @@ func main() {
 }
 
 type loopbackPair struct {
-	listener *net.TCPListener
-	client   *net.TCPConn
-	server   *net.TCPConn
-	tuple    identity.FourTuple
-	cookie   uint64
+	client *net.TCPConn
+	server *net.TCPConn
+	cookie uint64
 }
 
 func (p *loopbackPair) close() {
@@ -281,9 +279,6 @@ func (p *loopbackPair) close() {
 	}
 	if p.server != nil {
 		_ = p.server.Close()
-	}
-	if p.listener != nil {
-		_ = p.listener.Close()
 	}
 }
 
@@ -302,21 +297,32 @@ func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containm
 	}
 	fmt.Println("PROOF missing_attribution=PASS cookie=0 action=refused")
 	fmt.Println("PROOF loaders_ready=PASS live_attachment_observation=pending")
-	time.Sleep(250 * time.Millisecond)
+	// Keep the exact child attachments live long enough for the external harness
+	// to assert Cilium and node health while they are attached.
+	time.Sleep(3 * time.Second)
 
-	target, err := newLoopbackPair(guarded)
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
-		return fmt.Errorf("target fixture: %w", err)
+		return fmt.Errorf("shared fixture listener: %w", err)
 	}
-	defer target.close()
-	control, err := newLoopbackPair(guarded)
+	defer listener.Close()
+	control, err := newLoopbackPair(listener, guarded)
 	if err != nil {
 		return fmt.Errorf("control fixture: %w", err)
 	}
 	defer control.close()
+	target, err := newLoopbackPair(listener, guarded)
+	if err != nil {
+		return fmt.Errorf("target fixture: %w", err)
+	}
+	defer target.close()
 	if target.cookie == control.cookie {
 		return fmt.Errorf("target and control unexpectedly share cookie %d", target.cookie)
 	}
+	if target.server.LocalAddr().String() != control.server.LocalAddr().String() {
+		return fmt.Errorf("target and control do not share a destination: target=%s control=%s", target.server.LocalAddr(), control.server.LocalAddr())
+	}
+	fmt.Printf("PROOF shared_destination=PASS listener=%s distinct_cookies=PASS\n", listener.Addr())
 
 	if err := roundTrip(target, []byte("target-before-enforce"), time.Second); err != nil {
 		return fmt.Errorf("target observe-before-enforce round trip: %w", err)
@@ -395,13 +401,8 @@ func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containm
 	return nil
 }
 
-func newLoopbackPair(res identity.CookieResolver) (*loopbackPair, error) {
+func newLoopbackPair(listener *net.TCPListener, res identity.CookieResolver) (*loopbackPair, error) {
 	pair := &loopbackPair{}
-	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
-	}
-	pair.listener = listener
 	type acceptResult struct {
 		conn *net.TCPConn
 		err  error
@@ -433,7 +434,6 @@ func newLoopbackPair(res identity.CookieResolver) (*loopbackPair, error) {
 		pair.close()
 		return nil, err
 	}
-	pair.tuple = tuple
 	oracle, err := socketCookie(pair.server)
 	if err != nil {
 		pair.close()
