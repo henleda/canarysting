@@ -119,7 +119,12 @@ bounded_capture_definition="$(awk '/^bounded_capture\(\) \{$/ { capture=1 } capt
 capture_file="${tmp_dir}/bounded.log"
 capture_state="${tmp_dir}/bounded.state"
 head -c 1048577 /dev/zero | bash -c "${bounded_capture_definition}"$'\n''bounded_capture "$1" "$2"' -- "${capture_file}" "${capture_state}"
-[[ "$(stat -f %z "${capture_file}" 2>/dev/null || stat -c %s "${capture_file}")" == '1048576' ]] || fail 'bounded capture did not enforce the 1 MiB limit'
+if [[ "$(uname -s)" == 'Darwin' ]]; then
+  capture_size="$(stat -f %z "${capture_file}")"
+else
+  capture_size="$(stat -c %s "${capture_file}")"
+fi
+[[ "${capture_size}" == '1048576' ]] || fail 'bounded capture did not enforce the 1 MiB limit'
 [[ "$(<"${capture_state}")" == 'truncated' ]] || fail 'bounded capture did not report discarded output'
 if grep -Fq 'ulimit -f ' "${subject}"; then fail 'evidence cap still depends on an inherited file-size limit'; fi
 grep -Fq 'command -v ssh' "${subject}" || fail 'SSH prerequisite is not resolved through PATH'
