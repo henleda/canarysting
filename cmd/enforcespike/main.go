@@ -48,8 +48,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -62,6 +64,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 
 	"github.com/canarysting/canarysting/adapters/envoy/identity"
 	"github.com/canarysting/canarysting/bpf/enforce"
@@ -100,18 +103,27 @@ func main() {
 	jailDst := flag.String("jail-dst", "", "target 'IP:port': auto-jail any captured flow whose DESTINATION matches this (mimics 'flow touched the canary'). REQUIRED.")
 	interval := flag.Duration("interval", 500*time.Millisecond, "how often to scan flow_cookies and (re)apply the jail")
 	action := flag.String("action", "jail", "containment action to program: jail | hard-deny | rate-limit (jail and hard-deny both DROP egress in-kernel)")
+	proof := flag.Bool("proof", false, "run one bounded target/control enforcement proof and exit with explicit PASS/FAIL")
 	flag.Parse()
 
-	if *jailDst == "" {
+	if *proof && *jailDst != "" {
+		log.Fatal("-proof cannot be combined with -jail-dst")
+	}
+	if !*proof && *jailDst == "" {
 		log.Fatalf("-jail-dst is REQUIRED (e.g. -jail-dst 10.0.0.51:80). Refusing to run with no target — an empty target would match nothing, but the flag is mandatory so scoping is always explicit.")
 	}
 
 	// Parse -jail-dst up front so bad input fails before we touch the kernel. We
 	// keep it as a canonical netip.Addr + host-order port and compare it against
 	// each captured flow's DST (the LOCAL/server end the sockops key stores).
-	targetAddr, targetPort, err := parseHostPort(*jailDst)
-	if err != nil {
-		log.Fatalf("bad -jail-dst %q: %v", *jailDst, err)
+	var targetAddr netip.Addr
+	var targetPort uint16
+	if !*proof {
+		var err error
+		targetAddr, targetPort, err = parseHostPort(*jailDst)
+		if err != nil {
+			log.Fatalf("bad -jail-dst %q: %v", *jailDst, err)
+		}
 	}
 
 	act, actLabel, err := parseAction(*action)
@@ -126,13 +138,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("sockops NewMapResolver(%q): %v\n(need root/CAP_BPF+CAP_NET_ADMIN, a cgroup-v2 unified hierarchy, and kernel >= 5.10)", *cgroup, err)
 	}
-	defer res.Close()
 	log.Printf("attached sockops (observe) to cgroup %s — capturing PASSIVE_ESTABLISHED (server accept-side) cookies", *cgroup)
-
-	fcMap, err := flowCookiesMap(res)
-	if err != nil {
-		log.Fatalf("could not reach flow_cookies map for enumeration: %v", err)
-	}
 
 	// 2) Load + attach the REAL enforce program (cgroup_skb/egress DROP +
 	// cgroup/sock_release cleanup) at the SAME cgroup. This is the path under test.
@@ -140,9 +146,9 @@ func main() {
 	// attachments; the kernel runs all attached egress programs).
 	kl := enforce.NewKernelLoader(*cgroup)
 	if err := kl.Load(); err != nil {
+		_ = res.Close()
 		log.Fatalf("enforce KernelLoader.Load() at %q: %v\n(need CAP_BPF+CAP_NET_ADMIN and a cgroup-v2 unified hierarchy; if THIS is what fails while sockops attached, that is the Cilium-coexistence signal to report)", *cgroup, err)
 	}
-	defer kl.Close()
 	log.Printf("attached enforce (cgroup_skb/egress DROP) to cgroup %s — coexisting with any Cilium cgroup programs", *cgroup)
 
 	// The production write path: containment programs verdicts THROUGH the loader.
@@ -150,7 +156,35 @@ func main() {
 	// what the sting emits — no hand-rolled map write.
 	cont, err := containment.New(containment.Config{Loader: kl})
 	if err != nil {
+		_ = kl.Close()
+		_ = res.Close()
 		log.Fatalf("containment.New: %v", err)
+	}
+	if *proof {
+		proofErr := runProof(res, kl, cont)
+		klCloseErr := kl.Close()
+		resCloseErr := res.Close()
+		switch {
+		case proofErr != nil:
+			fmt.Printf("RESULT FAIL diagnostic=%q\n", proofErr)
+			os.Exit(1)
+		case klCloseErr != nil:
+			fmt.Printf("RESULT FAIL diagnostic=%q\n", fmt.Errorf("detach enforcement: %w", klCloseErr))
+			os.Exit(1)
+		case resCloseErr != nil:
+			fmt.Printf("RESULT FAIL diagnostic=%q\n", fmt.Errorf("detach sockops: %w", resCloseErr))
+			os.Exit(1)
+		default:
+			fmt.Println("RESULT PASS proof=precise-cookie-enforcement")
+			return
+		}
+	}
+	defer res.Close()
+	defer kl.Close()
+
+	fcMap, err := flowCookiesMap(res)
+	if err != nil {
+		log.Fatalf("could not reach flow_cookies map for enumeration: %v", err)
 	}
 
 	log.Printf("JAIL target: dst==%s:%d — will DROP the SERVER egress (server->client responses) of any flow to that dst; action=%s", targetAddr, targetPort, actLabel)
@@ -231,6 +265,251 @@ func main() {
 			return
 		}
 	}
+}
+
+type loopbackPair struct {
+	listener *net.TCPListener
+	client   *net.TCPConn
+	server   *net.TCPConn
+	tuple    identity.FourTuple
+	cookie   uint64
+}
+
+func (p *loopbackPair) close() {
+	if p.client != nil {
+		_ = p.client.Close()
+	}
+	if p.server != nil {
+		_ = p.server.Close()
+	}
+	if p.listener != nil {
+		_ = p.listener.Close()
+	}
+}
+
+// runProof performs the bounded M1D integration proof. The caller and external
+// harness own loader teardown and child-cgroup cleanup. This function first proves
+// both sockets are healthy, then treats only target as an explicit proof-fixture
+// canary touch, programs its independently verified live cookie through the
+// production containment path, proves target-only drop plus control/map-miss
+// fail-open behavior, releases the cookie, and proves the same target connection
+// recovers. Baseline anomaly is never an input or trigger.
+func runProof(res *sockops.MapResolver, kl *enforce.KernelLoader, cont *containment.KernelContainer) error {
+	guarded := identity.NewStaleGuard(res)
+	missing := contract.Verdict{Flow: contract.FlowIdentity{}}
+	if err := cont.Apply(missing, containment.Jail); !errors.Is(err, containment.ErrUnattributable) {
+		return fmt.Errorf("unattributable containment refusal: got %v", err)
+	}
+	fmt.Println("PROOF missing_attribution=PASS cookie=0 action=refused")
+	fmt.Println("PROOF loaders_ready=PASS live_attachment_observation=pending")
+	time.Sleep(250 * time.Millisecond)
+
+	target, err := newLoopbackPair(guarded)
+	if err != nil {
+		return fmt.Errorf("target fixture: %w", err)
+	}
+	defer target.close()
+	control, err := newLoopbackPair(guarded)
+	if err != nil {
+		return fmt.Errorf("control fixture: %w", err)
+	}
+	defer control.close()
+	if target.cookie == control.cookie {
+		return fmt.Errorf("target and control unexpectedly share cookie %d", target.cookie)
+	}
+
+	if err := roundTrip(target, []byte("target-before-enforce"), time.Second); err != nil {
+		return fmt.Errorf("target observe-before-enforce round trip: %w", err)
+	}
+	if err := roundTrip(control, []byte("control-before-enforce"), time.Second); err != nil {
+		return fmt.Errorf("control observe-before-enforce round trip: %w", err)
+	}
+	fmt.Printf("PROOF observe_before_enforce=PASS target_cookie=%d control_cookie=%d\n", target.cookie, control.cookie)
+	fmt.Printf("PROOF canary_touch=PASS source=explicit-proof-fixture target_cookie=%d baseline_trigger=none\n", target.cookie)
+
+	verdict := contract.Verdict{Flow: contract.FlowIdentity{SocketCookie: target.cookie}}
+	if err := cont.Apply(verdict, containment.Jail); err != nil {
+		return fmt.Errorf("apply target jail through containment: %w", err)
+	}
+	if _, exists := kl.Counters(control.cookie); exists {
+		return fmt.Errorf("control cookie %d unexpectedly has a verdict-map entry", control.cookie)
+	}
+	fmt.Printf("PROOF target_programmed=PASS cookie=%d action=jail control_map_entry=absent\n", target.cookie)
+
+	blockedPayload := []byte("target-blocked-then-restored")
+	if err := target.server.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return fmt.Errorf("set target write deadline: %w", err)
+	}
+	if _, err := target.server.Write(blockedPayload); err != nil {
+		return fmt.Errorf("write target response under jail: %w", err)
+	}
+	if err := target.client.SetReadDeadline(time.Now().Add(350 * time.Millisecond)); err != nil {
+		return fmt.Errorf("set target blocked read deadline: %w", err)
+	}
+	blockedRead := make([]byte, len(blockedPayload))
+	if _, err := io.ReadFull(target.client, blockedRead); err == nil {
+		return fmt.Errorf("target response arrived while jail was active")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		return fmt.Errorf("target read under jail did not time out: %w", err)
+	}
+
+	var droppedPkts, droppedBytes uint64
+	for i := 0; i < 100; i++ {
+		if counters, ok := kl.Counters(target.cookie); ok {
+			droppedPkts, droppedBytes = counters.DroppedPkts, counters.DroppedBytes
+			if droppedPkts > 0 && droppedBytes > 0 {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if droppedPkts == 0 || droppedBytes == 0 {
+		return fmt.Errorf("target jail produced no kernel drop counters")
+	}
+	if err := roundTrip(control, []byte("control-during-target-jail"), time.Second); err != nil {
+		return fmt.Errorf("control fail-open round trip during target jail: %w", err)
+	}
+	fmt.Printf("PROOF target_only_enforcement=PASS target_cookie=%d dropped_pkts=%d dropped_bytes=%d\n", target.cookie, droppedPkts, droppedBytes)
+	fmt.Printf("PROOF bystander_fail_open=PASS control_cookie=%d verdict_map=MISS round_trip=PASS\n", control.cookie)
+
+	if err := cont.Release(verdict); err != nil {
+		return fmt.Errorf("release target jail: %w", err)
+	}
+	if _, exists := kl.Counters(target.cookie); exists {
+		return fmt.Errorf("target verdict-map entry remains after release")
+	}
+	if err := target.client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return fmt.Errorf("set target recovery deadline: %w", err)
+	}
+	recovered := make([]byte, len(blockedPayload))
+	if _, err := io.ReadFull(target.client, recovered); err != nil {
+		return fmt.Errorf("read retransmitted target response after release: %w", err)
+	}
+	if string(recovered) != string(blockedPayload) {
+		return fmt.Errorf("target recovery payload mismatch: got %q", recovered)
+	}
+	if err := roundTrip(control, []byte("control-after-release"), time.Second); err != nil {
+		return fmt.Errorf("control round trip after release: %w", err)
+	}
+	fmt.Printf("PROOF release_restore=PASS target_cookie=%d same_connection=PASS retransmit=PASS\n", target.cookie)
+	return nil
+}
+
+func newLoopbackPair(res identity.CookieResolver) (*loopbackPair, error) {
+	pair := &loopbackPair{}
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		return nil, fmt.Errorf("listen: %w", err)
+	}
+	pair.listener = listener
+	type acceptResult struct {
+		conn *net.TCPConn
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+	go func() {
+		conn, acceptErr := listener.AcceptTCP()
+		accepted <- acceptResult{conn: conn, err: acceptErr}
+	}()
+	client, err := net.DialTCP("tcp4", nil, listener.Addr().(*net.TCPAddr))
+	if err != nil {
+		pair.close()
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	pair.client = client
+	select {
+	case result := <-accepted:
+		if result.err != nil {
+			pair.close()
+			return nil, fmt.Errorf("accept: %w", result.err)
+		}
+		pair.server = result.conn
+	case <-time.After(2 * time.Second):
+		pair.close()
+		return nil, fmt.Errorf("accept timed out")
+	}
+	tuple, err := tupleFromServerConn(pair.server)
+	if err != nil {
+		pair.close()
+		return nil, err
+	}
+	pair.tuple = tuple
+	oracle, err := socketCookie(pair.server)
+	if err != nil {
+		pair.close()
+		return nil, err
+	}
+	for i := 0; i < 250; i++ {
+		if resolution, ok := res.Resolve(tuple); ok {
+			if resolution.Cookie == 0 || resolution.Cookie != oracle {
+				pair.close()
+				return nil, fmt.Errorf("resolver/oracle cookie mismatch: resolver=%d oracle=%d", resolution.Cookie, oracle)
+			}
+			pair.cookie = resolution.Cookie
+			return pair, nil
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	pair.close()
+	return nil, fmt.Errorf("tuple remained unattributable after bounded capture wait")
+}
+
+func tupleFromServerConn(conn *net.TCPConn) (identity.FourTuple, error) {
+	remote, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok || remote.Port < 1 || remote.Port > 65535 {
+		return identity.FourTuple{}, fmt.Errorf("invalid remote address: %v", conn.RemoteAddr())
+	}
+	local, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok || local.Port < 1 || local.Port > 65535 {
+		return identity.FourTuple{}, fmt.Errorf("invalid local address: %v", conn.LocalAddr())
+	}
+	tuple, ok := identity.TupleFromAddrs(remote.IP.String(), uint16(remote.Port), local.IP.String(), uint16(local.Port))
+	if !ok {
+		return identity.FourTuple{}, fmt.Errorf("build tuple from %s -> %s", remote, local)
+	}
+	return tuple, nil
+}
+
+func socketCookie(conn *net.TCPConn) (uint64, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, fmt.Errorf("access accepted socket: %w", err)
+	}
+	var cookie uint64
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		cookie, socketErr = unix.GetsockoptUint64(int(fd), unix.SOL_SOCKET, unix.SO_COOKIE)
+	}); err != nil {
+		return 0, fmt.Errorf("control accepted socket: %w", err)
+	}
+	if socketErr != nil {
+		return 0, fmt.Errorf("read SO_COOKIE oracle: %w", socketErr)
+	}
+	if cookie == 0 {
+		return 0, fmt.Errorf("SO_COOKIE oracle returned zero")
+	}
+	return cookie, nil
+}
+
+func roundTrip(pair *loopbackPair, payload []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	if err := pair.server.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	if err := pair.client.SetReadDeadline(deadline); err != nil {
+		return err
+	}
+	if _, err := pair.server.Write(payload); err != nil {
+		return err
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(pair.client, got); err != nil {
+		return err
+	}
+	if string(got) != string(payload) {
+		return fmt.Errorf("payload mismatch: got %q want %q", got, payload)
+	}
+	return nil
 }
 
 // flowCookiesMap extracts the *ebpf.Map behind the (unexported) MapResolver.objs
