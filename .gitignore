@@ -23,6 +23,8 @@
 .claude-flow/
 .swarm/
 .claude/
+# Durable local validation ledgers and bounded per-check logs.
+.test-artifacts/
 # generated CO-RE kernel header (regenerate per kernel)
 bpf/**/vmlinux.h
 

@@ -3,8 +3,10 @@ package attacker
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -27,11 +29,52 @@ func newTarget(t *testing.T) (*httptest.Server, *[]string) {
 
 func toolFor(t *testing.T, baseURL string) *HTTPTool {
 	t.Helper()
+	target, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("parse test target: %v", err)
+	}
+	if err := requireLoopbackHost(target.Hostname()); err != nil {
+		t.Fatal(err)
+	}
 	c, err := BuildKeepAliveClient("")
 	if err != nil {
 		t.Fatalf("client: %v", err)
 	}
+	guardLoopbackClient(t, c)
 	return NewHTTPTool(c, baseURL)
+}
+
+func guardLoopbackClient(t *testing.T, client *http.Client) {
+	t.Helper()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("test client transport is %T, want *http.Transport", client.Transport)
+	}
+	dial := transport.DialContext
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("test network address %q is invalid: %w", address, err)
+		}
+		if err := requireLoopbackHost(host); err != nil {
+			return nil, err
+		}
+		return dial(ctx, network, address)
+	}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		if err := requireLoopbackHost(req.URL.Hostname()); err != nil {
+			return fmt.Errorf("redirect blocked: %w", err)
+		}
+		return nil
+	}
+}
+
+func requireLoopbackHost(host string) error {
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("test network target %q is outside the loopback allowlist", host)
+	}
+	return nil
 }
 
 // (a) FakeClient returns one tool-call response, then end_turn → drives exactly
@@ -228,5 +271,29 @@ func TestScriptedFollowsMaze(t *testing.T) {
 	joined := strings.Join(followed, ",")
 	if !strings.Contains(joined, "/internal/buckets/a") || !strings.Contains(joined, "/internal/buckets/b") {
 		t.Fatalf("maze children not followed: %s", joined)
+	}
+}
+
+func TestScriptedRejectsRedirectOutsideLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://192.0.2.1/escape", http.StatusFound)
+	}))
+	defer srv.Close()
+	tool := toolFor(t, srv.URL)
+	_, isError, probe := tool.Execute(context.Background(), `{"method":"GET","path":"/redirect"}`)
+	if !isError || !strings.Contains(probe.Err, "outside the loopback allowlist") {
+		t.Fatalf("external redirect was not blocked before dialing: error=%v probe=%+v", isError, probe)
+	}
+}
+
+func TestLoopbackTestClientRejectsExternalDial(t *testing.T) {
+	client, err := BuildKeepAliveClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardLoopbackClient(t, client)
+	_, err = client.Get("http://192.0.2.1/escape")
+	if err == nil || !strings.Contains(err.Error(), "outside the loopback allowlist") {
+		t.Fatalf("external dial was not blocked: %v", err)
 	}
 }

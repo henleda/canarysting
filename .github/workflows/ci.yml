@@ -23,18 +23,25 @@ jobs:
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - run: make generated-check
-      - run: make fmt-check
-      - run: make vet
-      - run: make build
-      - run: make test
-      - run: make dgx-harness-check
+      - name: Run shared Go and harness gate definitions
+        run: make check-ci-go
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-go
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   frontend:
     name: frontend (lint, build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v7
         with:
@@ -49,14 +56,25 @@ jobs:
       - name: Install locked dashboard dependencies
         working-directory: dashboard/app
         run: npm ci
-      - name: Lint and build dashboard
-        run: make frontend-check
+      - name: Run shared frontend gate definitions
+        run: make check-ci-frontend
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-frontend
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   ebpf:
     name: ebpf (clang build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install clang/llvm + libbpf + build deps
         run: |
           sudo apt-get update
@@ -111,12 +129,33 @@ jobs:
       # The object assertion makes omission from BPF_SRC a hard CI failure instead
       # of silently trusting the committed bpf2go runtime objects.
       - name: Compile all checked-in eBPF C sources
-        run: |
-          make bpf
-          for src in bpf/enforce/*.bpf.c bpf/observe/*.bpf.c bpf/sockops/*.bpf.c; do
-            obj="${src%.bpf.c}.bpf.o"
-            test -s "$obj" || { echo "missing compiled object for $src: $obj"; exit 1; }
-          done
+        run: make check-ci-ebpf
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-ebpf-build
+          path: .test-artifacts/gates/
+          if-no-files-found: error
+
+  adversarial:
+    name: adversarial (bounded local scenarios)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run shared adversarial scenario definitions
+        run: make check-ci-adversarial
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-adversarial
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   # B4: privileged job that actually RUNS the kernel datapath. The ebpf job above
   # only COMPILES the C; this job loads the committed *_bpfel.o objects into the
@@ -147,143 +186,28 @@ jobs:
       # this every run re-downloads every dependency before the kernel tests can
       # start. GOMODCACHE in the golang image is /go/pkg/mod. Key on go.sum so the
       # cache invalidates exactly when the dependency set changes.
+      # Compute the digest inside the container once. Using hashFiles() directly
+      # in the cache key makes the post action re-scan the root-owned container
+      # checkout from the host, which fails even after the gate itself passes.
+      - name: Compute Go module cache key
+        id: go-mod-cache-key
+        shell: bash
+        run: |
+          go_sum_hash="$(sha256sum go.sum)"
+          printf 'hash=%s\n' "${go_sum_hash%% *}" >> "$GITHUB_OUTPUT"
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
           path: /go/pkg/mod
-          key: ${{ runner.os }}-ebpf-run-gomod-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-ebpf-run-gomod-${{ steps.go-mod-cache-key.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-ebpf-run-gomod-
-      - name: Environment sanity (kernel, caps, cgroup-v2)
-        run: |
-          uname -a
-          id
-          echo "BPF syscall present:"; grep -q bpf /proc/kallsyms && echo yes || echo "(kallsyms restricted; continuing)"
-          echo "cgroup-v2 controllers:"; cat /sys/fs/cgroup/cgroup.controllers || { echo "NO cgroup-v2 unified hierarchy at /sys/fs/cgroup"; exit 1; }
-      # Run the root-gated behavioral tests. -count=1 disables the test cache so the
-      # kernel assertions truly re-execute. -json emits a machine-readable event
-      # stream (one JSON object per line, each with an "Action" of run/pass/fail/
-      # skip/output) that the next step parses — so the false-green guard keys on
-      # structured test results, not on human-readable log strings that could drift.
-      # We run as root inside the privileged container.
-      - name: Run kernel datapath tests
-        # Container jobs default to sh; this pipeline requires Bash's pipefail.
-        shell: bash
-        run: |
-          set -o pipefail
-          go test -json -count=1 ./bpf/enforce/... ./bpf/observe/... ./bpf/sockops/... 2>&1 | tee /tmp/ebpf-test.json
-      # The whole point of B4: a PASS that actually SKIPPED is a false green. Parse
-      # the -json stream (not free-text skip strings): a single SKIP of any
-      # root-gated test means the privileged datapath did not execute, so fail loud.
-      # We also assert every load-bearing behavioral proof reported PASS — guarding
-      # against the case where a test is renamed/removed and silently stops running.
-      #
-      # The parser is a stdlib-only Go program written to $RUNNER_TEMP (OUTSIDE the
-      # module checkout, so it neither joins the build nor needs python3, which the
-      # golang:bookworm image does not ship). go is guaranteed present in this image.
-      - name: Assert the behavioral tests actually ran (no silent skip)
-        run: |
-          cat > "$RUNNER_TEMP/checkresults.go" <<'GO'
-          // Parses `go test -json` events: enforces zero skips and a PASS floor for
-          // every load-bearing eBPF datapath proof. Stdlib only; run via `go run`.
-          package main
-
-          import (
-          	"bufio"
-          	"encoding/json"
-          	"fmt"
-          	"os"
-          	"sort"
-          )
-
-          type event struct {
-          	Action string `json:"Action"`
-          	Test   string `json:"Test"`
-          }
-
-          func main() {
-          	// The single most catastrophic-if-wrong proofs. Each MUST pass; none may skip.
-          	required := map[string]bool{
-          		"TestEnforceJailIsPrecise":         false, // enforce: jail one socket, spare bystanders
-          		"TestFailOpenOnMiss":               false, // enforce: unknown cookie => allow (fail-open)
-          		"TestRateLimitSustainedThroughput": false, // enforce: rate-limit math, not a jail
-          		"TestCloseDeleteRemovesEntry":      false, // enforce: close reclaims the verdict entry
-          		"TestSockopsCookieOracle":          false, // sockops: cookie identity-join ground truth
-          		"TestObserveNeverDropsAPacket":     false, // observe: OBSERVE-ONLY path is non-blocking
-          	}
-
-          	f, err := os.Open(os.Args[1])
-          	if err != nil {
-          		fmt.Printf("::error::cannot open test stream: %v\n", err)
-          		os.Exit(1)
-          	}
-          	defer f.Close()
-
-          	var skipped, failed []string
-          	passCount := 0
-          	sc := bufio.NewScanner(f)
-          	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-          	for sc.Scan() {
-          		line := sc.Bytes()
-          		if len(line) == 0 || line[0] != '{' {
-          			continue // non-JSON banner (e.g. build output); test results are JSON objects
-          		}
-          		var ev event
-          		if err := json.Unmarshal(line, &ev); err != nil {
-          			fmt.Printf("::error::malformed JSON in test stream: %v\n", err)
-          			os.Exit(1)
-          		}
-          		if ev.Test == "" {
-          			continue // package-level event, not a single test
-          		}
-          		switch ev.Action {
-          		case "pass":
-          			passCount++
-          			if _, ok := required[ev.Test]; ok {
-          				required[ev.Test] = true
-          			}
-          		case "skip":
-          			skipped = append(skipped, ev.Test)
-          		case "fail":
-          			failed = append(failed, ev.Test)
-          		}
-          	}
-          	if err := sc.Err(); err != nil {
-          		fmt.Printf("::error::reading test stream: %v\n", err)
-          		os.Exit(1)
-          	}
-
-          	ok := true
-          	if len(failed) > 0 {
-          		sort.Strings(failed)
-          		fmt.Printf("::error::tests FAILED: %v\n", failed)
-          		ok = false
-          	}
-          	// Any skip among the root-gated packages means the datapath did not run.
-          	if len(skipped) > 0 {
-          		sort.Strings(skipped)
-          		fmt.Printf("::error::root-gated eBPF tests SKIPPED (euid!=0 / no caps / no cgroup-v2) "+
-          			"— the privileged datapath did not execute (false green): %v\n", skipped)
-          		ok = false
-          	}
-          	// PASS floor: every load-bearing proof must have actually passed.
-          	var missing []string
-          	for name, sawPass := range required {
-          		if !sawPass {
-          			missing = append(missing, name)
-          		}
-          	}
-          	if len(missing) > 0 {
-          		sort.Strings(missing)
-          		fmt.Printf("::error::required behavioral proofs did not report PASS "+
-          			"(renamed/removed or never ran?): %v\n", missing)
-          		ok = false
-          	}
-          	if !ok {
-          		os.Exit(1)
-          	}
-          	fmt.Printf("kernel datapath behavioral tests executed and passed "+
-          		"(%d pass, 0 skip, 0 fail; all %d required proofs green).\n", passCount, len(required))
-          }
-          GO
-          go run "$RUNNER_TEMP/checkresults.go" /tmp/ebpf-test.json
+      - name: Run shared privileged eBPF gate definition
+        run: make check-ci-ebpf-privileged
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-ebpf-privileged
+          path: .test-artifacts/gates/
+          if-no-files-found: error
