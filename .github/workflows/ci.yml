@@ -23,18 +23,25 @@ jobs:
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - run: make generated-check
-      - run: make fmt-check
-      - run: make vet
-      - run: make build
-      - run: make test
-      - run: make dgx-harness-check
+      - name: Run shared Go and harness gate definitions
+        run: make check-ci-go
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-go
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   frontend:
     name: frontend (lint, build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Set up Node.js 24 LTS
         uses: actions/setup-node@v7
         with:
@@ -49,14 +56,25 @@ jobs:
       - name: Install locked dashboard dependencies
         working-directory: dashboard/app
         run: npm ci
-      - name: Lint and build dashboard
-        run: make frontend-check
+      - name: Run shared frontend gate definitions
+        run: make check-ci-frontend
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-frontend
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   ebpf:
     name: ebpf (clang build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install clang/llvm + libbpf + build deps
         run: |
           sudo apt-get update
@@ -111,12 +129,33 @@ jobs:
       # The object assertion makes omission from BPF_SRC a hard CI failure instead
       # of silently trusting the committed bpf2go runtime objects.
       - name: Compile all checked-in eBPF C sources
-        run: |
-          make bpf
-          for src in bpf/enforce/*.bpf.c bpf/observe/*.bpf.c bpf/sockops/*.bpf.c; do
-            obj="${src%.bpf.c}.bpf.o"
-            test -s "$obj" || { echo "missing compiled object for $src: $obj"; exit 1; }
-          done
+        run: make check-ci-ebpf
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-ebpf-build
+          path: .test-artifacts/gates/
+          if-no-files-found: error
+
+  adversarial:
+    name: adversarial (bounded local scenarios)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run shared adversarial scenario definitions
+        run: make check-ci-adversarial
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-adversarial
+          path: .test-artifacts/gates/
+          if-no-files-found: error
 
   # B4: privileged job that actually RUNS the kernel datapath. The ebpf job above
   # only COMPILES the C; this job loads the committed *_bpfel.o objects into the

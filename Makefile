@@ -12,6 +12,13 @@ NPM       ?= npm
 BIN_DIR   := bin
 GOBIN     := $(abspath $(BIN_DIR))
 DASHBOARD_DIR := dashboard/app
+TESTGATE_GOCACHE ?= $(abspath .test-artifacts/cache/go-build)
+TESTGATE ?= GOCACHE=$(TESTGATE_GOCACHE) $(GO) run ./cmd/testgate
+CHECK ?=
+SCENARIO ?=
+COUNT ?= 1
+JOBS ?=
+VALIDATION_TIER ?= local
 
 # eBPF sources -> objects. *.bpf.o is gitignored. Source discovery is deliberately
 # narrow: enforcement, observe-only flow accounting, and the socket-cookie join.
@@ -122,9 +129,104 @@ dgx-harness-check:
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh
 
-## check: the full local gate (generated + frontend + DGX harness + Go gates + selfcheck)
+## dgx-syntax-check: validate every DGX shell program without contacting the DGX
+.PHONY: dgx-syntax-check
+dgx-syntax-check:
+	bash -n scripts/dgx/*.sh
+
+TESTGATE_JOBS := $(if $(strip $(JOBS)),--jobs $(JOBS),)
+
+## preflight: collect all cheap independent structural and toolchain failures
+.PHONY: preflight
+preflight:
+	$(TESTGATE) run --gate preflight $(TESTGATE_JOBS)
+
+## check-fast: conservatively select checks affected by local changes (not merge qualification)
+.PHONY: check-fast
+check-fast:
+	$(TESTGATE) run --gate check-fast $(TESTGATE_JOBS)
+
+## check-local: run the complete non-privileged local suite with collect-all reporting
+.PHONY: check-local
+check-local:
+	$(TESTGATE) run --gate check-local $(TESTGATE_JOBS)
+
+## check-adversarial: run every bounded local adversarial scenario independently
+.PHONY: check-adversarial
+check-adversarial:
+	$(TESTGATE) run --gate check-adversarial $(TESTGATE_JOBS)
+
+## check-last-failed: replay the latest compatible failures, blocks, and prerequisites
+.PHONY: check-last-failed
+check-last-failed:
+	$(TESTGATE) run --gate check-local --last-failed $(TESTGATE_JOBS)
+
+## check-adversarial-last-failed: replay only adversarial failures from the compatible ledger
+.PHONY: check-adversarial-last-failed
+check-adversarial-last-failed:
+	$(TESTGATE) run --gate check-adversarial --adversarial-last-failed $(TESTGATE_JOBS)
+
+## check-one: run CHECK=<check-id> plus its prerequisites
+.PHONY: check-one
+check-one:
+	@test -n "$(CHECK)" || { echo "check-one: CHECK=<check-id> is required"; exit 2; }
+	$(TESTGATE) run --gate check-local --check "$(CHECK)" $(TESTGATE_JOBS)
+
+## adversarial-one: run SCENARIO=<scenario-id> plus its prerequisites and cleanup
+.PHONY: adversarial-one
+adversarial-one:
+	@test -n "$(SCENARIO)" || { echo "adversarial-one: SCENARIO=<scenario-id> is required"; exit 2; }
+	$(TESTGATE) run --gate check-adversarial --check "adversarial:$(SCENARIO)" $(TESTGATE_JOBS)
+
+## check-repeat: repeat CHECK=<check-id> COUNT=<n>; any iteration failure fails the command
+.PHONY: check-repeat
+check-repeat:
+	@test -n "$(CHECK)" || { echo "check-repeat: CHECK=<check-id> is required"; exit 2; }
+	$(TESTGATE) run --gate check-local --check "$(CHECK)" --repeat "$(COUNT)" $(TESTGATE_JOBS)
+
+## adversarial-repeat: repeat SCENARIO=<scenario-id> COUNT=<n> with deterministic seed evidence
+.PHONY: adversarial-repeat
+adversarial-repeat:
+	@test -n "$(SCENARIO)" || { echo "adversarial-repeat: SCENARIO=<scenario-id> is required"; exit 2; }
+	$(TESTGATE) run --gate check-adversarial --check "adversarial:$(SCENARIO)" --repeat "$(COUNT)" $(TESTGATE_JOBS)
+
+## check-merge-local: run every required non-privileged local merge check and adversarial scenario
+.PHONY: check-merge-local
+check-merge-local:
+	$(TESTGATE) run --gate check-merge-local $(TESTGATE_JOBS)
+
+## check-dgx: run the explicit read-only DGX safety preflight; task-specific qualification remains required
+.PHONY: check-dgx
+check-dgx:
+	$(TESTGATE) run --gate check-dgx --jobs 1
+
+## check-merge: final tier-aware proof; non-local tiers fail closed pending a task-specific DGX check ID
+.PHONY: check-merge
+check-merge:
+	@case "$(VALIDATION_TIER)" in \
+	local) $(MAKE) check-merge-local ;; \
+	*) $(MAKE) check-merge-local && $(MAKE) check-dgx; \
+	   echo "check-merge: $(VALIDATION_TIER) also requires the task-specific DGX/Kubernetes/attacker qualification and recorded artifact; generic preflight cannot qualify it." >&2; exit 2 ;; \
+	esac
+
+## check-report: print the most recent durable gate summary and reproduction commands
+.PHONY: check-report
+check-report:
+	$(TESTGATE) report
+
+.PHONY: check-ci-go check-ci-frontend check-ci-ebpf check-ci-adversarial
+check-ci-go:
+	$(TESTGATE) run --gate ci-go $(TESTGATE_JOBS)
+check-ci-frontend:
+	$(TESTGATE) run --gate ci-frontend $(TESTGATE_JOBS)
+check-ci-ebpf:
+	$(TESTGATE) run --gate ci-ebpf $(TESTGATE_JOBS)
+check-ci-adversarial:
+	$(TESTGATE) run --gate ci-adversarial $(TESTGATE_JOBS)
+
+## check: compatibility alias for the complete collect-all local suite
 .PHONY: check
-check: generated-check frontend-check dgx-harness-check fmt-check vet build test selfcheck
+check: check-local
 
 ## proto: regenerate committed protobuf Go output with pinned tool versions
 .PHONY: proto
@@ -158,6 +260,13 @@ else
 	@$(MAKE) $(BPF_OBJ)
 	@echo "bpf: built $(BPF_OBJ)"
 endif
+
+.PHONY: bpf-object-check
+bpf-object-check:
+	@for src in $(BPF_SRC); do \
+		obj="$${src%.bpf.c}.bpf.o"; \
+		test -s "$$obj" || { echo "missing compiled object for $$src: $$obj"; exit 1; }; \
+	done
 
 %.bpf.o: %.bpf.c
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@

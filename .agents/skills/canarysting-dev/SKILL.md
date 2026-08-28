@@ -84,9 +84,12 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 
 ## Implement and validate
 
-- Make the smallest coherent change that satisfies the task. Add or update deterministic tests; run focused validation first, then all broader gates required by the selected tier.
+- Make the smallest coherent change that satisfies the task. Add or update deterministic tests and choose the smallest appropriate gate while implementing.
+- Run focused tests first. After a narrow edit with no prior failure ledger, use `make check-fast`. After a failed full diagnostic run, use `make check-last-failed` (or the adversarial-specific replay) until every recorded failure and block is resolved.
+- A targeted replay proves only the repair. Before marking a task `DONE`, run the full `make check-merge` qualification for the task's declared tier; never treat `check-fast`, `check-one`, or a last-failed replay as merge evidence.
+- Preserve the `.test-artifacts/gates/<run-id>/` paths used as completion evidence. Report every failure, blocked check, skip, and safety stop; never bypass a gate, hide a result, or convert a required failure to a warning.
 - Never bypass, skip, or weaken a failing gate or security invariant. Do not install dependencies without approval. Do not commit or push unless explicitly requested.
-- For DGX work, complete local gates first. Before mutation run `scripts/dgx/check.sh`, inspect local status, state exact remote changes and cleanup, and confirm scope. Reuse repository scripts instead of ad hoc SSH once a deterministic path exists.
+- Invoke DGX qualification only when the task's validation tier requires it. For DGX work, complete local gates first. Before mutation run `scripts/dgx/check.sh`, inspect local status, state exact remote changes and cleanup, and confirm scope. Reuse repository scripts instead of ad hoc SSH once a deterministic path exists.
 - Treat unexpected Kubernetes, Cilium, BPF, or host state as a reason to inspect and report, not repair unrelated infrastructure. Never replace Cilium attachments or implicitly alter K3s, Cilium, firewall, SSH, kernel, or host packages.
 - For DGX correlation: gather before-state; execute the scenario; gather independent observations; correlate; compare with ground truth; clean up; gather after-state; report trace completeness, join/identity accuracy, missing/conflicting evidence, time alignment, and cleanup.
 - Preserve full cleanup evidence for privileged tests. Never mark kernel/Kubernetes/Cilium/identity/attacker-correlation work complete from local evidence alone.
