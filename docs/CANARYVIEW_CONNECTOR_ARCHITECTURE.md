@@ -45,7 +45,7 @@ This architecture extends existing CanaryPlatform contracts rather than creating
 6. **The canonical model remains vendor-neutral.** Vendor-native fields, enums, rule bodies, product features, and opaque IDs stay in the extension/evidence envelope unless architecture review establishes a genuinely cross-category canonical concept.
 7. **Health and coverage are product data.** Connector state, freshness, lag, loss, schema drift, permissions, rate limits, backfill, field coverage, and capabilities are queryable by both operators and agents.
 8. **Traditional click-ops is a first-class path.** An operator can onboard, inspect, test, rotate, and disconnect a connector without CLI, YAML, raw JSON, or vendor API expertise.
-9. **Capabilities are verified at implementation time.** Roadmap examples are candidates, not promises. Before a connector or action adapter is implemented, current behavior must be verified against official vendor documentation and a licensed test or design-partner environment. The manifest records versions, editions, regions, licensing assumptions, and validation evidence.
+9. **Capabilities are verified at implementation time.** Roadmap examples are candidates, not promises. Before a connector or action adapter is implemented, current behavior must be verified against official vendor documentation and a licensed test or design-partner environment. The published manifest records versions, editions, regions, licensing assumptions, and a sanitized non-identifying validation attestation; detailed environment evidence remains protected and deployment scoped.
 
 This program does not broaden CanarySting rule 9 or create a second egress path. Under the current architecture, customer-rich observations, source records, identities, and configuration evidence stay inside their deployment boundary. Only already-approved anonymized patterns may cross it through `internal/intelligence/network`. Any future hosted or hybrid execution model that would move customer-rich evidence across that boundary requires explicit architecture and privacy review; a connector implementation may not assume that authority.
 
@@ -62,13 +62,16 @@ Evidence Collector --> canonical Observation + Evidence reference
 
 ConnectorCapabilityManifest --> console + agent interface + planner
 
-approved SecurityIntent
+proposed SecurityIntent
     |
-    | separate write authority, M7 only
     v
-Action Adapter --> vendor-native ActionPlan --> native control plane
-                                      |
-                                      +--> verify / expire / rollback / audit evidence
+capability check --> vendor-native ActionPlans --> exact preview + human approval
+                                                        |
+                                                        | separate write authority, M7 only
+                                                        v
+                                                  Action Adapters --> native control planes
+                                                        |
+                                                        +--> verify / expire / rollback / audit evidence
 ```
 
 ### Evidence Collector
@@ -96,11 +99,12 @@ The capability manifest is versioned product data available to the operator inte
 - evidence: `supported_data_classes`, `supported_correlation_keys`, `schema_version`;
 - visibility: `policy_visibility`, `configuration_visibility`, `identity_visibility`, `translation_nat_visibility`;
 - authority: `read_permissions`, `write_permissions`;
-- actions: `action_plan_support`, `action_preview_support`, `action_apply_support`, `action_verify_support`, `action_expiration_support`, `action_rollback_support`;
-- constraints: `rate_limits`, `regional_constraints`, `licensing_constraints`; and
-- operations: `health_status`.
+- actions: `action_plan_support`, `action_preview_support`, `action_apply_support`, `action_verify_support`, `action_expiration_support`, `action_rollback_support`; and
+- constraints: `rate_limits`, `regional_constraints`, `licensing_constraints`.
 
-The manifest also records the official documentation version/date and licensed environment used to verify each claimed capability. Unknown, unavailable, unlicensed, and unverified are explicit states; absence is never inferred to mean support.
+Runtime health is not a manifest field. The separate health model references the active manifest version and determines which declared capabilities are currently usable without mutating capability history.
+
+The manifest also records the official documentation version/date and a sanitized validation attestation for each claimed capability. A published attestation may name only non-identifying product version, edition, region class, test class, and validation date. Licensed/design-partner environment identifiers, account or tenant IDs, source data, artifact locations, and detailed validation evidence remain tenant/deployment scoped and are linked only through protected local evidence references. Unknown, unavailable, unlicensed, and unverified are explicit states; absence is never inferred to mean support.
 
 ### Connector health and telemetry coverage
 
@@ -128,7 +132,7 @@ These conceptual persistent types follow the common lifecycle envelope and do no
 
 | Type | Data class and retention | Hold/deletion and derived effect | Boundary, model use, lineage, and storage impact |
 |---|---|---|---|
-| Connector capability manifest/version history | `CONNECTOR_CONFIGURATION`; active version plus superseded history for 1 year (Lean), 3 years (Standard), or 7 years (Regulated). | May be held only when it supports a case/action audit. Tenant-instance copies delete with the connector/tenant after the profile window; a capability removal invalidates affected unapproved plans and marks historical plans with the manifest version they used. | Tenant instance metadata stays in the tenant region/encryption boundary; generic published connector metadata may be global. No model use. Lineage includes connector build, schema, official-document review, license/edition/region assumptions, and validation evidence. Low storage impact. |
+| Connector capability manifest/version history | `CONNECTOR_CONFIGURATION`; active version plus superseded history for 1 year (Lean), 3 years (Standard), or 7 years (Regulated). | May be held only when it supports a case/action audit. Tenant-instance copies delete with the connector/tenant after the profile window; a capability removal invalidates affected unapproved plans and marks historical plans with the manifest version they used. | Tenant instance metadata and licensed/design-partner validation artifacts stay in the tenant/deployment region and encryption boundary. Only generic connector metadata plus a sanitized, non-identifying product/version/edition/region/test-class/date attestation may be global; environment identifiers, source data, account/tenant IDs, artifact locations, and detailed evidence never publish with it. No model use. Lineage includes connector build, schema, official-document review, non-identifying license/edition/region assumptions, sanitized attestation, and protected local evidence references. Low storage impact. |
 | Connector health, coverage, checkpoint, and schema-drift history | `CONNECTOR_HEALTH`; 30 days (Lean), 90 days (Standard), or 13 months (Regulated), with bounded coarser summaries allowed under the selected profile. | Held only when required to explain evidence loss or an action/case. Connector deletion removes credentials/checkpoints immediately and expires health history by policy; traces/cases retain a scoped availability tombstone and update confidence rather than fabricating coverage. | Tenant/scope isolated, tenant-region resident, tenant-key encrypted. No model use by default. Lineage identifies connector/manifest/schema/checkpoint versions. Low-to-moderate impact determined by sampling cadence, scope count, and field-coverage cardinality. |
 | Vendor extension/evidence envelope | Existing normalized observation/evidence data classes and profile periods in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. | Hold, deletion, raw-reference expiry, and derived invalidation follow the parent evidence. | Same tenant/residency/key/model-use boundary and lineage as the parent observation. Variable impact; bounded fields and payload minimization are required. |
 | SecurityIntent and coordinated plan state | Existing `ACTION_AUDIT` periods: 1 year (Lean), 3 years (Standard), or 7 years (Regulated). | Hold/release follows case/action governance. Deletion or expiry preserves only policy-permitted audit/tombstone data; affected executions remain honest about missing evidence. | Tenant/scope isolated, tenant-region resident, tenant-key encrypted; no model use unless separately authorized for an approved purpose. Lineage links recommendation, evidence, manifests, native plans, approvals, executions, vendor change IDs, verification, expiration, and rollback. Low storage impact. |
@@ -249,13 +253,13 @@ Design-partner pull may reorder vendors within a wave. It may not bypass these g
 
 ## M6 sequencing
 
-### M6A / Wave 0: Connector framework and supported lab sources
+### M6A / Wave 0: Connector framework and first certified lab sources
 
-Goal: turn the existing local/DGX sources into the reference connector architecture and promote them from lab integrations into supported connector contracts without replaying completed work.
+Goal: establish the reference connector architecture and promote only individually certified local/DGX sources without replaying completed work.
 
-Reference sources are CanarySting, kernel/eBPF, Kubernetes, Cilium, Hubble, Envoy, NGINX, and OpenTelemetry when present.
+Candidate reference sources are CanarySting, kernel/eBPF, Kubernetes, Cilium, Hubble, Envoy, NGINX, and OpenTelemetry when present. Listing a candidate does not claim implementation or support. In particular, the current NGINX CanarySting proxy adapter remains a stub, and no NGINX Evidence Collector is implied.
 
-M6A extends the M2B collector seam with a capability manifest, vendor extension/evidence envelope, product health model, schema drift, replay/backfill rules, fixture certification, click-ops onboarding, permission review, and a documented reference connector. Exit requires at least one streaming source and one polling/backfill source; console-visible health; preserved provenance/confidence; duplicate, reordered, delayed, and partial-event tests; and no write permissions.
+M6A extends the M2B collector seam with a capability manifest, vendor extension/evidence envelope, product health model, schema drift, replay/backfill rules, fixture certification, permission review, and bindings into the generic M4.6 Integrations workflow. Exit requires at least one streaming source and one polling/backfill source to pass the applicable certification independently; each promoted source has its own current manifest, console-visible health, preserved provenance/confidence, duplicate/reordered/delayed/partial-event evidence, and read-only proof. Every other candidate remains explicitly unsupported or unimplemented. Completing the wave never promotes the candidate set as a whole.
 
 ### M6B / Wave 1: Cross-vendor proof
 
@@ -370,7 +374,7 @@ Every collector certification suite covers:
 
 Later M7 action-adapter certification adds preview accuracy, plan/version mismatch rejection, authorization denial, stale-state handling, apply idempotency, vendor change-ID capture, verification, expiration, rollback, rollback ordering, audit integrity, and partial-failure recovery.
 
-Successful authentication proves only that credentials work. It does not establish field coverage, correctness, isolation, reliability, read-only behavior, correlation quality, or supported status. Support labels require the declared wave exit criteria, applicable certification suite, current manifest, official documentation review, and licensed environment evidence.
+Successful authentication proves only that credentials work. It does not establish field coverage, correctness, isolation, reliability, read-only behavior, correlation quality, or supported status. Support labels require the declared wave exit criteria, applicable certification suite, current manifest, official documentation review, protected licensed-environment evidence, and the matching sanitized manifest attestation.
 
 ## Unresolved architecture questions
 

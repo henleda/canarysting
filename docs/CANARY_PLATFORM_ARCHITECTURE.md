@@ -46,9 +46,11 @@ If implementation later needs shared contracts, place them at a neutral boundary
                                | recommend    |
                                +------+-------+
                                       |
-                           SecurityIntent + human approval
+                         proposed SecurityIntent + capability check
                                       |
                            vendor-native ActionPlans
+                                      |
+                           exact preview + human approval
                                       |
                      +----------------+----------------+
                      v                                 v
