@@ -141,11 +141,11 @@ These conceptual persistent types follow the common lifecycle envelope and do no
 
 An Action Adapter plans and later performs a narrow vendor-native action. It belongs primarily to M7, not the first M6 collector implementation. It:
 
-- uses separate write credentials and authorization;
-- accepts an approved, immutable vendor-native `ActionPlan`, not a generic policy document;
-- calculates scope and expected impact;
-- previews exact changes and required permissions;
-- applies only the approved plan through the native control plane;
+- exposes a side-effect-free planning/preview phase that consumes a proposed `SecurityIntent`, current capability manifests, and authorized read-only source state without write authority;
+- calculates scope and expected impact, previews exact changes and required permissions, and returns one or more proposed vendor-native `ActionPlan` objects;
+- activates its apply phase only after the exact immutable plans are approved;
+- uses separate write credentials and authorization only for apply and later mutation-bearing lifecycle operations;
+- accepts and applies only the exact approved vendor-native `ActionPlan` through the native control plane, never a generic policy document;
 - records the vendor change identifier and before/after state;
 - verifies the intended result;
 - expires or rolls back the action and verifies removal; and
