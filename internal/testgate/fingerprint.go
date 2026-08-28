@@ -12,30 +12,30 @@ import (
 )
 
 func BuildFingerprint(manifestDigest string) (Fingerprint, error) {
-	revision, err := outputOf("git", "rev-parse", "HEAD")
+	revision, err := gitOutputOf("rev-parse", "HEAD")
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("source revision: %w", err)
 	}
-	status, err := outputOf("git", "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := gitOutputOf("status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("working tree status: %w", err)
 	}
-	diff, err := outputOf("git", "diff", "--binary", "HEAD", "--", ".", ":(exclude).test-artifacts")
+	diff, err := gitOutputOf("diff", "--binary", "HEAD", "--", ".", ":(exclude).test-artifacts")
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("working tree diff: %w", err)
 	}
 	workingChanged := changedFiles(status)
 	mergeBase := strings.TrimSpace(revision)
 	for _, candidate := range []string{"origin/main", "main"} {
-		if _, verifyErr := outputOf("git", "rev-parse", "--verify", candidate); verifyErr != nil {
+		if _, verifyErr := gitOutputOf("rev-parse", "--verify", candidate); verifyErr != nil {
 			continue
 		}
-		if base, baseErr := outputOf("git", "merge-base", "HEAD", candidate); baseErr == nil {
+		if base, baseErr := gitOutputOf("merge-base", "HEAD", candidate); baseErr == nil {
 			mergeBase = strings.TrimSpace(base)
 			break
 		}
 	}
-	committedDiff, err := outputOf("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", mergeBase+"...HEAD", "--", ".", ":(exclude).test-artifacts")
+	committedDiff, err := gitOutputOf("diff", "--name-only", "--diff-filter=ACDMRTUXB", mergeBase+"...HEAD", "--", ".", ":(exclude).test-artifacts")
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("merge-base changed files: %w", err)
 	}
@@ -71,6 +71,15 @@ func BuildFingerprint(manifestDigest string) (Fingerprint, error) {
 		Toolchain: hex.EncodeToString(toolHash[:]), Manifest: manifestDigest,
 		Environment: hex.EncodeToString(envHash[:]), ChangedFiles: changed,
 	}, nil
+}
+
+func gitOutputOf(args ...string) (string, error) {
+	repository, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve repository directory: %w", err)
+	}
+	gitArgs := append([]string{"-c", "safe.directory=" + repository}, args...)
+	return outputOf("git", gitArgs...)
 }
 
 func mergeChangedFiles(groups ...[]string) []string {
