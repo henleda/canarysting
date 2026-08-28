@@ -186,11 +186,20 @@ jobs:
       # this every run re-downloads every dependency before the kernel tests can
       # start. GOMODCACHE in the golang image is /go/pkg/mod. Key on go.sum so the
       # cache invalidates exactly when the dependency set changes.
+      # Compute the digest inside the container once. Using hashFiles() directly
+      # in the cache key makes the post action re-scan the root-owned container
+      # checkout from the host, which fails even after the gate itself passes.
+      - name: Compute Go module cache key
+        id: go-mod-cache-key
+        shell: bash
+        run: |
+          go_sum_hash="$(sha256sum go.sum)"
+          printf 'hash=%s\n' "${go_sum_hash%% *}" >> "$GITHUB_OUTPUT"
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
           path: /go/pkg/mod
-          key: ${{ runner.os }}-ebpf-run-gomod-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-ebpf-run-gomod-${{ steps.go-mod-cache-key.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-ebpf-run-gomod-
       - name: Run shared privileged eBPF gate definition
