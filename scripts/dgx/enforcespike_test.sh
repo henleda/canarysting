@@ -111,7 +111,9 @@ grep -Fq 'readonly artifact_size artifact_sha256' "${subject}" || fail 'manifest
 if grep -Eq '^artifact_sha256="\$\(sha256sum "\$\{artifact\}"' "${subject}"; then
   fail 'expected artifact checksum is derived from the mutable executable'
 fi
-[[ "$(grep -Fc 'CANARYSTING_DGX_HOST="${remote_alias}"' "${subject}")" -eq 4 ]] || fail 'check/copy/cleanup host is not pinned to the proof host'
+[[ "$(grep -Fc 'CANARYSTING_DGX_HOST="${remote_alias}"' "${subject}")" -eq 4 ]] || fail 'check/copy/cleanup/post-state host is not pinned to the proof host'
+[[ "$(grep -Fc '  run_workflow_preflight' "${subject}")" -eq 1 ]] || fail 'workflow preflight reuse is not limited to the pre-mutation boundary'
+grep -Fq "readonly dgx_host='falcon1'" "${script_dir}/preflight-proof.sh" || fail 'shared preflight proof host is not pinned'
 grep -Fq "cgroup_parent='/sys/fs/cgroup/canarysting-dgx'" "${subject}" || fail 'cgroup parent is not fixed'
 grep -Fq 'exec timeout --signal=TERM --kill-after=3s 15s' "${subject}" || fail 'timeout is not fixed'
 bounded_capture_definition="$(awk '/^bounded_capture\(\) \{$/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${subject}")"

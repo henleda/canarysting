@@ -125,9 +125,12 @@ Monorepo. Top-level map (existing unless marked **partial** or **absent/planned*
 - `.agents/skills/canarysting-dev/SKILL.md` defines the normal development operating loop.
 - Architectural rules and safety invariants remain governed by this file.
 - Every task declares a validation tier before implementation; kernel, Kubernetes, Cilium, and identity changes require DGX validation.
-- A task is not complete until every acceptance criterion and required validation tier passes.
+- Classify task/PR risk as LOW, STANDARD, HIGH, or CRITICAL before implementation. Unknown impact expands to HIGH; a manual override may increase but never reduce automatic coverage.
+- Use `make check-fast` during edits and `make check-pr-local` before presenting completion. The authoritative PR gate is risk-selected `make check-pr` in CI; CRITICAL work is not complete without its relevant privileged/DGX evidence.
+- Deterministic adversarial replay is the PR default. Targeted live smoke runs only for relevant HIGH/CRITICAL changes; complete integration and live campaigns belong to Level 3/4 integration, nightly, release, and scheduled workflows.
+- A task is not complete until every acceptance criterion and its risk-appropriate Level 2/required remote qualification passes. Level 3 is not rerun after every repair; record the integration/nightly/release path that supplies broader qualification.
 - Update `docs/DEVELOPMENT_PLAN.md` whenever work changes project status.
-- Put repository changes through a pull request and wait for the GitHub Actions `ci` suite to be created and for every required job to pass before merging. A queued third-party check suite with zero check runs is not CI evidence. If the normal event is delayed or absent, use the manual `workflow_dispatch` trigger and record the resulting run URL rather than merging without a green run.
+- Put repository changes through a pull request and wait for the GitHub Actions risk-selected `ci` suite to be created and for every selected Level 2/remote job to pass before merging. A queued third-party check suite with zero check runs is not CI evidence. If the normal event is delayed or absent, use the manual `workflow_dispatch` trigger and record the resulting run URL rather than merging without a green run.
 - GitHub plan limitations currently prevent enforcing branch protection/rulesets on this private repository, so the green-PR rule above is a mandatory operating procedure until server-side enforcement is available. Keep automatic deletion of merged remote branches enabled and preserve unmerged prototypes through an issue or plan record before deleting a branch.
 
 ## Status

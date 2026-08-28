@@ -1,15 +1,87 @@
 name: ci
+
 on:
-  push:
   pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1-6"
+    - cron: "17 3 * * 0"
   workflow_dispatch:
+    inputs:
+      level:
+        description: Validation level
+        type: choice
+        options: [pr, integration, campaign]
+        default: pr
+      risk:
+        description: Optional risk increase
+        type: choice
+        options: [auto, LOW, STANDARD, HIGH, CRITICAL]
+        default: auto
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.schedule || github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  go:
-    name: go (fmt, vet, build, test)
+  risk:
+    name: risk classification and path selection
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.level == 'pr')
+    runs-on: ubuntu-latest
+    outputs:
+      risk: ${{ steps.classify.outputs.risk }}
+      executable: ${{ steps.classify.outputs.executable }}
+      requires_privileged: ${{ steps.classify.outputs.requires_privileged }}
+      requires_dgx: ${{ steps.classify.outputs.requires_dgx }}
+      requires_live_qwen: ${{ steps.classify.outputs.requires_live_qwen }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      ebpf: ${{ steps.classify.outputs.ebpf }}
+      gate: ${{ steps.classify.outputs.gate }}
+      remote_profiles: ${{ steps.classify.outputs.remote_profiles }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Classify automatic and manually increased risk
+        id: classify
+        shell: bash
+        run: |
+          manual=''
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            labels="$(jq -r '[.pull_request.labels[].name] | join(" ")' "$GITHUB_EVENT_PATH")"
+            case " ${labels} " in
+              *' risk:critical '*) manual='CRITICAL' ;;
+              *' risk:high '*) manual='HIGH' ;;
+              *' risk:standard '*) manual='STANDARD' ;;
+              *' risk:low '*) manual='LOW' ;;
+            esac
+          elif [[ '${{ inputs.risk }}' != 'auto' ]]; then
+            manual='${{ inputs.risk }}'
+          fi
+          make check-risk RISK="${manual}" GITHUB_OUTPUT_FILE="$GITHUB_OUTPUT"
+      - name: Upload risk decision
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-risk-${{ github.event.pull_request.number || github.run_id }}
+          path: .test-artifacts/gates/risk.json
+          if-no-files-found: error
+
+  pr-local:
+    name: Level 2 local (${{ needs.risk.outputs.risk }})
+    needs: risk
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -23,191 +95,221 @@ jobs:
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-      - name: Run shared Go and harness gate definitions
-        run: make check-ci-go
-      - name: Upload gate evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-go
-          path: .test-artifacts/gates/
-          if-no-files-found: error
-
-  frontend:
-    name: frontend (lint, build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Set up Node.js 24 LTS
+      - name: Set up Node.js 24 LTS when affected
+        if: needs.risk.outputs.frontend == 'true'
         uses: actions/setup-node@v7
         with:
-          # Keep this exact version aligned with package.json's bundled npm pin.
           node-version: "24.19.0"
           cache: npm
           cache-dependency-path: dashboard/app/package-lock.json
-      - name: Verify frontend toolchain
-        run: |
-          test "$(node --version)" = "v24.19.0"
-          test "$(npm --version)" = "11.17.0"
-      - name: Install locked dashboard dependencies
+      - name: Install locked frontend dependencies when affected
+        if: needs.risk.outputs.frontend == 'true'
         working-directory: dashboard/app
         run: npm ci
-      - name: Run shared frontend gate definitions
-        run: make check-ci-frontend
-      - name: Upload gate evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-frontend
-          path: .test-artifacts/gates/
-          if-no-files-found: error
-
-  ebpf:
-    name: ebpf (clang build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Install clang/llvm + libbpf + build deps
+      - name: Install eBPF build prerequisites when affected
+        if: needs.risk.outputs.ebpf == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev \
-            gcc make pkg-config git libelf-dev zlib1g-dev
-      # The runner's packaged bpftool is unreliable: the bare `bpftool` apt name
-      # is only a virtual package, and the /usr/sbin/bpftool wrapper from
-      # linux-tools-common mis-resolves the Azure kernel flavor
-      # (6.17.0-...-azure), failing with "bpftool not found for kernel ...".
-      # Use a packaged bpftool only if it actually runs; otherwise build a
-      # standalone one from the official repo. Any recent bpftool can dump the
-      # running kernel's BTF, so it need not match the kernel version.
-      - name: Provide a working bpftool
+          sudo apt-get install -y clang llvm libbpf-dev gcc make pkg-config git libelf-dev zlib1g-dev
+      - name: Provide bpftool and vmlinux.h when eBPF is affected
+        if: needs.risk.outputs.ebpf == 'true'
+        shell: bash
         run: |
-          for cand in /usr/sbin/bpftool $(find /usr/lib /usr/local -type f -name bpftool 2>/dev/null); do
-            if "$cand" version >/dev/null 2>&1; then
-              echo "BPFTOOL=$cand" >> "$GITHUB_ENV"
-              echo "using packaged bpftool: $cand"
-              exit 0
-            fi
+          tool=''
+          for candidate in /usr/sbin/bpftool $(find /usr/lib /usr/local -type f -name bpftool 2>/dev/null); do
+            if "$candidate" version >/dev/null 2>&1; then tool="$candidate"; break; fi
           done
-          echo "no working packaged bpftool — building from source"
-          repo=https://github.com/libbpf/bpftool.git
-          tag="$(git ls-remote --tags --refs "$repo" 'v*' | awk -F/ '{print $NF}' | sort -V | tail -n1)"
-          echo "building bpftool $tag"
-          git clone --depth 1 --branch "$tag" --recurse-submodules "$repo" "$RUNNER_TEMP/bpftool"
-          make -C "$RUNNER_TEMP/bpftool/src" -j"$(nproc)"
-          echo "BPFTOOL=$RUNNER_TEMP/bpftool/src/bpftool" >> "$GITHUB_ENV"
-      - name: Tool versions
-        run: |
-          clang --version
-          "$BPFTOOL" version
-      # Every bpf/<x>/<x>.bpf.c does `#include "vmlinux.h"` for CO-RE kernel
-      # types. That header is gitignored (host/kernel-specific), so CI generates
-      # it from the runner's kernel BTF before the clang build, or `make bpf`
-      # fails with: fatal error: 'vmlinux.h' file not found.
-      - name: Generate vmlinux.h from kernel BTF
-        run: |
-          test -r /sys/kernel/btf/vmlinux || { echo "no kernel BTF at /sys/kernel/btf/vmlinux"; exit 1; }
-          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > "$RUNNER_TEMP/vmlinux.h"
-          # A quoted include resolves relative to the including file's own
-          # directory, so place the header in every dir that has a .bpf.c source
-          # (enforce/observe/sockops, and any added later).
-          n=0
-          for d in $(find bpf -name '*.bpf.c' -exec dirname {} \; | sort -u); do
-            cp "$RUNNER_TEMP/vmlinux.h" "$d/vmlinux.h"
-            n=$((n + 1))
+          if [[ -z "$tool" ]]; then
+            repo=https://github.com/libbpf/bpftool.git
+            tag="$(git ls-remote --tags --refs "$repo" 'v*' | awk -F/ '{print $NF}' | sort -V | tail -n1)"
+            git clone --depth 1 --branch "$tag" --recurse-submodules "$repo" "$RUNNER_TEMP/bpftool"
+            make -C "$RUNNER_TEMP/bpftool/src" -j"$(nproc)"
+            tool="$RUNNER_TEMP/bpftool/src/bpftool"
+          fi
+          "$tool" btf dump file /sys/kernel/btf/vmlinux format c > "$RUNNER_TEMP/vmlinux.h"
+          for directory in $(find bpf -name '*.bpf.c' -exec dirname {} \; | sort -u); do
+            cp "$RUNNER_TEMP/vmlinux.h" "$directory/vmlinux.h"
           done
-          echo "placed vmlinux.h ($(wc -l < "$RUNNER_TEMP/vmlinux.h") lines) into $n bpf source dir(s)"
-      # Compile every checked-in CanarySting eBPF source through the normal target:
-      # enforce (containment), observe (baseline), and sockops (socket-cookie join).
-      # The object assertion makes omission from BPF_SRC a hard CI failure instead
-      # of silently trusting the committed bpf2go runtime objects.
-      - name: Compile all checked-in eBPF C sources
-        run: make check-ci-ebpf
-      - name: Upload gate evidence
-        if: always()
+      - name: Run authoritative shared Level 2 definitions
+        run: make check-pr RISK='${{ needs.risk.outputs.risk }}'
+      - name: Upload failed Level 2 evidence
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: gate-ebpf-build
+          name: gate-pr-local-${{ github.event.pull_request.number || github.run_id }}
           path: .test-artifacts/gates/
           if-no-files-found: error
 
-  adversarial:
-    name: adversarial (bounded local scenarios)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Run shared adversarial scenario definitions
-        run: make check-ci-adversarial
-      - name: Upload gate evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gate-adversarial
-          path: .test-artifacts/gates/
-          if-no-files-found: error
-
-  # B4: privileged job that actually RUNS the kernel datapath. The ebpf job above
-  # only COMPILES the C; this job loads the committed *_bpfel.o objects into the
-  # kernel, attaches them to a cgroup-v2 hierarchy, and exercises the jail-precision
-  # / fail-open / rate-limit-math / close-delete behavioral proofs that t.Skip()
-  # off-root. These are the single most catastrophic-if-wrong code path, so a green
-  # merge must mean they EXECUTED — not that they skipped.
-  #
-  # Config-complete on GitHub-hosted runners: ubuntu-latest is a real VM (not a
-  # container), so its kernel exposes cgroup-v2 unified at /sys/fs/cgroup and BPF
-  # syscalls. We run the test step inside a `privileged` container so the test
-  # process holds CAP_BPF/CAP_NET_ADMIN/CAP_PERFMON and can attach to that cgroup.
-  # No clang or vmlinux.h is needed at runtime: the BPF objects are committed and
-  # embedded via //go:embed, so this job only needs a BPF-capable kernel + caps.
-  ebpf-run:
-    name: ebpf (privileged kernel datapath tests)
+  pr-ebpf-privileged:
+    name: Level 2 selected privileged eBPF
+    needs: [risk, pr-local]
+    if: needs.risk.outputs.requires_privileged == 'true'
     runs-on: ubuntu-latest
     container:
       image: golang:1.24-bookworm
-      # --privileged grants the caps + cgroup access the loaders need. The host
-      # bind-mounts the cgroup-v2 hierarchy so the container's test sockets live
-      # in the same cgroup the eBPF programs attach to.
       options: --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
     steps:
       - uses: actions/checkout@v5
-      # Cache the Go module download cache. This job runs in a bare golang
-      # container (not setup-go), so it gets no automatic module caching; without
-      # this every run re-downloads every dependency before the kernel tests can
-      # start. GOMODCACHE in the golang image is /go/pkg/mod. Key on go.sum so the
-      # cache invalidates exactly when the dependency set changes.
-      # Compute the digest inside the container once. Using hashFiles() directly
-      # in the cache key makes the post action re-scan the root-owned container
-      # checkout from the host, which fails even after the gate itself passes.
-      - name: Compute Go module cache key
-        id: go-mod-cache-key
-        shell: bash
-        run: |
-          go_sum_hash="$(sha256sum go.sum)"
-          printf 'hash=%s\n' "${go_sum_hash%% *}" >> "$GITHUB_OUTPUT"
-      - name: Cache Go modules
-        uses: actions/cache@v4
         with:
-          path: /go/pkg/mod
-          key: ${{ runner.os }}-ebpf-run-gomod-${{ steps.go-mod-cache-key.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-ebpf-run-gomod-
-      - name: Run shared privileged eBPF gate definition
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Run shared privileged check definition
         run: make check-ci-ebpf-privileged
-      - name: Upload gate evidence
-        if: always()
+      - name: Upload failed privileged evidence
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: gate-ebpf-privileged
+          name: gate-pr-ebpf-privileged-${{ github.event.pull_request.number || github.run_id }}
           path: .test-artifacts/gates/
           if-no-files-found: error
+
+  pr-dgx:
+    name: Level 2 selected DGX smoke
+    needs: [risk, pr-local]
+    if: needs.risk.outputs.requires_dgx == 'true'
+    runs-on: [self-hosted, canarysting-dgx-controller]
+    concurrency:
+      group: dgx-pr-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Map conservative classifier output to a bounded DGX profile
+        id: profile
+        shell: bash
+        env:
+          REMOTE_PROFILES: ${{ needs.risk.outputs.remote_profiles }}
+        run: |
+          case ",${REMOTE_PROFILES}," in
+            *',dgx-kernel,'*) selected='kernel-full' ;;
+            *',dgx-enforcement,'*) selected='enforcement' ;;
+            *',dgx-harness,'*) selected='preflight' ;;
+            *)
+              echo "No implemented bounded DGX profile for ${REMOTE_PROFILES}; refusing weaker substitution" >&2
+              exit 2
+              ;;
+          esac
+          echo "profile=${selected}" >> "$GITHUB_OUTPUT"
+      - name: Run one preflight, build, transfer, scenario set, and cleanup
+        run: |
+          short_sha="${GITHUB_SHA:0:10}"
+          make check-dgx-smoke DGX_PROFILE='${{ steps.profile.outputs.profile }}' RUN_ID="pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}"
+
+  pr-gate:
+    name: authoritative Level 2 PR gate
+    needs: [risk, pr-local, pr-ebpf-privileged, pr-dgx]
+    if: always() && needs.risk.result != 'skipped'
+    runs-on: ubuntu-latest
+    env:
+      LOCAL_RESULT: ${{ needs.pr-local.result }}
+      PRIVILEGED_RESULT: ${{ needs.pr-ebpf-privileged.result }}
+      DGX_RESULT: ${{ needs.pr-dgx.result }}
+      REQUIRES_PRIVILEGED: ${{ needs.risk.outputs.requires_privileged }}
+      REQUIRES_DGX: ${{ needs.risk.outputs.requires_dgx }}
+      EFFECTIVE_RISK: ${{ needs.risk.outputs.risk }}
+    steps:
+      - name: Require every automatically selected job
+        shell: bash
+        run: |
+          echo "risk=${EFFECTIVE_RISK} local=${LOCAL_RESULT} privileged=${PRIVILEGED_RESULT} dgx=${DGX_RESULT}"
+          [[ "${LOCAL_RESULT}" == 'success' ]]
+          if [[ "${REQUIRES_PRIVILEGED}" == 'true' ]]; then [[ "${PRIVILEGED_RESULT}" == 'success' ]]; fi
+          if [[ "${REQUIRES_DGX}" == 'true' ]]; then [[ "${DGX_RESULT}" == 'success' ]]; fi
+
+  integration-local:
+    name: Level 3 complete local qualification
+    if: >-
+      github.event_name == 'push' || github.event_name == 'merge_group' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.level == 'integration' || inputs.level == 'campaign'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.19.0"
+          cache: npm
+          cache-dependency-path: dashboard/app/package-lock.json
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: "35.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install locked build prerequisites once
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+          npm --prefix dashboard/app ci
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev gcc make pkg-config git libelf-dev zlib1g-dev
+          tool=''
+          for candidate in /usr/sbin/bpftool $(find /usr/lib /usr/local -type f -name bpftool 2>/dev/null); do
+            if "$candidate" version >/dev/null 2>&1; then tool="$candidate"; break; fi
+          done
+          if [[ -z "$tool" ]]; then
+            repo=https://github.com/libbpf/bpftool.git
+            tag="$(git ls-remote --tags --refs "$repo" 'v*' | awk -F/ '{print $NF}' | sort -V | tail -n1)"
+            git clone --depth 1 --branch "$tag" --recurse-submodules "$repo" "$RUNNER_TEMP/bpftool"
+            make -C "$RUNNER_TEMP/bpftool/src" -j"$(nproc)"
+            tool="$RUNNER_TEMP/bpftool/src/bpftool"
+          fi
+          "$tool" btf dump file /sys/kernel/btf/vmlinux format c > "$RUNNER_TEMP/vmlinux.h"
+          for directory in $(find bpf -name '*.bpf.c' -exec dirname {} \; | sort -u); do
+            cp "$RUNNER_TEMP/vmlinux.h" "$directory/vmlinux.h"
+          done
+      - name: Run complete shared Level 3 local graph
+        run: make check-integration-full
+      - name: Upload Level 3 evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-integration-local-${{ github.run_id }}
+          path: .test-artifacts/gates/
+          if-no-files-found: error
+
+  integration-dgx:
+    name: Level 3 complete implemented DGX matrix
+    needs: integration-local
+    runs-on: [self-hosted, canarysting-dgx-controller]
+    concurrency:
+      group: dgx-integration
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run full implemented DGX matrix once
+        run: |
+          short_sha="${GITHUB_SHA:0:10}"
+          make check-dgx-smoke DGX_PROFILE=kernel-full RUN_ID="integration-${GITHUB_RUN_ID}-${short_sha}"
+
+  campaign:
+    name: Level 4 soak and live campaign qualification
+    needs: [integration-local, integration-dgx]
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '17 3 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && inputs.level == 'campaign')
+    runs-on: [self-hosted, canarysting-dgx-controller]
+    concurrency:
+      group: dgx-campaign
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Require the bounded live Qwen campaign implementation
+        run: scripts/dgx/pr.sh --profile campaign --run-id "campaign-${GITHUB_RUN_ID}"

@@ -11,6 +11,7 @@ readonly script_dir
 readonly check_script="${script_dir}/check.sh"
 readonly copy_script="${script_dir}/copy.sh"
 readonly cleanup_script="${script_dir}/cleanup.sh"
+readonly preflight_proof_script="${script_dir}/preflight-proof.sh"
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +37,14 @@ USAGE
 fail() {
   printf 'enforcespike: %s\n' "$*" >&2
   exit 1
+}
+
+run_workflow_preflight() {
+  if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
+    "${preflight_proof_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
+  else
+    CANARYSTING_DGX_HOST="${remote_alias}" "${check_script}"
+  fi
 }
 
 run_id=''
@@ -88,12 +97,12 @@ if [[ "${mode}" == 'dry-run' ]]; then
 fi
 
 command -v ssh >/dev/null 2>&1 || fail 'required command is missing: ssh'
-for required in "${check_script}" "${copy_script}" "${cleanup_script}"; do
+for required in "${check_script}" "${copy_script}" "${cleanup_script}" "${preflight_proof_script}"; do
   [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
 done
 
 if [[ "${mode}" == 'run' || "${mode}" == 'cleanup' ]]; then
-  CANARYSTING_DGX_HOST="${remote_alias}" "${check_script}"
+  run_workflow_preflight
   printf 'pre_mutation_check=PASS\n'
 fi
 if [[ "${mode}" == 'run' ]]; then

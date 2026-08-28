@@ -20,13 +20,21 @@ func SelectChecks(manifest Manifest, options RunOptions, changedFiles []string) 
 			selected[id] = true
 		}
 	} else if options.Gate == "check-fast" {
-		selected = selectAffected(all, changedFiles)
-	} else {
-		for _, check := range manifest.Checks {
-			if contains(check.Gates, options.Gate) {
-				selected[check.ID] = true
-			}
+		report, err := ClassifyRisk(changedFiles, options.RiskOverride)
+		if err != nil {
+			return nil, err
 		}
+		selected = selectAffected(all, changedFiles, report)
+	} else if options.Gate == "check-pr-local" || options.Gate == "check-pr" {
+		report, err := ClassifyRisk(changedFiles, options.RiskOverride)
+		if err != nil {
+			return nil, err
+		}
+		selected = selectPR(all, changedFiles, report)
+	} else if options.Gate == "check-integration-full" || options.Gate == "check-campaign" {
+		selected = selectByGate(all, "check-merge-local")
+	} else {
+		selected = selectByGate(all, options.Gate)
 	}
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("gate %q selected no checks", options.Gate)
@@ -51,47 +59,43 @@ func SelectChecks(manifest Manifest, options RunOptions, changedFiles []string) 
 	return checks, nil
 }
 
-func selectAffected(all map[string]Check, files []string) map[string]bool {
-	selected := map[string]bool{"manifest-schema": true, "safety-policy": true, "format": true}
+func selectByGate(all map[string]Check, gate string) map[string]bool {
+	selected := make(map[string]bool)
+	for id, check := range all {
+		if contains(check.Gates, gate) {
+			selected[id] = true
+		}
+	}
+	return selected
+}
+
+func selectAffected(all map[string]Check, files []string, risk RiskReport) map[string]bool {
+	selected := make(map[string]bool)
+	addAvailable(selected, all, "manifest-schema", "safety-policy", "repo-config", "format")
 	if len(files) == 0 {
-		selected["go-test-race"] = true
+		addAvailable(selected, all, "security-invariants", "affected-go-build", "affected-go-test")
 		return selected
 	}
 	unknown := false
 	for _, file := range files {
 		switch {
 		case strings.HasPrefix(file, "internal/testgate/"), strings.HasPrefix(file, "cmd/testgate/"), strings.HasPrefix(file, "test/gates/"), file == "Makefile", strings.HasPrefix(file, ".github/workflows/"):
-			for id, check := range all {
-				if contains(check.Gates, "check-local") {
-					selected[id] = true
-				}
-			}
+			addAvailable(selected, all, "gate-selftests", "gate-synthetic-collect-all", "affected-go-build", "affected-go-test", "security-invariants")
 		case strings.HasSuffix(file, ".go"), file == "go.mod", file == "go.sum":
-			selected["go-vet"] = true
-			selected["go-build"] = true
-			selected["go-test-race"] = true
+			addAvailable(selected, all, "affected-go-build", "affected-go-test", "go-vet", "security-invariants")
 			if isSecurityPath(file) {
-				selected["selfcheck-sting"] = true
-				selected["selfcheck-envoy"] = true
-				selectAdversarial(selected, all)
+				addAvailable(selected, all, "selfcheck-sting", "selfcheck-envoy")
+				selectAdversarial(selected, all, files)
 			}
 		case strings.HasPrefix(file, "dashboard/app/"):
-			selected["frontend-lint"] = true
-			selected["frontend-build"] = true
+			addAvailable(selected, all, "frontend-lint")
 		case strings.HasPrefix(file, "bpf/"):
-			selected["bpf-compile"] = true
-			selected["go-test-race"] = true
-			selectAdversarial(selected, all)
+			addAvailable(selected, all, "bpf-compile", "bpf-object-assert", "affected-go-build", "affected-go-test", "security-invariants")
+			selectAdversarial(selected, all, files)
 		case strings.HasPrefix(file, "scripts/dgx/"):
-			for id := range all {
-				if strings.HasPrefix(id, "dgx-harness:") {
-					selected[id] = true
-				}
-			}
+			selectDGXHarnessForPath(selected, all, file)
 		case strings.HasPrefix(file, "api/proto/"), strings.HasPrefix(file, "internal/operator/api/"):
-			selected["generated-proto"] = true
-			selected["generated-operator"] = true
-			selected["go-test-race"] = true
+			addAvailable(selected, all, "generated-proto", "generated-operator", "affected-go-build", "affected-go-test", "security-invariants")
 		case strings.HasPrefix(file, "docs/"), file == ".gitignore", file == "AGENTS.md", strings.HasPrefix(file, ".agents/skills/"):
 			// Structural checks are already selected.
 		default:
@@ -99,16 +103,99 @@ func selectAffected(all map[string]Check, files []string) map[string]bool {
 		}
 	}
 	if unknown {
-		for id, check := range all {
-			if contains(check.Gates, "check-local") {
-				selected[id] = true
-			}
+		selected = selectPR(all, files, RiskReport{Effective: RiskHigh, Executable: true, GateAffected: risk.GateAffected})
+	}
+	return selected
+}
+
+func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]bool {
+	selected := make(map[string]bool)
+	addAvailable(selected, all, "manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator", "go-vet", "go-build", "go-test")
+	if risk.Executable {
+		addAvailable(selected, all, "security-invariants")
+	}
+	if risk.Effective == RiskHigh || risk.Effective == RiskCritical {
+		addAvailable(selected, all, "go-test-race", "selfcheck-sting", "selfcheck-envoy")
+	} else if hasGoImpact(files) {
+		addAvailable(selected, all, "affected-go-race", "affected-go-integration")
+	}
+	if risk.GateAffected {
+		addAvailable(selected, all, "gate-selftests", "gate-synthetic-collect-all")
+		selectAdversarial(selected, all, files)
+	}
+	for _, file := range files {
+		switch {
+		case strings.HasPrefix(file, "dashboard/app/"):
+			addAvailable(selected, all, "frontend-lint", "frontend-build")
+		case strings.HasPrefix(file, "bpf/"):
+			addAvailable(selected, all, "bpf-compile", "bpf-object-assert")
+			selectAdversarial(selected, all, files)
+		case strings.HasPrefix(file, "scripts/dgx/"):
+			selectDGXHarnessForPath(selected, all, file)
+		case isSecurityPath(file):
+			selectAdversarial(selected, all, files)
 		}
 	}
 	return selected
 }
 
-func selectAdversarial(selected map[string]bool, all map[string]Check) {
+func addAvailable(selected map[string]bool, all map[string]Check, ids ...string) {
+	for _, id := range ids {
+		if _, ok := all[id]; ok {
+			selected[id] = true
+		}
+	}
+}
+
+func hasGoImpact(files []string) bool {
+	for _, file := range files {
+		if strings.HasSuffix(file, ".go") || file == "go.mod" || file == "go.sum" {
+			return true
+		}
+	}
+	return false
+}
+
+func selectDGXHarnessForPath(selected map[string]bool, all map[string]Check, file string) {
+	addAvailable(selected, all, "dgx-harness:syntax")
+	name := strings.TrimSuffix(strings.TrimPrefix(file, "scripts/dgx/"), "_test.sh")
+	name = strings.TrimSuffix(name, ".sh")
+	id := "dgx-harness:" + name
+	if _, ok := all[id]; ok {
+		selected[id] = true
+		return
+	}
+	for candidate := range all {
+		if strings.HasPrefix(candidate, "dgx-harness:") {
+			selected[candidate] = true
+		}
+	}
+}
+
+func selectAdversarial(selected map[string]bool, all map[string]Check, files []string) {
+	matched := false
+	for id, check := range all {
+		if !strings.HasPrefix(id, "adversarial:") {
+			continue
+		}
+		for _, tag := range check.Tags {
+			if !strings.HasPrefix(tag, "affected:") {
+				continue
+			}
+			prefix := strings.TrimPrefix(tag, "affected:")
+			for _, file := range files {
+				if strings.HasPrefix(file, prefix) {
+					selected[id] = true
+					matched = true
+				}
+			}
+		}
+	}
+	if matched {
+		return
+	}
+	// An unmapped security or gate impact expands to the complete deterministic
+	// replay corpus; affected selection is never a coverage exemption.
 	for id := range all {
 		if strings.HasPrefix(id, "adversarial:") {
 			selected[id] = true
@@ -117,7 +204,7 @@ func selectAdversarial(selected map[string]bool, all map[string]Check) {
 }
 
 func isSecurityPath(file string) bool {
-	for _, prefix := range []string{"internal/contract/", "internal/engine/", "internal/sting/", "internal/identity/", "internal/operator/", "adapters/", "deploy/", "cmd/llm-attacker/"} {
+	for _, prefix := range []string{"internal/contract/", "internal/engine/", "internal/sting/", "internal/identity/", "internal/operator/", "adapters/", "deploy/", "cmd/llm-attacker/", "internal/llm/attacker/", "bpf/"} {
 		if strings.HasPrefix(file, prefix) {
 			return true
 		}

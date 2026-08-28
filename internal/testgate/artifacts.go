@@ -22,6 +22,9 @@ func WriteArtifacts(summary Summary, manifest Manifest, runDir string) error {
 	}); err != nil {
 		return err
 	}
+	if err := writeJSON(filepath.Join(runDir, "risk.json"), summary.Risk); err != nil {
+		return err
+	}
 	if err := writeJSON(filepath.Join(runDir, "dependency-graph.json"), graphFor(manifest, summary)); err != nil {
 		return err
 	}
@@ -64,6 +67,11 @@ func ConsoleSummary(summary Summary) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Gate %s: PASS=%d FAIL=%d BLOCKED=%d SKIPPED=%d SAFETY_STOP=%d duration=%.2fs\n",
 		summary.Gate, summary.Counts[StatusPass], summary.Counts[StatusFail], summary.Counts[StatusBlocked], summary.Counts[StatusSkipped], summary.Counts[StatusSafetyStop], summary.DurationSeconds)
+	fmt.Fprintf(&builder, "Risk: automatic=%s effective=%s executable=%t remote=%s\n",
+		summary.Risk.Automatic, summary.Risk.Effective, summary.Risk.Executable, strings.Join(summary.Risk.RemoteProfiles, ","))
+	if summary.TimingBudgetSeconds > 0 {
+		fmt.Fprintf(&builder, "Timing budget: %.0fs exceeded=%t\n", summary.TimingBudgetSeconds, summary.TimingBudgetExceeded)
+	}
 	if len(summary.ReplayChanges) > 0 {
 		fmt.Fprintf(&builder, "Replay: fixed=%s still_failing=%s newly_blocked=%s newly_failing=%s\n",
 			strings.Join(summary.ReplayChanges["fixed"], ","), strings.Join(summary.ReplayChanges["still_failing"], ","),
@@ -116,7 +124,8 @@ func timing(summary Summary) map[string]any {
 		checks[result.ID] = result.DurationSeconds
 	}
 	return map[string]any{"run_id": summary.RunID, "total_seconds": summary.DurationSeconds, "checks": checks,
-		"cache_hits": summary.CacheHits, "cache_misses": summary.CacheMisses}
+		"cache_hits": summary.CacheHits, "cache_misses": summary.CacheMisses,
+		"budget_seconds": summary.TimingBudgetSeconds, "budget_exceeded": summary.TimingBudgetExceeded}
 }
 
 func graphFor(manifest Manifest, summary Summary) map[string]any {

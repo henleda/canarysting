@@ -16,7 +16,8 @@ readonly script_dir
 copy_script="${script_dir}/copy.sh"
 cleanup_script="${script_dir}/cleanup.sh"
 check_script="${script_dir}/check.sh"
-readonly copy_script cleanup_script check_script
+preflight_proof_script="${script_dir}/preflight-proof.sh"
+readonly copy_script cleanup_script check_script preflight_proof_script
 
 usage() {
   cat <<'EOF'
@@ -43,6 +44,14 @@ EOF
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
+}
+
+run_workflow_preflight() {
+  if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
+    "${preflight_proof_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
+  else
+    CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
+  fi
 }
 
 validate_run_id() {
@@ -111,7 +120,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   exit 0
 fi
 
-for required in ssh "${check_script}" "${cleanup_script}"; do
+for required in ssh "${check_script}" "${cleanup_script}" "${preflight_proof_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required script is missing or not executable: ${required}"
   else
@@ -121,7 +130,7 @@ done
 
 if [[ "${mode}" == 'run' || "${mode}" == 'cleanup' ]]; then
   printf 'pre_mutation_check=begin\n'
-  CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
+  run_workflow_preflight
   printf 'pre_mutation_check=PASS\n'
 fi
 

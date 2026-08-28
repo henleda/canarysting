@@ -14,11 +14,15 @@ type goTestEvent struct {
 }
 
 func applyResultParser(check Check, output []byte, result *Result) {
-	if check.ResultParser != "go-test-json-required-passes" || result.Scenario == nil {
+	if check.ResultParser != "go-test-json-required-passes" {
 		return
 	}
-	required := make(map[string]bool, len(result.Scenario.RequiredAssertions))
-	for _, name := range result.Scenario.RequiredAssertions {
+	requiredAssertions := check.RequiredTestPasses
+	if len(requiredAssertions) == 0 && result.Scenario != nil {
+		requiredAssertions = result.Scenario.RequiredAssertions
+	}
+	required := make(map[string]bool, len(requiredAssertions))
+	for _, name := range requiredAssertions {
 		required[name] = false
 	}
 	var parseErrors []string
@@ -44,22 +48,33 @@ func applyResultParser(check Check, output []byte, result *Result) {
 		parseErrors = append(parseErrors, err.Error())
 	}
 	for name, passed := range required {
-		if passed {
-			result.Scenario.ObservedEvidence = append(result.Scenario.ObservedEvidence, "test-pass:"+name)
-		} else {
-			result.Scenario.MissingEvidence = append(result.Scenario.MissingEvidence, "test-pass:"+name)
+		if result.Scenario != nil {
+			if passed {
+				result.Scenario.ObservedEvidence = append(result.Scenario.ObservedEvidence, "test-pass:"+name)
+			} else {
+				result.Scenario.MissingEvidence = append(result.Scenario.MissingEvidence, "test-pass:"+name)
+			}
 		}
 	}
-	sort.Strings(result.Scenario.ObservedEvidence)
-	sort.Strings(result.Scenario.MissingEvidence)
-	if len(parseErrors) > 0 || len(result.Scenario.MissingEvidence) > 0 {
+	missing := make([]string, 0)
+	for name, passed := range required {
+		if !passed {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	if result.Scenario != nil {
+		sort.Strings(result.Scenario.ObservedEvidence)
+		sort.Strings(result.Scenario.MissingEvidence)
+	}
+	if len(parseErrors) > 0 || len(missing) > 0 {
 		if result.Status != StatusSafetyStop {
 			result.Status = StatusFail
 			result.FailureClass = "test defect"
 			if len(parseErrors) > 0 {
 				result.Reason = fmt.Sprintf("scenario result parser rejected %d malformed event(s)", len(parseErrors))
 			} else {
-				result.Reason = "required scenario assertions did not report PASS"
+				result.Reason = "required test assertions did not report PASS: " + fmt.Sprint(missing)
 			}
 		}
 	}

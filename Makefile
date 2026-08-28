@@ -19,6 +19,10 @@ SCENARIO ?=
 COUNT ?= 1
 JOBS ?=
 VALIDATION_TIER ?= local
+RISK ?=
+GITHUB_OUTPUT_FILE ?=
+DGX_PROFILE ?=
+RUN_ID ?=
 
 # eBPF sources -> objects. *.bpf.o is gitignored. Source discovery is deliberately
 # narrow: enforcement, observe-only flow accounting, and the socket-cookie join.
@@ -128,6 +132,7 @@ dgx-harness-check:
 	scripts/dgx/enforcespike_test.sh
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh
+	scripts/dgx/pr_test.sh
 
 ## dgx-syntax-check: validate every DGX shell program without contacting the DGX
 .PHONY: dgx-syntax-check
@@ -135,6 +140,13 @@ dgx-syntax-check:
 	bash -n scripts/dgx/*.sh
 
 TESTGATE_JOBS := $(if $(strip $(JOBS)),--jobs $(JOBS),)
+TESTGATE_RISK := $(if $(strip $(RISK)),--risk $(RISK),)
+TESTGATE_GITHUB_OUTPUT := $(if $(strip $(GITHUB_OUTPUT_FILE)),--github-output $(GITHUB_OUTPUT_FILE),)
+
+## check-risk: explain automatic PR risk, selected checks, and remote profiles; RISK may only increase coverage
+.PHONY: check-risk
+check-risk:
+	$(TESTGATE) classify $(TESTGATE_RISK) $(TESTGATE_GITHUB_OUTPUT)
 
 ## preflight: collect all cheap independent structural and toolchain failures
 .PHONY: preflight
@@ -144,7 +156,17 @@ preflight:
 ## check-fast: conservatively select checks affected by local changes (not merge qualification)
 .PHONY: check-fast
 check-fast:
-	$(TESTGATE) run --gate check-fast $(TESTGATE_JOBS)
+	$(TESTGATE) run --gate check-fast $(TESTGATE_RISK) $(TESTGATE_JOBS)
+
+## check-pr-local: Level 1 recommended pre-push check; full static/build plus affected tests and deterministic replay
+.PHONY: check-pr-local
+check-pr-local:
+	$(TESTGATE) run --gate check-pr-local $(TESTGATE_RISK) $(TESTGATE_JOBS)
+
+## check-pr: Level 2 authoritative risk-selected PR gate; CI adds selected remote jobs
+.PHONY: check-pr
+check-pr:
+	$(TESTGATE) run --gate check-pr $(TESTGATE_RISK) $(TESTGATE_JOBS)
 
 ## check-local: run the complete non-privileged local suite with collect-all reporting
 .PHONY: check-local
@@ -192,13 +214,29 @@ adversarial-repeat:
 
 ## check-merge-local: run every required non-privileged local merge check and adversarial scenario
 .PHONY: check-merge-local
-check-merge-local:
-	$(TESTGATE) run --gate check-merge-local $(TESTGATE_JOBS)
+check-merge-local: check-integration-full
+
+## check-integration-full: Level 3 complete local race, integration, replay, frontend, eBPF compile, and harness matrix
+.PHONY: check-integration-full
+check-integration-full:
+	$(TESTGATE) run --gate check-integration-full $(TESTGATE_JOBS)
+
+## check-campaign: Level 4 local deterministic/campaign prerequisites; scheduled CI adds bounded live Qwen work
+.PHONY: check-campaign
+check-campaign:
+	$(TESTGATE) run --gate check-campaign $(TESTGATE_JOBS)
 
 ## check-dgx: run the explicit read-only DGX safety preflight; task-specific qualification remains required
 .PHONY: check-dgx
 check-dgx:
 	$(TESTGATE) run --gate check-dgx --jobs 1
+
+## check-dgx-smoke: run one risk-selected DGX profile with one preflight/build/transfer (requires explicit values)
+.PHONY: check-dgx-smoke
+check-dgx-smoke:
+	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|cookie|enforcement|kernel-full> is required"; exit 2; }
+	@test -n "$(RUN_ID)" || { echo "check-dgx-smoke: RUN_ID=<bounded-run-id> is required"; exit 2; }
+	scripts/dgx/pr.sh --profile "$(DGX_PROFILE)" --run-id "$(RUN_ID)"
 
 ## check-merge: final tier-aware proof; non-local tiers fail closed pending a task-specific DGX check ID
 .PHONY: check-merge
@@ -227,9 +265,9 @@ check-ci-ebpf-privileged:
 check-ci-adversarial:
 	$(TESTGATE) run --gate ci-adversarial $(TESTGATE_JOBS)
 
-## check: compatibility alias for the complete collect-all local suite
+## check: compatibility alias for the recommended Level 1 local PR precheck
 .PHONY: check
-check: check-local
+check: check-pr-local
 
 ## proto: regenerate committed protobuf Go output with pinned tool versions
 .PHONY: proto

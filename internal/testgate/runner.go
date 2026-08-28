@@ -39,6 +39,10 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	if options.ArtifactRoot == "" {
 		options.ArtifactRoot = ".test-artifacts/gates"
 	}
+	risk, err := ClassifyRisk(fingerprint.ChangedFiles, options.RiskOverride)
+	if err != nil {
+		return Summary{}, err
+	}
 	checks, err := SelectChecks(manifest, options, fingerprint.ChangedFiles)
 	if err != nil {
 		return Summary{}, err
@@ -51,7 +55,13 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	started := time.Now().UTC()
 	summary := Summary{RunID: runID, ParentRunID: options.ParentRunID, Gate: options.Gate,
 		StartedAt: started, Fingerprint: fingerprint, Counts: make(map[Status]int),
-		ArtifactDirectory: runDir, Compatibility: options.Compatibility}
+		ArtifactDirectory: runDir, Compatibility: options.Compatibility, Risk: risk,
+		TimingBudgetSeconds: timingBudget(options.Gate, risk.Effective)}
+	r.stdout("RISK    automatic=%s effective=%s executable=%t reasons=%d remote=%s\n",
+		risk.Automatic, risk.Effective, risk.Executable, len(risk.Reasons), strings.Join(risk.RemoteProfiles, ","))
+	for _, reason := range risk.Reasons {
+		r.stdout("RISK    %-8s %-42s %s\n", reason.Level, reason.Path, reason.Reason)
+	}
 
 	byID := make(map[string]Check, len(checks))
 	pending := make(map[string]bool, len(checks))
@@ -168,6 +178,7 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	}
 	summary.FinishedAt = time.Now().UTC()
 	summary.DurationSeconds = summary.FinishedAt.Sub(started).Seconds()
+	summary.TimingBudgetExceeded = summary.TimingBudgetSeconds > 0 && summary.DurationSeconds > summary.TimingBudgetSeconds
 	if err := WriteArtifacts(summary, manifest, runDir); err != nil {
 		return Summary{}, err
 	}
@@ -176,6 +187,24 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	}
 	r.stdout("\n%s\n", ConsoleSummary(summary))
 	return summary, nil
+}
+
+func timingBudget(gate string, risk RiskLevel) float64 {
+	switch gate {
+	case "check-fast":
+		return 3 * 60
+	case "check-pr-local":
+		return 10 * 60
+	case "check-pr":
+		if risk == RiskHigh || risk == RiskCritical {
+			return 30 * 60
+		}
+		return 15 * 60
+	case "check-dgx-smoke":
+		return 15 * 60
+	default:
+		return 0
+	}
 }
 
 func replayChanges(parent map[string]Status, current map[string]nodeExecution) map[string][]string {

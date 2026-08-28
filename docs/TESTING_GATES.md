@@ -4,13 +4,19 @@ The repository uses one standard-library Go runner (`cmd/testgate`) and two vers
 
 ## Preferred loop
 
-First full diagnostic run:
+Edit loop:
 
 ```sh
-make check-merge-local
+make check-fast
 ```
 
-Repair loop:
+Recommended local pre-push check:
+
+```sh
+make check-pr-local
+```
+
+Repair a compatible failure ledger:
 
 ```sh
 make check-last-failed
@@ -18,26 +24,30 @@ make check-last-failed
 make check-fast
 ```
 
-Final proof for this repository task's declared tier:
+Authoritative PR proof:
 
 ```sh
-make check-merge VALIDATION_TIER=local
+# CI invokes this with the automatic/effective risk classification.
+make check-pr
 ```
 
-A targeted replay proves a repair. Only the final full gate proves merge readiness. `check-fast` and every `*-last-failed`, `*-one`, and `*-repeat` target are diagnostic tools, never merge qualification.
+A targeted replay proves a repair. Only the final risk-appropriate Level 2 gate proves PR readiness. Level 3 (`make check-integration-full`) qualifies an integration batch, nightly build, or release; it is not required after each repair or before each push. See `docs/CI_TESTING_STRATEGY.md` for the policy and tradeoffs.
 
 ## Gate hierarchy
 
 | Gate | Scope | Merge evidence |
 |---|---|---|
 | `make preflight` | Cheap toolchain, manifest, fixture/target/port, formatting, generation, package, frontend, and eBPF discovery checks. Independent failures collect. | No |
-| `make check-fast` | Conservative checks affected by local changes; unknown impact expands to `check-local`. | No |
-| `make check-local` / `make check` | Complete non-privileged local suite. `make check` is the compatibility alias. | No |
+| `make check-fast` | Level 0 changed-package/reverse-dependent/static/invariant selection; unknown impact expands. | No |
+| `make check-pr-local` / `make check` | Level 1 full static/build/non-race suite plus affected race/integration/replay/frontend/eBPF checks. | Recommended before push; not CI evidence |
+| `make check-pr` | Level 2 risk-selected local graph. CI adds applicable privileged/DGX jobs. | Yes, with every risk-selected CI job |
+| `make check-local` | Legacy complete non-privileged local suite. | No |
 | `make check-adversarial` | Full bounded local adversarial scenario manifest. | No |
 | `make check-last-failed` | Compatible failed/blocked IDs, prerequisites, and conservative affected expansion after working-tree changes. | No |
-| `make check-merge-local` | Preflight, static, generated, unit/integration/race, frontend, local DGX-harness, locally supported eBPF build, self-check, and adversarial nodes. | Local tier only |
+| `make check-integration-full` / `make check-merge-local` | Level 3 complete local race/integration/replay/frontend/eBPF/harness graph. | Integration/nightly/release evidence |
+| `make check-campaign` | Level 4 deterministic prerequisites. Scheduled CI additionally requires the bounded live campaign, which currently fails closed pending M2C. | Campaign evidence only when all live jobs pass |
 | `make check-dgx` | Explicit read-only DGX safety preflight. It does not pretend to execute a task-specific kernel/Kubernetes/attacker proof. | No |
-| `make check-merge` | Runs the full local qualification. `VALIDATION_TIER=local` may pass; non-local tiers deliberately fail closed after DGX preflight until the task-specific approved qualification and artifact are represented. | Yes, for the declared tier only |
+| `make check-merge` | Compatibility interface for explicit full tier qualification; not the ordinary PR command. | Integration/release evidence for the declared tier only |
 
 DGX integration, privileged eBPF, Kubernetes end-to-end, and attacker/correlation work still requires the exact plan task's repository-owned DGX procedure, before/after evidence, cleanup, and artifact. A generic read-only host check cannot satisfy that tier.
 
@@ -69,6 +79,7 @@ The mandatory stop conditions for future privileged manifests are: target outsid
 Every run creates `.test-artifacts/gates/<run-id>/` containing:
 
 - `summary.txt`, `summary.json`, and `junit.xml`
+- `risk.json` with automatic/effective classification, reasons, and remote profiles
 - `environment.json` and `dependency-graph.json`
 - `failed-checks.json`, `blocked-checks.json`, and `skipped-checks.json`
 - `timing.json`, `repro.sh`, and `logs/<check-id>.log`
@@ -98,21 +109,21 @@ Selection uses the union of the local working tree and committed branch changes 
 
 | Change | Selected impact |
 |---|---|
-| Gate runner, manifests, Makefile, or workflow | Full local suite plus gate self-tests |
-| Any Go/module change | Vet, build, full race suite; security-layer changes also select both self-checks and every adversarial scenario |
-| `internal/contract`, engine, sting, adapters, identity, operator, deploy, attacker | Wide security/adversarial selection |
+| Gate runner, manifests, Makefile, or workflow | Gate self-tests plus broad Level 2; Level 3 runs through main/nightly/integration |
+| Any Go/module change | Affected compile/tests and reverse dependents in Level 0; full build/non-race in Level 1/2; affected race unless HIGH/CRITICAL expands to full race |
+| `internal/contract`, engine, sting, adapters, identity, operator, deploy, attacker | Wide security selection and path-matched deterministic replay; unknown security impact selects the full replay corpus |
 | `bpf/` | All local eBPF checks, Go race suite, adversarial scenarios |
 | Dashboard | Frontend config, lint, and build |
-| DGX scripts | Every local DGX harness contract check |
+| DGX scripts | Relevant local DGX harness contracts plus CRITICAL remote profile selection |
 | Protobuf/operator-generation input | Applicable drift check and Go race suite |
 | Documentation/skill/gitignore | Structural preflight |
-| Unknown | Full local suite |
+| Unknown | HIGH broad Level 2 selection |
 
 This mapping is a speed feature, not a coverage exemption. Shared-model and uncertain changes deliberately expand.
 
 ## Adversarial manifest
 
-Each scenario declares its ID/version, title/objective, target scope, binaries/services/privilege, allowed hosts/ports, fixtures, deterministic seed, setup/actions, expected observations, expected CanaryView evidence, expected CanarySting behavior, prohibited outcomes, timeout, cleanup, after-state assertions, isolation key, replay, `AttackerIntent`, `AttackerAction`, ground truth, and exact test names that must report `PASS` in the Go JSON event stream. Port `0` means an OS-assigned ephemeral port and is valid only with a loopback host declaration. Per-run JSON records declarations separately from parsed observed/missing test evidence; it does not manufacture identity, correlation, or CanaryView evidence from a zero exit code. Cleanup status and process-group after-state are recorded independently.
+Each scenario declares its ID/version, title/objective, target scope, binaries/services/privilege, allowed hosts/ports, fixtures, deterministic seed, setup/actions, expected observations, expected CanaryView evidence, expected CanarySting behavior, prohibited outcomes, timeout, cleanup, after-state assertions, isolation key, replay, `AttackerIntent`, `AttackerAction`, ground truth, validation forms, affected paths, live-smoke profile, and exact test names that must report `PASS` in the Go JSON event stream. Port `0` means an OS-assigned ephemeral port and is valid only with a loopback host declaration. Per-run JSON records declarations separately from parsed observed/missing test evidence; it does not manufacture identity, correlation, or CanaryView evidence from a zero exit code. Cleanup status and process-group after-state are recorded independently.
 
 The present local scenarios are deterministic legacy fixture proofs, not a claim that the roadmap CanaryAttacker/Qwen correlation laboratory exists. They use only Go test fixtures and loopback. The bounded Qwen tool policy, live CanaryView evidence correlation, and DGX scenarios remain M2C/M2D work and cannot be inferred from this gate.
 
@@ -138,4 +149,6 @@ The first complete new gate used an intentionally isolated cold Go cache and pas
 
 ## GitHub Actions
 
-Ordinary Go/harness, frontend, eBPF compile, bounded adversarial, and privileged eBPF jobs invoke manifest gates (`check-ci-*`) and upload `.test-artifacts/gates/` on success or failure. The privileged `ebpf-privileged` check remains isolated in its root Linux container and enforces the same structured zero-skip PASS floor for all six load-bearing datapath proofs; its command, parser, check ID, safety classification, and artifacts now live in the shared gate implementation rather than workflow-only shell.
+PR CI first records explainable LOW/STANDARD/HIGH/CRITICAL risk, then runs one shared Level 2 local graph. Frontend and eBPF prerequisites are installed only when selected. Privileged and DGX jobs wait for that graph and run only when required; PR concurrency cancels superseded commits, and the DGX job has its own per-PR cancellation group. Feature pushes do not duplicate the PR workflow. Failed jobs upload `.test-artifacts/gates/`; the compact risk decision is always retained.
+
+Pushes to `main`, nightly schedules, and integration dispatches run Level 3 once. Weekly and campaign dispatches proceed to Level 4 only after Level 3 succeeds. The live Qwen step is scheduled but deliberately fails closed until the M2C bounded tool/runtime contract exists. The privileged `ebpf-privileged` check retains its structured zero-skip PASS floor when selected.

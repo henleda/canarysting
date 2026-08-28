@@ -75,6 +75,7 @@ func Validate(manifest *Manifest, scenarios *ScenarioManifest) error {
 		problems = append(problems, "scenario manifest version must be positive")
 	}
 	seen := make(map[string]bool)
+	scenarioTests := make(map[string]string)
 	for i := range manifest.Checks {
 		check := &manifest.Checks[i]
 		validateCheck(check, seen, &problems)
@@ -91,6 +92,15 @@ func Validate(manifest *Manifest, scenarios *ScenarioManifest) error {
 		}
 		if len(s.ExpectedObservations) == 0 || len(s.ExpectedCanarySting) == 0 || len(s.ProhibitedOutcomes) == 0 || len(s.AfterStateAssertions) == 0 || len(s.GroundTruth) == 0 || len(s.RequiredTestPasses) == 0 {
 			problems = append(problems, fmt.Sprintf("scenario %q has incomplete safety or ground-truth declarations", s.ID))
+		}
+		if !contains(s.ValidationForms, "deterministic-replay") || !contains(s.ValidationForms, "campaign") || len(s.AffectedPaths) == 0 {
+			problems = append(problems, fmt.Sprintf("scenario %q must declare deterministic-replay, campaign, and affected paths", s.ID))
+		}
+		for _, testName := range s.RequiredTestPasses {
+			if prior := scenarioTests[testName]; prior != "" {
+				problems = append(problems, fmt.Sprintf("scenario test %q is owned by both %q and %q", testName, prior, s.ID))
+			}
+			scenarioTests[testName] = s.ID
 		}
 		validateScenarioCommand(s, &problems)
 		for _, host := range s.AllowedHosts {
@@ -175,6 +185,9 @@ func validateCheck(check *Check, seen map[string]bool, problems *[]string) {
 	if _, err := time.ParseDuration(check.Timeout); err != nil {
 		*problems = append(*problems, fmt.Sprintf("check %q timeout: %v", check.ID, err))
 	}
+	if check.ResultParser == "go-test-json-required-passes" && len(check.RequiredTestPasses) == 0 {
+		*problems = append(*problems, fmt.Sprintf("check %q result parser requires required_test_passes", check.ID))
+	}
 	for _, platform := range check.Platforms {
 		if platform != "darwin" && platform != "linux" {
 			*problems = append(*problems, fmt.Sprintf("check %q has unsupported platform %q", check.ID, platform))
@@ -186,14 +199,22 @@ func scenarioCheck(version int, s Scenario) Check {
 	expected := append([]string(nil), s.ExpectedObservations...)
 	expected = append(expected, s.ExpectedCanaryView...)
 	expected = append(expected, s.ExpectedCanarySting...)
+	tags := []string{"adversarial", "deterministic-replay"}
+	for _, path := range s.AffectedPaths {
+		tags = append(tags, "affected:"+path)
+	}
+	for _, form := range s.ValidationForms {
+		tags = append(tags, "form:"+form)
+	}
 	return Check{
 		ID: "adversarial:" + s.ID, Label: s.Title, Command: s.Command,
-		Dependencies: s.Dependencies, Gates: []string{"check-adversarial", "check-merge-local", "ci-adversarial"},
+		Dependencies: s.Dependencies, Gates: []string{"check-local", "check-adversarial", "check-merge-local", "ci-adversarial"},
 		Timeout: s.Timeout, Privilege: s.RequiredPrivileges, IsolationKey: s.IsolationKey,
 		ConcurrencyGroup: "adversarial", FailureClass: s.FailureClass,
-		ResultParser: "go-test-json-required-passes",
-		Cleanup:      s.Cleanup, CleanupSafetyCritical: true, SafetyCritical: s.SafetyCritical,
-		Replay: s.Replay, ManualRecovery: "Verify the scenario after-state, inspect its bounded log, then rerun only this scenario.", Tags: []string{"adversarial"},
+		ResultParser:       "go-test-json-required-passes",
+		RequiredTestPasses: append([]string(nil), s.RequiredTestPasses...),
+		Cleanup:            s.Cleanup, CleanupSafetyCritical: true, SafetyCritical: s.SafetyCritical,
+		Replay: s.Replay, ManualRecovery: "Verify the scenario after-state, inspect its bounded log, then rerun only this scenario.", Tags: tags,
 		Scenario: &ScenarioMetadata{ManifestVersion: version, DeterministicSeed: s.DeterministicSeed,
 			AttackerIntent: s.AttackerIntent, AttackerAction: s.AttackerAction,
 			ExpectedEvidence: expected, RequiredAssertions: append([]string(nil), s.RequiredTestPasses...),

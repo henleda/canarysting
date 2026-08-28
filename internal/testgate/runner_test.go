@@ -169,7 +169,7 @@ func TestArtifactsAndConsoleAgreeAndPathsAreSanitized(t *testing.T) {
 	if strings.Contains(findResult(t, summary, check.ID).LogPath, ":") || strings.Contains(filepath.Base(findResult(t, summary, check.ID).LogPath), "/") {
 		t.Fatal("unsafe result path")
 	}
-	for _, name := range []string{"summary.txt", "summary.json", "junit.xml", "environment.json", "dependency-graph.json", "failed-checks.json", "blocked-checks.json", "skipped-checks.json", "timing.json", "repro.sh"} {
+	for _, name := range []string{"summary.txt", "summary.json", "junit.xml", "environment.json", "risk.json", "dependency-graph.json", "failed-checks.json", "blocked-checks.json", "skipped-checks.json", "timing.json", "repro.sh"} {
 		if _, err := os.Stat(filepath.Join(summary.ArtifactDirectory, name)); err != nil {
 			t.Fatalf("missing artifact %s", name)
 		}
@@ -306,7 +306,8 @@ func TestScenarioManifestCannotExecuteArbitraryCommand(t *testing.T) {
 		IsolationKey: "fixture", Replay: "make adversarial-one SCENARIO=bounded",
 		Command: []string{"sh", "-c", "echo escaped"}, FailureClass: "test defect",
 		AttackerIntent: "bounded", AttackerAction: "bounded", GroundTruth: map[string]string{"response": "bounded"},
-		RequiredTestPasses: []string{"TestOne"},
+		RequiredTestPasses: []string{"TestOne"}, ValidationForms: []string{"deterministic-replay", "campaign"},
+		AffectedPaths: []string{"internal/testgate/"},
 	}
 	err := Validate(&Manifest{Version: 1}, &ScenarioManifest{Version: 1, Scenarios: []Scenario{scenario}})
 	if err == nil || !strings.Contains(err.Error(), "command must be exactly go test") {

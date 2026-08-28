@@ -30,11 +30,17 @@ func (f *listFlag) Set(value string) error { *f = append(*f, value); return nil 
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal("usage: testgate <run|validate|probe|report|synthetic>")
+		fatal("usage: testgate <run|classify|affected-go|go-nonscenario|validate|probe|report|synthetic>")
 	}
 	switch os.Args[1] {
 	case "run":
 		run(os.Args[2:])
+	case "classify":
+		classify(os.Args[2:])
+	case "affected-go":
+		affectedGo(os.Args[2:])
+	case "go-nonscenario":
+		goNonScenario(os.Args[2:])
 	case "validate":
 		validate()
 	case "probe":
@@ -69,6 +75,7 @@ func run(args []string) {
 	adversarialLast := flags.Bool("adversarial-last-failed", false, "replay adversarial failures only")
 	retry := flags.Bool("diagnostic-retry", false, "retry failures once for classification without clearing failure")
 	repeat := flags.Int("repeat", 1, "repeat selected checks")
+	riskOverride := flags.String("risk", "", "manual risk increase: LOW, STANDARD, HIGH, or CRITICAL")
 	var checks listFlag
 	flags.Var(&checks, "check", "specific check id (repeatable)")
 	if err := flags.Parse(args); err != nil {
@@ -86,7 +93,7 @@ func run(args []string) {
 	if err != nil {
 		fatal("environment fingerprint: %v", err)
 	}
-	options := testgate.RunOptions{Gate: *gate, OnlyChecks: checks, Jobs: *jobs, RetryFailures: *retry, ArtifactRoot: artifactRoot}
+	options := testgate.RunOptions{Gate: *gate, OnlyChecks: checks, Jobs: *jobs, RetryFailures: *retry, ArtifactRoot: artifactRoot, RiskOverride: *riskOverride}
 	if *lastFailed || *adversarialLast {
 		parent, err := testgate.LoadLastFailed(artifactRoot)
 		if err != nil {
@@ -147,6 +154,103 @@ func run(args []string) {
 	}
 	if failed {
 		os.Exit(1)
+	}
+}
+
+func classify(args []string) {
+	flags := flag.NewFlagSet("classify", flag.ExitOnError)
+	riskOverride := flags.String("risk", "", "manual risk increase")
+	githubOutput := flags.String("github-output", "", "optional GitHub Actions output file")
+	if err := flags.Parse(args); err != nil {
+		fatal("%v", err)
+	}
+	manifest, _ := load()
+	digest, err := testgate.ManifestDigest(checkManifest, scenarioManifest)
+	if err != nil {
+		fatal("manifest fingerprint: %v", err)
+	}
+	fingerprint, err := testgate.BuildFingerprint(digest)
+	if err != nil {
+		fatal("environment fingerprint: %v", err)
+	}
+	report, err := testgate.ClassifyRisk(fingerprint.ChangedFiles, *riskOverride)
+	if err != nil {
+		fatal("risk classification: %v", err)
+	}
+	checks, err := testgate.SelectChecks(manifest, testgate.RunOptions{Gate: "check-pr", RiskOverride: *riskOverride}, fingerprint.ChangedFiles)
+	if err != nil {
+		fatal("PR selection: %v", err)
+	}
+	selected := make([]string, 0, len(checks))
+	for _, check := range checks {
+		selected = append(selected, check.ID)
+	}
+	sort.Strings(selected)
+	encoded, err := json.MarshalIndent(map[string]any{"risk": report, "selected_checks": selected}, "", "  ")
+	if err != nil {
+		fatal("encode risk report: %v", err)
+	}
+	fmt.Printf("Risk classification: automatic=%s effective=%s executable=%t\n", report.Automatic, report.Effective, report.Executable)
+	for _, reason := range report.Reasons {
+		fmt.Printf("- %s %s: %s\n", reason.Level, reason.Path, reason.Reason)
+	}
+	fmt.Printf("Selected PR checks: %s\n%s\n", strings.Join(selected, ","), encoded)
+	if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+		fatal("create artifact root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactRoot, "risk.json"), append(encoded, '\n'), 0o600); err != nil {
+		fatal("write risk report: %v", err)
+	}
+	if *githubOutput != "" {
+		values := []string{
+			"risk=" + string(report.Effective),
+			fmt.Sprintf("executable=%t", report.Executable),
+			fmt.Sprintf("requires_privileged=%t", report.RequiresPrivileged),
+			fmt.Sprintf("requires_dgx=%t", report.RequiresDGX),
+			fmt.Sprintf("requires_live_qwen=%t", report.RequiresLiveQwen),
+			fmt.Sprintf("frontend=%t", report.FrontendAffected),
+			fmt.Sprintf("ebpf=%t", report.EBPFAffected),
+			fmt.Sprintf("gate=%t", report.GateAffected),
+			"remote_profiles=" + strings.Join(report.RemoteProfiles, ","),
+		}
+		file, err := os.OpenFile(filepath.Clean(*githubOutput), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			fatal("open GitHub output: %v", err)
+		}
+		if _, err := fmt.Fprintln(file, strings.Join(values, "\n")); err != nil {
+			_ = file.Close()
+			fatal("write GitHub output: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			fatal("close GitHub output: %v", err)
+		}
+	}
+}
+
+func affectedGo(args []string) {
+	if len(args) != 1 {
+		fatal("usage: testgate affected-go <build|test|race|integration>")
+	}
+	digest, err := testgate.ManifestDigest(checkManifest, scenarioManifest)
+	if err != nil {
+		fatal("manifest fingerprint: %v", err)
+	}
+	fingerprint, err := testgate.BuildFingerprint(digest)
+	if err != nil {
+		fatal("environment fingerprint: %v", err)
+	}
+	if err := testgate.RunAffectedGo(args[0], fingerprint.ChangedFiles); err != nil {
+		fatal("%v", err)
+	}
+}
+
+func goNonScenario(args []string) {
+	if len(args) != 1 || (args[0] != "test" && args[0] != "race") {
+		fatal("usage: testgate go-nonscenario <test|race>")
+	}
+	_, scenarios := load()
+	if err := testgate.RunNonScenarioGo(args[0] == "race", scenarios); err != nil {
+		fatal("%v", err)
 	}
 }
 

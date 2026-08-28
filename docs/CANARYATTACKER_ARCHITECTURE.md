@@ -193,6 +193,14 @@ Metrics include denominator, scope, scenario/version, source coverage, confidenc
 
 ## Reproducibility and phased delivery
 
+PR validation is split from live campaign generation:
+
+- **Deterministic replay (Levels 1–3)** uses versioned scenario intent/action, fixed seeds, exact required assertions, affected paths, and declared ground truth. It invokes no model and is the default PR evidence.
+- **Targeted live smoke (Level 2 HIGH/CRITICAL)** is limited to one or two fixed approved-lab scenarios when attacker tools, trigger behavior, deployment, or response behavior changes. It requires strict timeout, fixed tool policy, before/after evidence, and cleanup.
+- **Full live campaign (Level 4)** is scheduled weekly/on demand and measures trace, identity, correlation, response, resource, cleanup, and repeatability. It is not an ordinary PR blocker.
+
+The repository currently implements deterministic legacy replay and bounded cookie/enforcement DGX profiles, not the live Qwen planner. The Level 4 CI entry is deliberately fail-closed until M2C supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
+
 M2C first verifies Ollama/Qwen, defines scenarios/contracts/tools, implements bounded execution, and proves cleanup. M2D then runs scenarios against the DGX stack, correlates observations, and publishes evidence-backed metrics. Initial execution remains small and deterministic; model-adaptive variation is added only after the fixed scenarios and safety denials are reliable.
 
 Open decisions include Ollama API/model version pinning, process/container isolation, outbound network enforcement, fixture credential delivery, scenario schema location, clock synchronization, evidence-retention limits, and how generic safety code is extracted from the existing attacker without disrupting its working behavior.

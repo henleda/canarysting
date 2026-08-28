@@ -28,6 +28,7 @@ type Check struct {
 	Replay                string            `json:"replay"`
 	ManualRecovery        string            `json:"manual_recovery,omitempty"`
 	Tags                  []string          `json:"tags,omitempty"`
+	RequiredTestPasses    []string          `json:"required_test_passes,omitempty"`
 	Scenario              *ScenarioMetadata `json:"scenario,omitempty"`
 }
 
@@ -67,6 +68,9 @@ type Scenario struct {
 	AttackerAction       string            `json:"attacker_action"`
 	GroundTruth          map[string]string `json:"ground_truth"`
 	RequiredTestPasses   []string          `json:"required_test_passes"`
+	ValidationForms      []string          `json:"validation_forms"`
+	AffectedPaths        []string          `json:"affected_paths"`
+	LiveSmokeProfile     string            `json:"live_smoke_profile,omitempty"`
 }
 
 type ScenarioMetadata struct {
@@ -133,21 +137,24 @@ type Fingerprint struct {
 }
 
 type Summary struct {
-	RunID             string              `json:"run_id"`
-	ParentRunID       string              `json:"parent_run_id,omitempty"`
-	Gate              string              `json:"gate"`
-	StartedAt         time.Time           `json:"started_at"`
-	FinishedAt        time.Time           `json:"finished_at"`
-	DurationSeconds   float64             `json:"duration_seconds"`
-	Fingerprint       Fingerprint         `json:"fingerprint"`
-	Results           []Result            `json:"results"`
-	Counts            map[Status]int      `json:"counts"`
-	CacheHits         int                 `json:"cache_hits"`
-	CacheMisses       int                 `json:"cache_misses"`
-	SafetyStop        bool                `json:"safety_stop"`
-	Compatibility     string              `json:"compatibility,omitempty"`
-	ReplayChanges     map[string][]string `json:"replay_changes,omitempty"`
-	ArtifactDirectory string              `json:"artifact_directory"`
+	RunID                string              `json:"run_id"`
+	ParentRunID          string              `json:"parent_run_id,omitempty"`
+	Gate                 string              `json:"gate"`
+	StartedAt            time.Time           `json:"started_at"`
+	FinishedAt           time.Time           `json:"finished_at"`
+	DurationSeconds      float64             `json:"duration_seconds"`
+	Fingerprint          Fingerprint         `json:"fingerprint"`
+	Results              []Result            `json:"results"`
+	Counts               map[Status]int      `json:"counts"`
+	CacheHits            int                 `json:"cache_hits"`
+	CacheMisses          int                 `json:"cache_misses"`
+	SafetyStop           bool                `json:"safety_stop"`
+	Compatibility        string              `json:"compatibility,omitempty"`
+	ReplayChanges        map[string][]string `json:"replay_changes,omitempty"`
+	ArtifactDirectory    string              `json:"artifact_directory"`
+	Risk                 RiskReport          `json:"risk"`
+	TimingBudgetSeconds  float64             `json:"timing_budget_seconds,omitempty"`
+	TimingBudgetExceeded bool                `json:"timing_budget_exceeded"`
 }
 
 type RunOptions struct {
@@ -160,4 +167,5 @@ type RunOptions struct {
 	Compatibility         string
 	ParentStatuses        map[string]Status
 	CompleteFailureReplay bool
+	RiskOverride          string
 }

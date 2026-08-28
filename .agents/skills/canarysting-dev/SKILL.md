@@ -23,6 +23,7 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 6. Classify and record the selected task before editing:
    - **PRODUCT AREA:** `CanaryView`, `CanarySting`, `CanaryAttacker`, `Shared platform`, or `Development infrastructure`.
    - **VALIDATION TIER:** `local`, `DGX integration`, `DGX Kubernetes end-to-end`, or `DGX attacker/correlation`.
+   - **PR RISK:** `LOW`, `STANDARD`, `HIGH`, or `CRITICAL`, with changed-path reasons and any required remote profile. Unknown impact is `HIGH`; manual direction may only increase coverage.
 7. Inspect the relevant architecture, implementation, tests, and `internal/contract/` when cross-layer behavior is involved.
 8. Before editing, state the objective, acceptance criteria, expected files, product area, validation tier, DGX requirement, safety considerations, and—when operator-facing—the operator job, interaction path, and expected click count. Then mark only that task `IN_PROGRESS`.
 
@@ -84,12 +85,16 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 
 ## Implement and validate
 
-- Make the smallest coherent change that satisfies the task. Add or update deterministic tests and choose the smallest appropriate gate while implementing.
-- Run focused tests first. After a narrow edit with no prior failure ledger, use `make check-fast`. After a failed full diagnostic run, use `make check-last-failed` (or the adversarial-specific replay) until every recorded failure and block is resolved.
-- A targeted replay proves only the repair. Before marking a task `DONE`, run the full `make check-merge` qualification for the task's declared tier; never treat `check-fast`, `check-one`, or a last-failed replay as merge evidence.
+- Make the smallest coherent change that satisfies the task. Add or update deterministic tests and choose the minimum valid gate for the task's current risk and affected paths.
+- Run focused tests first, then `make check-fast` during edits. With no compatible failure ledger, `check-fast` is the default narrow loop. After a selected gate fails, use `make check-last-failed` (or the adversarial-specific replay) until every recorded failure and block is resolved; incompatible state must expand or refuse safely.
+- Run `make check-pr-local` before presenting completion. This is the Level 1 local precheck, not authoritative merge evidence.
+- A targeted replay proves only the repair. Rely on authoritative CI `make check-pr` plus every automatically selected privileged/DGX job for the final risk-appropriate PR gate. Never treat `check-fast`, `check-pr-local`, `check-one`, or last-failed replay as merge evidence.
+- Use deterministic adversarial replay by default. Invoke live Qwen only through a targeted HIGH/CRITICAL smoke or scheduled Level 4 campaign with its approved bounded tool catalog; never improvise model authority.
+- Do not require or rerun Level 3 after every repair. Record which merge-train, main/integration, nightly, on-demand, or release Level 3 path will provide the complete matrix. Record the Level 4 schedule when attacker/response work requires broader soak/campaign evidence.
+- Invoke DGX qualification only when the risk classifier, changed paths, dependencies, and validation tier require it. LOW/STANDARD work does not consume DGX by default. CRITICAL work is never complete without the relevant implemented remote qualification; an unavailable remote profile is a blocker, not permission to substitute weaker coverage.
 - Preserve the `.test-artifacts/gates/<run-id>/` paths used as completion evidence. Report every failure, blocked check, skip, and safety stop; never bypass a gate, hide a result, or convert a required failure to a warning.
-- Never bypass, skip, or weaken a failing gate or security invariant. Do not install dependencies without approval. Do not commit or push unless explicitly requested.
-- Invoke DGX qualification only when the task's validation tier requires it. For DGX work, complete local gates first. Before mutation run `scripts/dgx/check.sh`, inspect local status, state exact remote changes and cleanup, and confirm scope. Reuse repository scripts instead of ad hoc SSH once a deterministic path exists.
+- Never bypass, skip, or weaken a failing gate or security invariant to satisfy a timing budget. Do not install dependencies without approval. Do not commit or push unless explicitly requested.
+- For selected DGX work, complete the local risk gate first. Before mutation run the workflow preflight, inspect local status, state exact remote changes and cleanup, and confirm scope. Reuse repository profiles instead of ad hoc SSH once a deterministic path exists; a compatible workflow should preflight/build/copy once while preserving per-scenario mutable isolation and cleanup.
 - Treat unexpected Kubernetes, Cilium, BPF, or host state as a reason to inspect and report, not repair unrelated infrastructure. Never replace Cilium attachments or implicitly alter K3s, Cilium, firewall, SSH, kernel, or host packages.
 - For DGX correlation: gather before-state; execute the scenario; gather independent observations; correlate; compare with ground truth; clean up; gather after-state; report trace completeness, join/identity accuracy, missing/conflicting evidence, time alignment, and cleanup.
 - Preserve full cleanup evidence for privileged tests. Never mark kernel/Kubernetes/Cilium/identity/attacker-correlation work complete from local evidence alone.

@@ -97,6 +97,14 @@ Required for identity, Kubernetes ingestion, the operator, CRDs/manifests, Decep
 
 Required for CanaryAttacker scenarios, Ollama/Qwen execution, ground-truth emission, and correlation-quality claims. Tier A and any relevant Tier B/C primitives must pass first. A Tier D run gathers before-state, emits intent, executes only bounded allowlisted tools, gathers independent observations, correlates them against ground truth, calculates declared metrics, cleans run-owned state, and gathers after-state.
 
+## Risk-tiered gate frequency
+
+Validation tier describes what environment a change ultimately requires; PR risk describes when and how much of that tier runs. Use `make check-fast` while editing, `make check-pr-local` before push, and the authoritative CI `make check-pr` profile for merge. LOW/STANDARD changes do not use DGX. HIGH changes use remote smoke only when their path/dependency map requires it. CRITICAL kernel, containment, attacker-authority, or DGX-harness changes require the relevant remote profile. Unknown impact expands to HIGH, and a manual override can only increase coverage.
+
+The complete Level 3 local and DGX matrices run once per integration/main batch, nightly, on demand, and before release; they are not required after each repair. Weekly Level 4 adds soak and live campaigns. The planned Qwen harness is not implemented yet, so that scheduled live step fails closed pending M2C rather than granting the model any substitute authority. See `docs/CI_TESTING_STRATEGY.md`.
+
+For compatible kernel workflows, `scripts/dgx/pr.sh` performs one read-only preflight, one allowlisted ARM64 build, and one checksum-verified transfer. Its short-lived proof is bound to host, run ID, source revision, and age. Leaf scenarios may reuse only that read-only inspection; they still verify artifacts and before/after state, enforce exact scope, and clean run-owned state. Superseded PR jobs are cancelled by CI. Do not duplicate a full manual DGX run in CI for the same commit.
+
 ## CanaryAttacker safety boundary
 
 The DGX model may plan only through a reviewed structured tool catalog such as bounded HTTP requests, DNS lookups, TCP connects, endpoint enumeration, same-target link following, explicit lab-fixture credential attempts, and response inspection. The model does not receive arbitrary shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network access. The executor—not the model—enforces target allowlists, method/payload rules, redirects, timeouts, concurrency, request/body/token budgets, credential references, and cancellation.
