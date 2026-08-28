@@ -66,22 +66,24 @@ type Scenario struct {
 	AttackerIntent       string            `json:"attacker_intent"`
 	AttackerAction       string            `json:"attacker_action"`
 	GroundTruth          map[string]string `json:"ground_truth"`
+	RequiredTestPasses   []string          `json:"required_test_passes"`
 }
 
 type ScenarioMetadata struct {
-	ManifestVersion   int               `json:"scenario_version"`
-	DeterministicSeed int64             `json:"deterministic_seed"`
-	AttackerIntent    string            `json:"attacker_intent"`
-	AttackerAction    string            `json:"attacker_action"`
-	ExpectedEvidence  []string          `json:"expected_evidence"`
-	ObservedEvidence  []string          `json:"observed_evidence"`
-	MissingEvidence   []string          `json:"missing_evidence"`
-	IncorrectJoins    []string          `json:"incorrect_joins"`
-	IdentityResult    string            `json:"identity_result"`
-	CorrelationResult string            `json:"correlation_result"`
-	ResponseResult    string            `json:"response_result"`
-	CleanupResult     string            `json:"cleanup_result"`
-	GroundTruth       map[string]string `json:"ground_truth"`
+	ManifestVersion    int               `json:"scenario_version"`
+	DeterministicSeed  int64             `json:"deterministic_seed"`
+	AttackerIntent     string            `json:"attacker_intent"`
+	AttackerAction     string            `json:"attacker_action"`
+	ExpectedEvidence   []string          `json:"expected_evidence"`
+	ObservedEvidence   []string          `json:"observed_evidence"`
+	MissingEvidence    []string          `json:"missing_evidence"`
+	IncorrectJoins     []string          `json:"incorrect_joins"`
+	IdentityResult     string            `json:"identity_result"`
+	CorrelationResult  string            `json:"correlation_result"`
+	ResponseResult     string            `json:"response_result"`
+	CleanupResult      string            `json:"cleanup_result"`
+	GroundTruth        map[string]string `json:"ground_truth"`
+	RequiredAssertions []string          `json:"required_assertions"`
 }
 
 type Status string
@@ -117,10 +119,12 @@ type RetryResult struct {
 	Status          Status  `json:"status"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	LogPath         string  `json:"log_path"`
+	CleanupStatus   string  `json:"cleanup_status"`
 }
 
 type Fingerprint struct {
 	SourceRevision string   `json:"source_revision"`
+	MergeBase      string   `json:"merge_base,omitempty"`
 	WorkingTree    string   `json:"working_tree_fingerprint"`
 	Toolchain      string   `json:"toolchain_fingerprint"`
 	Manifest       string   `json:"manifest_fingerprint"`
@@ -147,12 +151,13 @@ type Summary struct {
 }
 
 type RunOptions struct {
-	Gate           string
-	OnlyChecks     []string
-	Jobs           int
-	RetryFailures  bool
-	ArtifactRoot   string
-	ParentRunID    string
-	Compatibility  string
-	ParentStatuses map[string]Status
+	Gate                  string
+	OnlyChecks            []string
+	Jobs                  int
+	RetryFailures         bool
+	ArtifactRoot          string
+	ParentRunID           string
+	Compatibility         string
+	ParentStatuses        map[string]Status
+	CompleteFailureReplay bool
 }

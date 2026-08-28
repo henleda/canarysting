@@ -214,13 +214,15 @@ check-merge:
 check-report:
 	$(TESTGATE) report
 
-.PHONY: check-ci-go check-ci-frontend check-ci-ebpf check-ci-adversarial
+.PHONY: check-ci-go check-ci-frontend check-ci-ebpf check-ci-ebpf-privileged check-ci-adversarial
 check-ci-go:
 	$(TESTGATE) run --gate ci-go $(TESTGATE_JOBS)
 check-ci-frontend:
 	$(TESTGATE) run --gate ci-frontend $(TESTGATE_JOBS)
 check-ci-ebpf:
 	$(TESTGATE) run --gate ci-ebpf $(TESTGATE_JOBS)
+check-ci-ebpf-privileged:
+	$(TESTGATE) run --gate ci-ebpf-privileged --jobs 1
 check-ci-adversarial:
 	$(TESTGATE) run --gate ci-adversarial $(TESTGATE_JOBS)
 

@@ -206,12 +206,17 @@ func writeRepro(path string, summary Summary) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o700)
 }
 
-func updatePointers(root string, summary Summary) error {
+func updatePointers(root string, summary Summary, completeFailureReplay bool) error {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(root, "LATEST"), []byte(summary.RunID+"\n"), 0o600); err != nil {
 		return err
+	}
+	// A subset replay (for example adversarial-only) must not replace or erase
+	// a ledger that may still contain unrelated unresolved failures.
+	if summary.ParentRunID != "" && !completeFailureReplay {
+		return nil
 	}
 	if GateFailed(summary) {
 		if err := os.WriteFile(filepath.Join(root, "LAST_FAILED"), []byte(summary.RunID+"\n"), 0o600); err != nil {

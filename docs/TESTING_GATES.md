@@ -1,6 +1,6 @@
 # CanaryPlatform testing gates
 
-The repository uses one standard-library Go runner (`cmd/testgate`) and two versioned JSON manifests under `test/gates/`. Make and GitHub Actions call the same check IDs. The runner executes argument arrays directly; manifests do not expose shell evaluation, arbitrary host commands, model tools, cluster-admin, or arbitrary network targets.
+The repository uses one standard-library Go runner (`cmd/testgate`) and two versioned JSON manifests under `test/gates/`. Make and GitHub Actions call the same check IDs. The runner executes argument arrays directly. Adversarial definitions are narrower still: validation accepts only an exact, uncached, race-enabled `go test -json` command for a declared repository fixture package and an anchored list that exactly equals the required tests. The manifests do not expose shell evaluation, arbitrary host commands, model tools, or cluster-admin.
 
 ## Preferred loop
 
@@ -45,7 +45,7 @@ DGX integration, privileged eBPF, Kubernetes end-to-end, and attacker/correlatio
 
 `test/gates/checks.json` records, for every node: ID, label, direct command arguments, dependencies, gates, timeout, privilege, isolation key, concurrency group, default failure class, cleanup handler, supported platforms, and replay command. `test/gates/adversarial-scenarios.json` supplies scenario nodes. The runner validates unknown fields, duplicate IDs, dependencies, durations, failure classes, privilege declarations, local target allowlists, required ground truth, and cycles before executing a scenario.
 
-Independent ready nodes run with bounded parallelism (`JOBS=<n>`, default half the logical CPUs capped at six). A concurrency group or isolation key runs once per scheduling wave. Output is buffered per node, capped at 4 MiB, and printed only as concise progress; detailed output goes to the node log. A dependency executes once even when several nodes require it, which is recorded as DAG reuse. Go's content-addressed build/test cache and the existing npm installation remain authoritative caches; mutable scenario state is never cached or shared.
+Independent ready nodes run with bounded parallelism (`JOBS=<n>`, default half the logical CPUs capped at six). A concurrency group or isolation key runs once per scheduling wave. Output is buffered per node, capped at 4 MiB, and printed only as concise progress; detailed output goes to the node log. Credential detection scans the complete stream, including bytes beyond the retained-log cap and matches split across writes. A dependency executes once even when several nodes require it, which is recorded as DAG reuse. Go's content-addressed build/test cache and the existing npm installation remain authoritative caches; mutable scenario state is never cached or shared.
 
 Ordinary failure behavior:
 
@@ -57,8 +57,9 @@ Ordinary failure behavior:
 Safety behavior:
 
 - A safety-critical check, credential-like log output, or safety-critical cleanup/after-state failure raises `SAFETY STOP`.
-- The runner starts no further privileged or adversarial node, runs the current node's bounded cleanup, preserves redacted diagnostics, and exits nonzero.
-- Scenario target validation permits only loopback in the local manifest. Qwen/Ollama is not invoked and receives no tool or shell authority.
+- The runner starts no further privileged or adversarial node, runs the current node's bounded cleanup, preserves redacted diagnostics, and exits nonzero. A safety stop is never diagnostically retried.
+- `SIGINT`/`SIGTERM` terminates the active process group, runs cleanup with its own bounded non-cancelled context, blocks work not yet started, and writes the interrupted run's artifacts.
+- Scenario target validation permits only loopback in the local manifest, arbitrary scenario commands are rejected, the HTTP attacker fixture independently rejects non-loopback target URLs, and process-group absence is checked after every scenario command. Qwen/Ollama is not invoked and receives no tool or shell authority. This local boundary does not claim to be an OS network sandbox for future fixture code; any new network-capable fixture requires an explicit test-only allowlist seam or a privileged/DGX isolation gate before admission.
 - DGX and privileged checks remain explicit, serial, and outside ordinary local iteration.
 
 The mandatory stop conditions for future privileged manifests are: target outside the approved lab allowlist; unexpected external destination; BPF/Kubernetes/process residue; connectivity degradation; namespace/cgroup/port/staging escape; credentials in logs; response-scope excess; unapproved write credential; missing before-state; unverifiable after-state; or failed emergency cleanup. Such nodes must provide an exact recovery handler and manual recovery text before they may enter a qualifying gate.
@@ -87,13 +88,13 @@ make check-repeat CHECK=go-test-race COUNT=10
 make adversarial-repeat SCENARIO=bounded-attrition COUNT=10
 ```
 
-`LAST_FAILED` points to the newest failing ledger. Replay requires the same source revision, toolchain, manifest versions/content, and environment. An exact working-tree match replays failed and blocked IDs plus prerequisite closure. If the working tree changed at the same revision, the runner records that fact and adds conservative affected checks. A revision, toolchain, manifest, or environment mismatch refuses replay and requires `check-fast` or a wider gate. The new run links to its parent ID.
+`LAST_FAILED` points to the newest failing ledger. Replay requires the same source revision, toolchain, manifest versions/content, and environment. An exact working-tree match replays failed and blocked IDs plus prerequisite closure. If the working tree changed at the same revision, the runner records that fact and adds conservative affected checks. A revision, toolchain, manifest, or environment mismatch refuses replay and requires `check-fast` or a wider gate. The new run links to its parent ID. An adversarial-only subset replay never replaces or clears a parent ledger containing unresolved non-adversarial checks; only a complete successful failure replay may clear it.
 
 A diagnostic retry may be requested directly with `testgate run --diagnostic-retry`. If the retry passes, the original check stays failed and is classified `nondeterministic or flaky behavior`; both logs, seed, and timing remain. There are no silent retries or quarantines.
 
 ## Affected selection
 
-Selection uses the local working tree and never fetches. The current conservative map is:
+Selection uses the union of the local working tree and committed branch changes since the locally available `origin/main` merge base (falling back to local `main`, then `HEAD`) and never fetches. The current conservative map is:
 
 | Change | Selected impact |
 |---|---|
@@ -111,7 +112,7 @@ This mapping is a speed feature, not a coverage exemption. Shared-model and unce
 
 ## Adversarial manifest
 
-Each scenario declares its ID/version, title/objective, target scope, binaries/services/privilege, allowed hosts/ports, fixtures, deterministic seed, setup/actions, expected observations, expected CanaryView evidence, expected CanarySting behavior, prohibited outcomes, timeout, cleanup, after-state assertions, isolation key, replay, `AttackerIntent`, `AttackerAction`, and ground truth. Per-run JSON records expected/observed/missing evidence, incorrect joins, identity/correlation/response/cleanup result, seed, and scenario version.
+Each scenario declares its ID/version, title/objective, target scope, binaries/services/privilege, allowed hosts/ports, fixtures, deterministic seed, setup/actions, expected observations, expected CanaryView evidence, expected CanarySting behavior, prohibited outcomes, timeout, cleanup, after-state assertions, isolation key, replay, `AttackerIntent`, `AttackerAction`, ground truth, and exact test names that must report `PASS` in the Go JSON event stream. Port `0` means an OS-assigned ephemeral port and is valid only with a loopback host declaration. Per-run JSON records declarations separately from parsed observed/missing test evidence; it does not manufacture identity, correlation, or CanaryView evidence from a zero exit code. Cleanup status and process-group after-state are recorded independently.
 
 The present local scenarios are deterministic legacy fixture proofs, not a claim that the roadmap CanaryAttacker/Qwen correlation laboratory exists. They use only Go test fixtures and loopback. The bounded Qwen tool policy, live CanaryView evidence correlation, and DGX scenarios remain M2C/M2D work and cannot be inferred from this gate.
 
@@ -137,4 +138,4 @@ The first complete new gate used an intentionally isolated cold Go cache and pas
 
 ## GitHub Actions
 
-Ordinary Go/harness, frontend, eBPF compile, and bounded adversarial jobs invoke the same manifest gates (`check-ci-*`) and upload `.test-artifacts/gates/` on success or failure. The privileged eBPF job retains its additional structured no-skip/PASS-floor assertion because folding that safety proof into an ordinary local runner would weaken its boundary. It uses the same `make test-ebpf` leaf and remains mandatory CI evidence.
+Ordinary Go/harness, frontend, eBPF compile, bounded adversarial, and privileged eBPF jobs invoke manifest gates (`check-ci-*`) and upload `.test-artifacts/gates/` on success or failure. The privileged `ebpf-privileged` check remains isolated in its root Linux container and enforces the same structured zero-skip PASS floor for all six load-bearing datapath proofs; its command, parser, check ID, safety classification, and artifacts now live in the shared gate implementation rather than workflow-only shell.

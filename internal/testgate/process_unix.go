@@ -19,12 +19,13 @@ const maxLogBytes = 4 << 20
 var credentialPattern = regexp.MustCompile(`(?i)(authorization:\s*bearer\s+[a-z0-9._~+/=-]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:api[_-]?key|secret|password)\s*[=:]\s*[^\s]{8,})`)
 
 type commandResult struct {
-	output      []byte
-	duration    time.Duration
-	exitCode    int
-	timedOut    bool
-	secretFound bool
-	truncated   bool
+	output         []byte
+	duration       time.Duration
+	exitCode       int
+	timedOut       bool
+	secretFound    bool
+	truncated      bool
+	processResidue bool
 }
 
 func executeCommand(parent context.Context, argv []string, timeout time.Duration, executable string) commandResult {
@@ -73,21 +74,44 @@ func executeCommand(parent context.Context, argv []string, timeout time.Duration
 			exitCode = exitErr.ExitCode()
 		}
 	}
+	processResidue := processGroupExists(cmd.Process.Pid)
+	if processResidue {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	data := output.Bytes()
-	secretFound := credentialPattern.Match(data)
+	secretFound := output.secretFound
 	if secretFound {
 		data = []byte("[REDACTED: credential-like material detected; safety stop raised]\n")
 	}
-	return commandResult{output: data, duration: time.Since(started), exitCode: exitCode, timedOut: timedOut, secretFound: secretFound, truncated: output.truncated}
+	return commandResult{output: data, duration: time.Since(started), exitCode: exitCode, timedOut: timedOut, secretFound: secretFound, truncated: output.truncated, processResidue: processResidue}
+}
+
+func processGroupExists(pid int) bool {
+	err := syscall.Kill(-pid, 0)
+	return err == nil || !errors.Is(err, syscall.ESRCH)
 }
 
 type limitedBuffer struct {
-	buf       bytes.Buffer
-	truncated bool
+	buf         bytes.Buffer
+	truncated   bool
+	secretFound bool
+	scanTail    []byte
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
+	scan := make([]byte, 0, len(b.scanTail)+len(p))
+	scan = append(scan, b.scanTail...)
+	scan = append(scan, p...)
+	if credentialPattern.Match(scan) {
+		b.secretFound = true
+	}
+	const overlap = 1024
+	if len(scan) > overlap {
+		b.scanTail = append(b.scanTail[:0], scan[len(scan)-overlap:]...)
+	} else {
+		b.scanTail = append(b.scanTail[:0], scan...)
+	}
 	remaining := maxLogBytes - b.buf.Len()
 	if remaining > 0 {
 		if len(p) > remaining {

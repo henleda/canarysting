@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -88,9 +89,10 @@ func Validate(manifest *Manifest, scenarios *ScenarioManifest) error {
 		if s.ID == "" || s.Title == "" || s.Objective == "" || s.TargetScope == "" || s.DeterministicSeed == 0 || len(s.Command) == 0 || s.Timeout == "" || s.IsolationKey == "" || s.Replay == "" || s.AttackerIntent == "" || s.AttackerAction == "" {
 			problems = append(problems, fmt.Sprintf("scenario %q is missing a required declaration", s.ID))
 		}
-		if len(s.ExpectedObservations) == 0 || len(s.ExpectedCanarySting) == 0 || len(s.ProhibitedOutcomes) == 0 || len(s.AfterStateAssertions) == 0 || len(s.GroundTruth) == 0 {
+		if len(s.ExpectedObservations) == 0 || len(s.ExpectedCanarySting) == 0 || len(s.ProhibitedOutcomes) == 0 || len(s.AfterStateAssertions) == 0 || len(s.GroundTruth) == 0 || len(s.RequiredTestPasses) == 0 {
 			problems = append(problems, fmt.Sprintf("scenario %q has incomplete safety or ground-truth declarations", s.ID))
 		}
+		validateScenarioCommand(s, &problems)
 		for _, host := range s.AllowedHosts {
 			if host != "127.0.0.1" && host != "localhost" && host != "::1" {
 				problems = append(problems, fmt.Sprintf("scenario %q host %q is outside the local allowlist", s.ID, host))
@@ -122,6 +124,39 @@ func Validate(manifest *Manifest, scenarios *ScenarioManifest) error {
 		return errors.New(strings.Join(problems, "\n"))
 	}
 	return nil
+}
+
+func validateScenarioCommand(s *Scenario, problems *[]string) {
+	// Local adversarial manifests are data, not a shell escape hatch. They may
+	// invoke only an exact, uncached JSON Go-test selection rooted at the fixture
+	// directory declared by the scenario.
+	if len(s.Command) != 8 || s.Command[0] != "go" || s.Command[1] != "test" ||
+		s.Command[2] != "-json" || s.Command[3] != "-count=1" || s.Command[4] != "-race" || s.Command[6] != "-run" {
+		*problems = append(*problems, fmt.Sprintf("scenario %q command must be exactly go test -json -count=1 -race <fixture-package> -run <anchored-tests>", s.ID))
+		return
+	}
+	fixtureDirs := make(map[string]bool)
+	for _, fixture := range s.Fixtures {
+		fixtureDirs["./"+filepath.ToSlash(filepath.Dir(fixture))] = true
+	}
+	if !fixtureDirs[s.Command[5]] {
+		*problems = append(*problems, fmt.Sprintf("scenario %q command package %q is not a declared fixture directory", s.ID, s.Command[5]))
+	}
+	pattern, err := regexp.Compile(s.Command[7])
+	if err != nil || !strings.HasPrefix(s.Command[7], "^(") || !strings.HasSuffix(s.Command[7], ")$") {
+		*problems = append(*problems, fmt.Sprintf("scenario %q test selection must be a valid anchored group", s.ID))
+		return
+	}
+	quoted := make([]string, 0, len(s.RequiredTestPasses))
+	for _, name := range s.RequiredTestPasses {
+		quoted = append(quoted, regexp.QuoteMeta(name))
+		if !strings.HasPrefix(name, "Test") || !pattern.MatchString(name) {
+			*problems = append(*problems, fmt.Sprintf("scenario %q required test %q is outside its -run selection", s.ID, name))
+		}
+	}
+	if exact := "^(" + strings.Join(quoted, "|") + ")$"; s.Command[7] != exact {
+		*problems = append(*problems, fmt.Sprintf("scenario %q -run selection must exactly match required_test_passes in order", s.ID))
+	}
 }
 
 func validateCheck(check *Check, seen map[string]bool, problems *[]string) {
@@ -156,13 +191,14 @@ func scenarioCheck(version int, s Scenario) Check {
 		Dependencies: s.Dependencies, Gates: []string{"check-adversarial", "check-merge-local", "ci-adversarial"},
 		Timeout: s.Timeout, Privilege: s.RequiredPrivileges, IsolationKey: s.IsolationKey,
 		ConcurrencyGroup: "adversarial", FailureClass: s.FailureClass,
-		ResultParser: "go-test assertions plus exit-code",
+		ResultParser: "go-test-json-required-passes",
 		Cleanup:      s.Cleanup, CleanupSafetyCritical: true, SafetyCritical: s.SafetyCritical,
 		Replay: s.Replay, ManualRecovery: "Verify the scenario after-state, inspect its bounded log, then rerun only this scenario.", Tags: []string{"adversarial"},
 		Scenario: &ScenarioMetadata{ManifestVersion: version, DeterministicSeed: s.DeterministicSeed,
 			AttackerIntent: s.AttackerIntent, AttackerAction: s.AttackerAction,
-			ExpectedEvidence: expected, IdentityResult: "declared by bounded local scenario",
-			CorrelationResult: "declared by bounded local scenario", ResponseResult: "pending execution",
+			ExpectedEvidence: expected, RequiredAssertions: append([]string(nil), s.RequiredTestPasses...),
+			IdentityResult:    "not directly measured by this local fixture",
+			CorrelationResult: "not directly measured by this local fixture", ResponseResult: "pending parsed assertions",
 			CleanupResult: "pending execution", GroundTruth: s.GroundTruth},
 	}
 }

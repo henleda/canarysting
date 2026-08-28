@@ -24,10 +24,25 @@ func BuildFingerprint(manifestDigest string) (Fingerprint, error) {
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("working tree diff: %w", err)
 	}
-	changed := changedFiles(status)
+	workingChanged := changedFiles(status)
+	mergeBase := strings.TrimSpace(revision)
+	for _, candidate := range []string{"origin/main", "main"} {
+		if _, verifyErr := outputOf("git", "rev-parse", "--verify", candidate); verifyErr != nil {
+			continue
+		}
+		if base, baseErr := outputOf("git", "merge-base", "HEAD", candidate); baseErr == nil {
+			mergeBase = strings.TrimSpace(base)
+			break
+		}
+	}
+	committedDiff, err := outputOf("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", mergeBase+"...HEAD", "--", ".", ":(exclude).test-artifacts")
+	if err != nil {
+		return Fingerprint{}, fmt.Errorf("merge-base changed files: %w", err)
+	}
+	changed := mergeChangedFiles(workingChanged, strings.Fields(committedDiff))
 	working := sha256.New()
 	working.Write([]byte(status + "\x00" + diff))
-	for _, path := range changed {
+	for _, path := range workingChanged {
 		info, statErr := os.Stat(path)
 		if statErr != nil || !info.Mode().IsRegular() {
 			continue
@@ -52,10 +67,29 @@ func BuildFingerprint(manifestDigest string) (Fingerprint, error) {
 	environment := runtime.GOOS + "/" + runtime.GOARCH
 	envHash := sha256.Sum256([]byte(environment))
 	return Fingerprint{
-		SourceRevision: strings.TrimSpace(revision), WorkingTree: hex.EncodeToString(workingHash),
+		SourceRevision: strings.TrimSpace(revision), MergeBase: mergeBase, WorkingTree: hex.EncodeToString(workingHash),
 		Toolchain: hex.EncodeToString(toolHash[:]), Manifest: manifestDigest,
 		Environment: hex.EncodeToString(envHash[:]), ChangedFiles: changed,
 	}, nil
+}
+
+func mergeChangedFiles(groups ...[]string) []string {
+	seen := make(map[string]bool)
+	for _, group := range groups {
+		for _, path := range group {
+			path = strings.TrimSpace(path)
+			if path == "" || strings.HasPrefix(path, ".test-artifacts/") || strings.HasPrefix(path, "dashboard/app/.next/") {
+				continue
+			}
+			seen[path] = true
+		}
+	}
+	files := make([]string, 0, len(seen))
+	for path := range seen {
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	return files
 }
 
 func outputOf(name string, args ...string) (string, error) {

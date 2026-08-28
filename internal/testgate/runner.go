@@ -69,6 +69,14 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	for len(pending) > 0 {
 		progress := false
 		ids := sortedKeys(pending)
+		if ctx.Err() != nil {
+			for _, id := range ids {
+				check := byID[id]
+				results[id] = nodeExecution{result: blockedResult(check, StatusBlocked, "not started because the gate was interrupted")}
+				delete(pending, id)
+			}
+			break
+		}
 		// Resolve dependency failures before scheduling a new wave.
 		for _, id := range ids {
 			check := byID[id]
@@ -163,7 +171,7 @@ func (r *Runner) Run(ctx context.Context, manifest Manifest, fingerprint Fingerp
 	if err := WriteArtifacts(summary, manifest, runDir); err != nil {
 		return Summary{}, err
 	}
-	if err := updatePointers(options.ArtifactRoot, summary); err != nil {
+	if err := updatePointers(options.ArtifactRoot, summary, options.CompleteFailureReplay); err != nil {
 		return Summary{}, err
 	}
 	r.stdout("\n%s\n", ConsoleSummary(summary))
@@ -234,8 +242,14 @@ func (r *Runner) execute(ctx context.Context, check Check, runDir string, retry 
 	if command.truncated && result.Status == StatusPass {
 		result.Reason = "log truncated at 4 MiB"
 	}
+	if result.Scenario != nil && command.processResidue {
+		result.Status = StatusSafetyStop
+		result.FailureClass = "safety invariant violation"
+		result.Reason = "scenario process group remained after command exit"
+	}
+	applyResultParser(check, command.output, &result)
 
-	cleanupStatus, cleanupOutput, cleanupSafety := r.cleanup(ctx, check)
+	cleanupStatus, cleanupOutput, cleanupSafety := r.cleanup(context.WithoutCancel(ctx), check)
 	result.CleanupStatus = cleanupStatus
 	log := append([]byte(nil), command.output...)
 	if len(cleanupOutput) > 0 {
@@ -255,24 +269,37 @@ func (r *Runner) execute(ctx context.Context, check Check, runDir string, retry 
 	if result.Scenario != nil {
 		result.Scenario.CleanupResult = cleanupStatus
 		if result.Status == StatusPass {
-			result.Scenario.ObservedEvidence = append([]string(nil), result.Scenario.ExpectedEvidence...)
-			result.Scenario.ResponseResult = "expected bounded behavior observed"
-			result.Scenario.IdentityResult = "PASS"
-			result.Scenario.CorrelationResult = "PASS"
+			result.Scenario.ResponseResult = "all manifest-required test assertions reported PASS"
 		} else {
-			result.Scenario.MissingEvidence = append([]string(nil), result.Scenario.ExpectedEvidence...)
 			result.Scenario.ResponseResult = "scenario did not complete successfully"
 		}
 	}
 	execution := nodeExecution{result: result, log: log}
-	if retry && (result.Status == StatusFail || result.Status == StatusSafetyStop) && !check.SafetyCritical {
+	if retry && result.Status == StatusFail && !check.SafetyCritical {
 		retryCommand := r.executor(ctx, check.Command, timeout, r.executable)
 		retryStatus := StatusFail
-		if retryCommand.exitCode == 0 && !retryCommand.timedOut && !retryCommand.secretFound {
+		if retryCommand.exitCode == 0 && !retryCommand.timedOut && !retryCommand.secretFound && !retryCommand.processResidue {
 			retryStatus = StatusPass
 		}
-		execution.retry = retryCommand.output
-		execution.result.Retry = &RetryResult{Status: retryStatus, DurationSeconds: retryCommand.duration.Seconds(), LogPath: filepath.Join(runDir, "logs", sanitizeID(check.ID)+".retry.log")}
+		retryParsed := Result{Status: retryStatus, FailureClass: check.FailureClass, Scenario: cloneScenario(check.Scenario)}
+		applyResultParser(check, retryCommand.output, &retryParsed)
+		retryStatus = retryParsed.Status
+		retryCleanup, retryCleanupOutput, retryCleanupSafety := r.cleanup(context.WithoutCancel(ctx), check)
+		execution.retry = append([]byte(nil), retryCommand.output...)
+		if len(retryCleanupOutput) > 0 {
+			execution.retry = append(execution.retry, []byte("\n--- cleanup ---\n")...)
+			execution.retry = append(execution.retry, retryCleanupOutput...)
+		}
+		if retryCleanup == "FAIL" {
+			retryStatus = StatusFail
+		}
+		execution.result.Retry = &RetryResult{Status: retryStatus, DurationSeconds: retryCommand.duration.Seconds(), LogPath: filepath.Join(runDir, "logs", sanitizeID(check.ID)+".retry.log"), CleanupStatus: retryCleanup}
+		if retryCleanupSafety || retryCommand.secretFound || retryCommand.processResidue {
+			execution.result.Status = StatusSafetyStop
+			execution.result.FailureClass = "safety invariant violation"
+			execution.result.Reason = "diagnostic retry violated output, process, cleanup, or after-state safety"
+			return execution
+		}
 		if retryStatus == StatusPass {
 			execution.result.FailureClass = "nondeterministic or flaky behavior"
 			execution.result.Reason = "original failure passed diagnostic retry; gate remains failed"
@@ -287,8 +314,8 @@ func (r *Runner) cleanup(ctx context.Context, check Check) (string, []byte, bool
 		return "not required", nil, false
 	}
 	result := r.executor(ctx, check.Cleanup, 30*time.Second, r.executable)
-	if result.exitCode != 0 || result.timedOut || result.secretFound {
-		return "FAIL", result.output, check.CleanupSafetyCritical || result.secretFound
+	if result.exitCode != 0 || result.timedOut || result.secretFound || result.processResidue {
+		return "FAIL", result.output, check.CleanupSafetyCritical || result.secretFound || result.processResidue
 	}
 	return "PASS", result.output, false
 }

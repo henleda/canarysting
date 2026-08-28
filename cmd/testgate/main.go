@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/canarysting/canarysting/internal/testgate"
 )
@@ -99,6 +103,7 @@ func run(args []string) {
 			options.ParentStatuses[result.ID] = result.Status
 		}
 		options.OnlyChecks = testgate.LastFailedIDs(parent, *adversarialLast)
+		options.CompleteFailureReplay = *lastFailed && !*adversarialLast
 		if len(options.OnlyChecks) == 0 {
 			fatal("last failed run contains no matching checks")
 		}
@@ -120,6 +125,8 @@ func run(args []string) {
 		}
 	}
 	failed := false
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	for n := 1; n <= *repeat; n++ {
 		if *repeat > 1 {
 			fmt.Printf("\nREPEAT %d/%d\n", n, *repeat)
@@ -128,11 +135,15 @@ func run(args []string) {
 		if err != nil {
 			fatal("%v", err)
 		}
-		summary, err := runner.Run(context.Background(), manifest, fingerprint, options)
+		summary, err := runner.Run(ctx, manifest, fingerprint, options)
 		if err != nil {
 			fatal("gate: %v", err)
 		}
 		failed = failed || testgate.GateFailed(summary)
+		if ctx.Err() != nil {
+			failed = true
+			break
+		}
 	}
 	if failed {
 		os.Exit(1)
@@ -141,7 +152,7 @@ func run(args []string) {
 
 func probe(args []string) {
 	if len(args) != 1 {
-		fatal("usage: testgate probe <repo|go|frontend|bpf|fixtures|cleanup>")
+		fatal("usage: testgate probe <repo|go|frontend|bpf|fixtures|cleanup|ebpf-privileged>")
 	}
 	switch args[0] {
 	case "repo":
@@ -192,10 +203,78 @@ func probe(args []string) {
 		}
 		fmt.Printf("PASS: %d scenario definitions have valid fixtures, ports, and local targets\n", len(scenarios.Scenarios))
 	case "cleanup":
-		fmt.Println("PASS: scenario used only process-local/httptest state; after-state is clean")
+		fmt.Println("PASS: no external mutable state was declared; the runner separately verifies process-group exit")
+	case "ebpf-privileged":
+		probePrivilegedEBPF()
 	default:
 		fatal("unknown probe %q", args[0])
 	}
+}
+
+func probePrivilegedEBPF() {
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		fatal("privileged eBPF proof requires Linux root execution")
+	}
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
+		fatal("cgroup-v2 unified hierarchy unavailable: %v", err)
+	}
+	out, err := exec.Command("go", "test", "-json", "-count=1", "./bpf/enforce/...", "./bpf/observe/...", "./bpf/sockops/...").CombinedOutput()
+	_, _ = os.Stdout.Write(out)
+	if err != nil {
+		fatal("privileged eBPF test command failed: %v", err)
+	}
+	required := map[string]bool{
+		"TestEnforceJailIsPrecise": false, "TestFailOpenOnMiss": false,
+		"TestRateLimitSustainedThroughput": false, "TestCloseDeleteRemovesEntry": false,
+		"TestSockopsCookieOracle": false, "TestObserveNeverDropsAPacket": false,
+	}
+	type event struct {
+		Action string `json:"Action"`
+		Test   string `json:"Test"`
+	}
+	var skipped, failed []string
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var item event
+		if err := json.Unmarshal(line, &item); err != nil {
+			fatal("malformed go test JSON: %v", err)
+		}
+		switch item.Action {
+		case "pass":
+			if _, ok := required[item.Test]; ok {
+				required[item.Test] = true
+			}
+		case "skip":
+			if item.Test != "" {
+				skipped = append(skipped, item.Test)
+			}
+		case "fail":
+			if item.Test != "" {
+				failed = append(failed, item.Test)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fatal("read privileged test results: %v", err)
+	}
+	var missing []string
+	for name, passed := range required {
+		if !passed {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(skipped)
+	sort.Strings(failed)
+	sort.Strings(missing)
+	if len(skipped) > 0 || len(failed) > 0 || len(missing) > 0 {
+		fatal("privileged eBPF proof incomplete: skipped=%v failed=%v missing_required=%v", skipped, failed, missing)
+	}
+	fmt.Printf("PASS: all %d required privileged eBPF datapath proofs executed without skips\n", len(required))
 }
 
 func report() {
