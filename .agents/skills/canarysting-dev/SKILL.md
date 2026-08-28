@@ -13,6 +13,7 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 2. Read `docs/DEVELOPMENT_ENVIRONMENT.md` for environment, Kubernetes, Cilium, kernel, eBPF, deployment, identity, DGX, attacker, or correlation work.
 3. Read the applicable product architecture:
    - CanaryPlatform/CanaryView/shared model: `docs/CANARY_PLATFORM_ARCHITECTURE.md` and `docs/CANARYVIEW_DATA_MODEL.md`.
+   - CanaryView connector or cross-vendor action work: `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`.
    - Persistence, evidence lifecycle, graph history, cases, retention, or model work: `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`.
    - CanarySting: `docs/ARCHITECTURE.md` plus the layer guidance required by `AGENTS.md`.
    - CanaryAttacker: `docs/CANARYATTACKER_ARCHITECTURE.md`.
@@ -34,6 +35,23 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 - Retain raw-event references; distinguish source observation, correlation, inference, model interpretation, recommendation, and action.
 - Reuse the existing observation path and models where appropriate; do not create a parallel source of truth.
 - Keep recommendations advisory and never auto-enforce them.
+
+### Connector work
+
+- Read `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`, identify the connector category, and inspect the versioned `ConnectorCapabilityManifest` before designing or changing a connector.
+- Start read-only and request the smallest required permission set. Never add write credentials during a collector-only task; read and write authority remain separate.
+- Preserve raw evidence references and hashes when available, source and collector-observed timestamps, provenance, assertion mode, and evidence/normalization confidence.
+- Keep vendor-specific fields in the bounded extension/evidence envelope. Never add a vendor-specific field to the canonical model without architecture review.
+- Add category-contract schema fixtures plus checkpoint, replay, pagination/backfill, duplicate, out-of-order, delayed, partial-event, clock-skew, permission-denial, rate-limit, reconnect, raw-reference, schema-drift, upgrade, isolation, minimization, and read-only tests as applicable.
+- Add operator-visible health, lag, last event, field/coverage gaps, schema warnings, permissions, authority, and capability state; expose the same manifest to the agent interface.
+- Never mark a connector supported because authentication succeeded. Its wave exit criteria, capability verification against current official documentation and a licensed environment, and applicable certification suite must pass.
+
+### Action-adapter work
+
+- Require an M7-scoped task and a manifest-declared action capability. Collector completion alone never authorizes an Action Adapter.
+- Require separate write authority, least-privilege permissions, and the normal operator approval workflow; passive onboarding must remain read-only.
+- Design plan/preview, scope and expected impact, validation, expiration, verification, and rollback before apply; define multi-adapter conflict and rollback ordering when applicable.
+- Preserve action provenance, immutable approved plan version, native control plane, vendor change identifier, before/after evidence, partial-failure state, verified removal, and rollback audit.
 
 ### Persistent data
 

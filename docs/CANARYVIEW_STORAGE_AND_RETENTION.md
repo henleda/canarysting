@@ -55,6 +55,7 @@ Every planned persistent object must declare a data class and sensitivity before
 - `GRAPH_CURRENT_STATE` and `GRAPH_SUMMARY` — rebuildable current view and historical aggregates.
 - `SECURITY_CASE` and `CANARY_EVIDENCE` — operator-facing conclusions and confirmed deception evidence.
 - `ACTION_AUDIT` — recommendation, approval, execution, validation, rollback, and audit.
+- `CONNECTOR_CONFIGURATION` and `CONNECTOR_HEALTH` — versioned connector capability/configuration metadata plus bounded health, coverage, checkpoint, and schema-drift history; never credential values.
 - `FEATURE_BASELINE` and `MODEL_ARTIFACT` — learned state, evaluation, and registry metadata.
 - `SYNTHETIC_GROUND_TRUTH` — CanaryAttacker scenarios, intent, action, and evaluation evidence.
 
@@ -108,6 +109,8 @@ Profiles are defaults subject to customer policy, regulation, source capabilitie
 | Daily/weekly graph summaries | 13 months | 36 months | 7 years or required policy |
 | Current graph state | While tenant is active | While tenant is active | While tenant is active plus approved export/closure window |
 | Recommendations, approvals, actions, validation, rollback, audit | 1 year | 3 years | 7 years |
+| Connector capability/configuration history | Active version plus 1 year | Active version plus 3 years | Active version plus 7 years |
+| Connector health, coverage, checkpoint, and schema-drift history | 30 days | 90 days | 13 months; coarser summaries may be retained by policy |
 | Learned feature history and behavioral baselines | 12 months | 24 months | 36 months, subject to model-use policy |
 | Model versions and evaluation results | Model life plus 12 months | Model life plus 24 months; retired artifacts 24 months | Model life plus 7 years when required for regulated decisions |
 | CanaryAttacker/Qwen synthetic ground truth | Indefinite, versioned development-lab corpus | Indefinite, versioned development-lab corpus | Indefinite, versioned development-lab corpus |
@@ -122,8 +125,9 @@ The logical layers are contracts, not database selections:
 2. **Raw evidence layer** — federated source references plus minimum redacted incident snapshots. It does not duplicate full vendor streams by default.
 3. **Normalized observation store** — tenant-isolated, compact, time-queryable, immutable/versioned observations and evidence envelopes.
 4. **Append-only relationship history** — relationship assertions, retractions, provenance, and validity intervals from which current and historical graph views can be rebuilt.
-5. **Security-case and audit store** — durable `SecurityCase`, `Explanation`, `ImpactAssessment`, `Recommendation`, `ActionPlan`, `ActionExecution`, `CanaryOpportunity`, approvals, holds, and audit records.
-6. **Feature and model registry** — feature definitions, training windows, input classes, model versions, evaluation results, deployment/retirement dates, lineage, and model-use authorization.
+5. **Security-case and audit store** — durable `SecurityCase`, `Explanation`, `ImpactAssessment`, `Recommendation`, `SecurityIntent`, `ActionPlan`, `ActionExecution`, `CanaryOpportunity`, approvals, holds, and audit records.
+6. **Connector operations store** — tenant-isolated capability-manifest versions and bounded health, coverage, checkpoint, replay/backfill, permission, rate-limit, and schema-drift history. It stores references to credentials, never credential values.
+7. **Feature and model registry** — feature definitions, training windows, input classes, model versions, evaluation results, deployment/retirement dates, lineage, and model-use authorization.
 
 ```text
 collectors -> encrypted edge spool -> normalized observations

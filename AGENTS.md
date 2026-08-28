@@ -17,9 +17,16 @@ The authoritative CanarySting product and architecture specification is `docs/AR
 
 CanaryPlatform is the overall product architecture. **CanaryView** is its vendor-neutral intelligence plane, **CanarySting** remains its deception, high-confidence detection, containment, and bounded-response system, and **CanaryAttacker** is its bounded synthetic-adversary and validation harness. These are architectural boundaries, not a mandate to mass-rename or move working packages.
 
-Read `docs/CANARY_PLATFORM_ARCHITECTURE.md` for product boundaries and dependencies, `docs/CANARYVIEW_DATA_MODEL.md` for canonical intelligence concepts, `docs/CANARYVIEW_STORAGE_AND_RETENTION.md` for data lifecycle, retention, model-use, and logical storage principles, `docs/CANARYATTACKER_ARCHITECTURE.md` for the attacker laboratory, and `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md` for unified operator workflows. `docs/DEVELOPMENT_PLAN.md` remains the execution sequence and status source of truth; `docs/DEVELOPMENT_ENVIRONMENT.md` defines the Mac/DGX development model. This file remains authoritative for coding and safety invariants. The product architecture documents do not override the eleven rules below.
+Read `docs/CANARY_PLATFORM_ARCHITECTURE.md` for product boundaries and dependencies, `docs/CANARYVIEW_DATA_MODEL.md` for canonical intelligence concepts, `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md` for category contracts and connector/action boundaries, `docs/CANARYVIEW_STORAGE_AND_RETENTION.md` for data lifecycle, retention, model-use, and logical storage principles, `docs/CANARYATTACKER_ARCHITECTURE.md` for the attacker laboratory, and `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md` for unified operator workflows. `docs/DEVELOPMENT_PLAN.md` remains the execution sequence and status source of truth; `docs/DEVELOPMENT_ENVIRONMENT.md` defines the Mac/DGX development model. This file remains authoritative for coding and safety invariants. The product architecture documents do not override the eleven rules below.
 
 Every new persistent data type must define its data class, retention and expiration, legal-hold behavior, deletion or derived-data invalidation, residency and encryption boundary, model-use permission, derivation lineage, and estimated storage impact before implementation is complete.
+
+For CanaryView connectors and delegated actions:
+
+- Category contracts precede vendor implementations; Evidence Collectors are read-only by default, and read/write authority stays separate.
+- Vendor-specific fields remain evidence rather than canonical assumptions; connector health and declared capability are product data visible to operators and agents.
+- Vendor-native control planes remain authoritative.
+- Cross-vendor actions require manifest-declared capability, exact preview, human approval, verification, expiration, rollback, and audit.
 
 ## Build target: Kubernetes-native (current phase)
 
