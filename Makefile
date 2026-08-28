@@ -222,7 +222,8 @@ check-ci-frontend:
 check-ci-ebpf:
 	$(TESTGATE) run --gate ci-ebpf $(TESTGATE_JOBS)
 check-ci-ebpf-privileged:
-	$(TESTGATE) run --gate ci-ebpf-privileged --jobs 1
+	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$(CURDIR)" \
+		$(TESTGATE) run --gate ci-ebpf-privileged --jobs 1
 check-ci-adversarial:
 	$(TESTGATE) run --gate ci-adversarial $(TESTGATE_JOBS)
 
