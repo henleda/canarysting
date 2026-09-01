@@ -36,6 +36,43 @@ func TestCollectAllBlocksOnlyDependentsAndKeepsRepros(t *testing.T) {
 	}
 }
 
+func TestSharedIsolationKeyPreventsOverlap(t *testing.T) {
+	first := fakeCheck("first", nil)
+	second := fakeCheck("second", nil)
+	first.IsolationKey = "shared-workspace"
+	second.IsolationKey = "shared-workspace"
+	first.ConcurrencyGroup = "first-group"
+	second.ConcurrencyGroup = "second-group"
+
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	executor := func(_ context.Context, _ []string, _ time.Duration, _ string) commandResult {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return commandResult{exitCode: 0}
+	}
+
+	runner := &Runner{executable: "test", stdout: func(string, ...any) {}, executor: executor}
+	_, err := runner.Run(context.Background(), Manifest{Version: 1, Checks: []Check{first, second}}, Fingerprint{}, RunOptions{
+		Gate: "fixture", Jobs: 2, ArtifactRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxActive != 1 {
+		t.Fatalf("checks sharing an isolation key overlapped: max active = %d", maxActive)
+	}
+}
+
 func TestCleanupRunsAfterFailureAndSafetyStopHaltsAdversarialWork(t *testing.T) {
 	a := fakeCheck("unsafe", nil)
 	a.SafetyCritical = true
