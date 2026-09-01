@@ -178,7 +178,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The persistent controller already retains its local Go caches. Do
+          # not upload the controller user's global multi-project cache.
+          cache: false
       - name: Map conservative classifier output to a bounded DGX profile
         id: profile
         shell: bash
@@ -291,7 +293,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # The persistent controller already retains its local Go caches. Do
+          # not upload the controller user's global multi-project cache.
+          cache: false
       - name: Run full implemented DGX matrix once
         run: |
           short_sha="${GITHUB_SHA:0:10}"
