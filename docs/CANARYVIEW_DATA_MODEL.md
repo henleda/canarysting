@@ -1,6 +1,6 @@
 # CanaryView Canonical Data Model
 
-Status: approved conceptual specification (M2A.0.4, 2026-09-01). This document deliberately defers Go package placement, wire schemas, persistence technology, and runtime implementation.
+Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary recorded. This document still defers persistence technology and runtime implementation.
 
 ## Purpose
 
@@ -65,6 +65,10 @@ Every durable canonical record should carry a common envelope, even if a connect
 - conflict and missing-evidence references.
 
 Canonical records should be append-only or versioned. Corrections supersede earlier interpretations without rewriting what a source originally reported.
+
+The envelope and its lifecycle value types belong to the future standard-library-only `internal/canaryview/model` package and are composed into every durable canonical record. The model expresses the decision; it does not perform authorization, persistence, expiry, deletion, rebuild, or backend work. Those operations belong to later application and repository services. Source-specific TTLs or retention settings do not satisfy this contract by themselves, and a normalized record cannot persist until its reviewed envelope is complete.
+
+The Go model is the semantic source of truth. A future external transport uses the separate `api/proto/canaryview/v1` path and `canaryview.v1` protobuf namespace, with explicit converters and round-trip/drift tests. The existing CanarySting `canarysting.v1` contract remains unchanged. Compatible additions may extend v1; breaking meaning or knowledge-state changes require v2 and explicit translators. Each durable record's `schema_version` identifies its record schema independently of the transport package version.
 
 ### Lifecycle policy contract
 
@@ -154,7 +158,7 @@ Every entity has a stable canonical ID, an operator-facing display name when kno
 - **ActionPlan** — immutable, previewed vendor-native mutation proposal with validation and rollback, optionally derived from a `SecurityIntent`.
 - **ActionExecution** — approved execution, result, validation, and rollback history.
 - **CanaryOpportunity** — evidence-backed candidate for human-approved CanarySting placement.
-- **CanaryPlacementRecommendation** — operator-facing recommendation form derived from a `CanaryOpportunity`; naming may converge during wire-contract review, but neither form is a placement or action.
+- **CanaryPlacementRecommendation** — operator-facing `Recommendation` projection that references an immutable, versioned `CanaryOpportunity`; it is not a second canonical placement or wire object.
 - **DataClass** — classification that binds sensitivity and lifecycle requirements to an object.
 - **RetentionProfile** — named Lean, Standard, Regulated, or approved override policy for expiration by class.
 - **DataLifecyclePolicy** — expiration, deletion, invalidation, hold, residency, encryption, and storage-impact behavior.
@@ -431,7 +435,7 @@ An `ActionExecution` contains the immutable approved plan/version, approver and 
 - proposed CanarySting executing control plane;
 - approval, materialization, validation, and rollback expectations.
 
-The final wire name (`CanaryOpportunity` versus `CanaryPlacementRecommendation`) is an open review question. Initial placement is never automatic.
+`CanaryOpportunity` is the canonical domain and wire name. A `CanaryPlacementRecommendation` is an operator-facing `Recommendation` projection that references the immutable opportunity. Neither is approval, placement, or action, and initial placement is never automatic.
 
 ## Canary and adversarial state
 
@@ -449,7 +453,7 @@ These are declared lab ground truth about harness intent/execution—not trusted
 
 ## Human and agent interfaces
 
-The same canonical objects drive the graphical console and structured machine access. Human projections emphasize application, service, identity, environment, asset, and business scope. Technical identifiers remain one disclosure level below. Agent APIs expose structured evidence and confidence, not an alternate unlogged raw path or extra authority.
+The same CanaryView application/query services and canonical objects drive the graphical console and structured machine access. Human projections emphasize application, service, identity, environment, asset, and business scope. Technical identifiers remain one disclosure level below. Agent and transport projections may reshape or omit fields for their consumers, but begin outside `internal/canaryview/model`; they cannot create a second interpretation, an unlogged raw path, or extra authority. Human and agent requests retain the same evidence IDs, confidence, authorization state, and audit identity.
 
 Initial conceptual read operations are `query_graph`, `explain_path`, `get_trace`, `get_evidence`, `get_identity`, `get_policy_decisions`, `find_dark_reachability`, `find_attack_path`, `find_canary_opportunities`, and `recommend_canary_placement`. Action simulation and approved execution are later phases.
 
@@ -475,6 +479,19 @@ Every conclusion links to its evidence. Every recommendation includes reason, co
 
 The authoritative lifecycle defaults, current-store inventory, Lean/Standard/Regulated profiles, federated-evidence model, and logical storage layers are in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0.4 approved those contracts; each M2A implementation task must still resolve its declared package, schema, lifecycle, and validation decisions without weakening them.
 
-## Reuse and unresolved implementation choices
+## Package and reuse boundary
 
-Likely reuse candidates are `internal/engine/observebaseline` for OBSERVED topology, `internal/identity` for workload identity/confidence, and selected `internal/intelligence` audit/evidence mechanisms. None is automatically the canonical model package. The open architecture questions in `docs/CANARY_PLATFORM_ARCHITECTURE.md` govern package placement, persistence, retention, lifecycle, correlation windows, identity confidence, translations, OpenTelemetry mapping, graph storage, APIs, placement communication, and action authorization.
+The M2A.1 review selected `internal/canaryview/model` as the future canonical package. It is a standard-library-only leaf and cannot import CanarySting engine/contract/intelligence packages, adapters, dashboard code, vendor/Kubernetes SDKs, transport-generated code, or persistence implementations. Source-specific integration adapters map into it; CanaryView application, correlation, graph, case, and query services depend on it; human/API/agent projections depend on those services. The existing Sting runtime never imports CanaryView.
+
+The code-grounded reuse boundary is:
+
+- `internal/engine/observebaseline` remains the only local source of socket-cookie-attributed OBSERVED topology. A one-way adapter may normalize its current snapshots or future deltas, but its capped, expiring current-state store is not canonical relationship history or the CanaryView graph backend.
+- `internal/identity` supplies mesh-first resolution and confidence/proof semantics through an adapter. Its Kubernetes-oriented `WorkloadID`, naming, and Sting scope mapping are not the cross-vendor entity model. Parsed SPIFFE syntax alone never produces a canonical `VERIFIED` assertion.
+- `internal/intelligence` remains CanarySting-owned. Touch, L7, profile, cost, reconnaissance, audit, feed, and related outputs are source evidence; selected tamper-evidence and bounded-delivery patterns may be reused without adopting their schemas or stores as canonical.
+- `internal/intelligence/network` remains the single default-deny boundary for Sting-derived cross-deployment patterns and is not a general connector transport.
+- `internal/dashboard` and `dashboard/app` remain presentation projections and reusable console assets, not model ownership.
+- `internal/contract`, `api/proto/contract.proto`, and `canarysting.v1` retain the narrow CanarySting flow/signal/verdict responsibility. CanaryView uses its separate model and versioned transport namespace.
+
+Approved placement crosses the product boundary through an outer integration/composition adapter: it receives the exact immutable `CanaryOpportunity` and approved `ActionPlan` version, invokes the existing CanarySting control plane, and maps placement/outcome evidence back into CanaryView observations. Neither core package imports the other, and CanarySting retains materialization and safety authority.
+
+Production storage engines, physical graph implementation, detailed correlation windows, calibrated identity confidence, translation/OpenTelemetry mapping, and vendor-action authorization remain separately reviewed implementation choices in `docs/CANARY_PLATFORM_ARCHITECTURE.md`.
