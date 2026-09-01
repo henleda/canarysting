@@ -197,18 +197,18 @@ Working runtime components are refactored only when a future implementation task
 - The existing Anthropic LLM attacker is bounded and useful, but it is not the Ollama/Qwen CanaryAttacker or the proposed intent/action ground-truth harness. Future work should reuse its safe fixed-target/budget/replay mechanisms without disrupting it.
 - M1B.5 is complete: the missing collector was recovered, negative-tested, and validated with recorded DGX evidence. The post-meeting re-baseline preserves that completion and does not replay or reinterpret it.
 - M1B.7 was already `DONE` in the checked-out plan, despite the prompt describing it as an expected next task. Its completion was preserved; this architecture bootstrap only evolved the environment document.
-- Current persistence is a set of useful CanarySting stores rather than one CanaryView lifecycle system: bbolt event/audit state has no general retention service, topology/deviants use 30-day TTLs, L7 evidence has a nominal TTL without a production periodic caller, NDJSON spools do not rotate or acknowledge, and feature/cross-scope ledgers are in memory. These facts are mapped in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; no production database was selected here.
+- Current persistence is a set of useful CanarySting stores rather than one CanaryView lifecycle system: bbolt event/audit state has no general retention service, topology/deviants use 30-day TTLs, L7 evidence is capped and receives hourly TTL reap only when the optional SIEM drainer is enabled, NDJSON spools do not rotate or acknowledge, and feature/cross-scope ledgers are in memory. These facts are mapped in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; no production database was selected here.
 
 ## Open architecture questions
 
-These questions are intentionally recorded rather than guessed. They do not block this architecture bootstrap.
+These questions are intentionally recorded rather than guessed. They do not block this architecture bootstrap. M2A.0.2 has accepted the Lean/Standard/Regulated defaults, per-class lifecycle clocks, minimum-snapshot trigger/content rules, reference availability states, hold semantics, and deletion/invalidation outcomes in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; the questions below retain only implementation-, source-, or governance-specific choices that remain open.
 
 1. Where should the canonical CanaryView model live in the Go package hierarchy?
 2. How much of `internal/intelligence` belongs to CanaryView versus remaining a CanarySting evidence source?
 3. Should `internal/engine/observebaseline` topology storage become the first CanaryView graph backend or feed a separate graph representation?
 4. Which production storage engines should back normalized observations, relationship history, security cases, audit records, and model features?
 5. What volume, latency, and cost targets apply to each data class and collector?
-6. Which customer retention overrides and regulated profiles should the product support?
+6. Which concrete advanced-override catalog and Regulated periods should the product support beyond the accepted defaults?
 7. How are correlation windows selected, extended, and closed?
 8. What is the calibrated identity-resolution confidence model?
 9. How are NAT and proxy translations represented without losing either tuple?
@@ -218,12 +218,12 @@ These questions are intentionally recorded rather than guessed. They do not bloc
 13. What is the final `CanaryPlacementRecommendation`/`CanaryOpportunity` wire contract?
 14. How does CanaryView deliver an approved recommendation to CanarySting without circular dependencies?
 15. What is the long-term authorization model for vendor actions and delegated agents?
-16. What conditions trigger a minimum-evidence snapshot before a raw vendor event expires?
-17. How does deletion propagate through traces, graph edges, cases, features, recommendations, and model artifacts?
+16. Which source/category-specific field manifests implement the accepted minimum-snapshot triggers without copying excess payload?
+17. What backend deletion/retry objectives and model-rebuild thresholds implement the accepted lineage propagation outcomes?
 18. Which data-residency and encryption-key boundaries apply per tenant?
-19. Who may create, review, release, and audit a legal hold?
+19. Which RBAC roles, separation-of-duties rules, and review cadence implement legal-hold creation/review/release/audit?
 20. How are operational retention permission and model-use permission represented and enforced separately?
 21. How does historical evidence age or receive lower weighting in current behavior models?
-22. How does CanaryView report broken raw-event references after the source system expires or deletes the underlying data?
+22. How does each connector detect moved or integrity-mismatched source references and distinguish those states from expiry, deletion, or access denial?
 
 Connector SDK, execution-location, credentials, schema evolution, certification, licensing, regional deployment, telemetry coverage, and multi-adapter conflict/rollback questions are recorded without duplication in `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`.
