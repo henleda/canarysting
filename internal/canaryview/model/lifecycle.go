@@ -64,7 +64,9 @@ type LifecycleInput struct {
 	Sensitivity            Sensitivity
 	RetentionProfile       RetentionProfile
 	PolicyVersion          string
+	RetentionDecisionRef   string
 	OverrideVersion        string
+	RetentionClock         RetentionClock
 	RetentionStart         time.Time
 	ExpiresAt              time.Time
 	State                  LifecycleState
@@ -83,7 +85,9 @@ type Lifecycle struct {
 	sensitivity            Sensitivity
 	retentionProfile       RetentionProfile
 	policyVersion          string
+	retentionDecisionRef   string
 	overrideVersion        string
+	retentionClock         RetentionClock
 	retentionStart         time.Time
 	expiresAt              time.Time
 	state                  LifecycleState
@@ -109,6 +113,9 @@ func NewLifecycle(in LifecycleInput) (Lifecycle, error) {
 	if err := required("lifecycle policy version", in.PolicyVersion); err != nil {
 		return Lifecycle{}, err
 	}
+	if err := required("retention decision reference", in.RetentionDecisionRef); err != nil {
+		return Lifecycle{}, err
+	}
 	if in.RetentionProfile == RetentionOverride && in.OverrideVersion == "" {
 		return Lifecycle{}, fmt.Errorf("approved override retention requires an override version")
 	}
@@ -120,11 +127,26 @@ func NewLifecycle(in LifecycleInput) (Lifecycle, error) {
 			return Lifecycle{}, err
 		}
 	}
+	if !in.RetentionClock.valid() {
+		return Lifecycle{}, fmt.Errorf("unsupported retention clock %q", in.RetentionClock)
+	}
 	if in.RetentionStart.IsZero() || in.ExpiresAt.IsZero() {
 		return Lifecycle{}, fmt.Errorf("retention start and expiry are required")
 	}
 	if !in.ExpiresAt.After(in.RetentionStart) {
 		return Lifecycle{}, fmt.Errorf("expiry must be after retention start")
+	}
+	if in.DataClass == DataClassNormalizedObservation {
+		var expected time.Time
+		switch in.RetentionProfile {
+		case RetentionLean:
+			expected = in.RetentionStart.AddDate(0, 6, 0)
+		case RetentionStandard:
+			expected = in.RetentionStart.AddDate(0, 13, 0)
+		}
+		if !expected.IsZero() && !in.ExpiresAt.Equal(expected) {
+			return Lifecycle{}, fmt.Errorf("%s normalized-observation expiry must be %s", in.RetentionProfile, expected.UTC().Format(time.RFC3339Nano))
+		}
 	}
 	if !in.State.valid() {
 		return Lifecycle{}, fmt.Errorf("unsupported lifecycle state %q", in.State)
@@ -166,7 +188,8 @@ func NewLifecycle(in LifecycleInput) (Lifecycle, error) {
 	return Lifecycle{
 		dataClass: in.DataClass, sensitivity: in.Sensitivity,
 		retentionProfile: in.RetentionProfile, policyVersion: in.PolicyVersion,
-		overrideVersion: in.OverrideVersion, retentionStart: in.RetentionStart.UTC(),
+		retentionDecisionRef: in.RetentionDecisionRef, overrideVersion: in.OverrideVersion,
+		retentionClock: in.RetentionClock, retentionStart: in.RetentionStart.UTC(),
 		expiresAt: in.ExpiresAt.UTC(), state: in.State, legalHoldIDs: holds,
 		residencyPolicyRef: in.ResidencyPolicyRef, encryptionKeyRef: in.EncryptionKeyRef,
 		operationalPolicyRef: in.OperationalPolicyRef,
@@ -179,7 +202,9 @@ func (l Lifecycle) DataClass() DataClass                    { return l.dataClass
 func (l Lifecycle) Sensitivity() Sensitivity                { return l.sensitivity }
 func (l Lifecycle) RetentionProfile() RetentionProfile      { return l.retentionProfile }
 func (l Lifecycle) PolicyVersion() string                   { return l.policyVersion }
+func (l Lifecycle) RetentionDecisionRef() string            { return l.retentionDecisionRef }
 func (l Lifecycle) OverrideVersion() string                 { return l.overrideVersion }
+func (l Lifecycle) RetentionClock() RetentionClock          { return l.retentionClock }
 func (l Lifecycle) RetentionStart() time.Time               { return l.retentionStart }
 func (l Lifecycle) ExpiresAt() time.Time                    { return l.expiresAt }
 func (l Lifecycle) State() LifecycleState                   { return l.state }
@@ -198,7 +223,8 @@ func (l Lifecycle) validate() error {
 	_, err := NewLifecycle(LifecycleInput{
 		DataClass: l.dataClass, Sensitivity: l.sensitivity,
 		RetentionProfile: l.retentionProfile, PolicyVersion: l.policyVersion,
-		OverrideVersion: l.overrideVersion, RetentionStart: l.retentionStart,
+		RetentionDecisionRef: l.retentionDecisionRef, OverrideVersion: l.overrideVersion,
+		RetentionClock: l.retentionClock, RetentionStart: l.retentionStart,
 		ExpiresAt: l.expiresAt, State: l.state, LegalHoldIDs: l.legalHoldIDs,
 		ResidencyPolicyRef: l.residencyPolicyRef, EncryptionKeyRef: l.encryptionKeyRef,
 		OperationalPolicyRef: l.operationalPolicyRef,

@@ -1,6 +1,8 @@
 package model_test
 
 import (
+	"bufio"
+	"bytes"
 	"os/exec"
 	"strings"
 	"testing"
@@ -21,20 +23,57 @@ func TestModelHasOnlyStandardLibraryDependencies(t *testing.T) {
 }
 
 func TestCanaryStingRuntimeDoesNotDependOnCanaryView(t *testing.T) {
-	packages := []string{
-		modulePath + "/internal/contract",
-		modulePath + "/internal/engine/...",
-		modulePath + "/internal/intelligence/...",
-		modulePath + "/internal/sting/...",
-		modulePath + "/adapters/...",
-	}
-	out, err := exec.Command("go", append([]string{"list", "-deps"}, packages...)...).CombinedOutput()
+	format := `{{.ImportPath}}{{"\t"}}{{join .Deps " "}}`
+	command := exec.Command("go", "list", "-f", format, "./...")
+	command.Dir = "../../.."
+	out, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go list CanarySting runtime dependencies: %v\n%s", err, out)
 	}
-	for _, dependency := range strings.Fields(string(out)) {
-		if dependency == modulePath+"/internal/canaryview/model" || strings.HasPrefix(dependency, modulePath+"/internal/canaryview/model/") {
-			t.Fatalf("CanarySting runtime depends on CanaryView model through %s", dependency)
+	modelPackage := modulePath + "/internal/canaryview/model"
+	prohibitedRoots := []string{
+		modulePath + "/internal/contract",
+		modulePath + "/internal/engine",
+		modulePath + "/internal/canary",
+		modulePath + "/internal/sting",
+		modulePath + "/internal/intelligence",
+		modulePath + "/internal/identity",
+		modulePath + "/internal/operator",
+		modulePath + "/adapters",
+		modulePath + "/bpf",
+		modulePath + "/api/convert",
+		modulePath + "/api/enginegrpc",
+	}
+	checked := 0
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		pkg, dependencies, ok := strings.Cut(scanner.Text(), "\t")
+		if !ok {
+			t.Fatalf("unexpected go list output %q", scanner.Text())
+		}
+		if !hasPackageRoot(pkg, prohibitedRoots) {
+			continue
+		}
+		checked++
+		for _, dependency := range strings.Fields(dependencies) {
+			if dependency == modelPackage || strings.HasPrefix(dependency, modelPackage+"/") {
+				t.Fatalf("CanarySting package %s depends on CanaryView model through %s", pkg, dependency)
+			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checked == 0 {
+		t.Fatal("CanarySting runtime guard did not inspect any packages")
+	}
+}
+
+func hasPackageRoot(pkg string, roots []string) bool {
+	for _, root := range roots {
+		if pkg == root || strings.HasPrefix(pkg, root+"/") {
+			return true
+		}
+	}
+	return false
 }

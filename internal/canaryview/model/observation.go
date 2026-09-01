@@ -1,8 +1,11 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -31,25 +34,29 @@ func (r RecordReference) validate() error {
 }
 
 // SyntheticContext distinguishes lab evidence from production records. Its zero
-// value is production context; synthetic records require a scenario ID.
+// value is unclassified and invalid so omission cannot silently become production.
 type SyntheticContext struct {
+	classified bool
 	synthetic  bool
 	scenarioID string
 }
 
-func ProductionContext() SyntheticContext { return SyntheticContext{} }
+func ProductionContext() SyntheticContext { return SyntheticContext{classified: true} }
 
 func NewSyntheticContext(scenarioID string) (SyntheticContext, error) {
 	if err := required("synthetic scenario id", scenarioID); err != nil {
 		return SyntheticContext{}, err
 	}
-	return SyntheticContext{synthetic: true, scenarioID: scenarioID}, nil
+	return SyntheticContext{classified: true, synthetic: true, scenarioID: scenarioID}, nil
 }
 
 func (s SyntheticContext) Synthetic() bool    { return s.synthetic }
 func (s SyntheticContext) ScenarioID() string { return s.scenarioID }
 
 func (s SyntheticContext) validate() error {
+	if !s.classified {
+		return fmt.Errorf("production or synthetic classification is required")
+	}
 	if !s.synthetic {
 		if s.scenarioID != "" {
 			return fmt.Errorf("production context cannot carry a scenario id")
@@ -189,7 +196,15 @@ type RawEventReference struct {
 }
 
 func NewRawEventReference(reference string, availability RawAvailability, hashAlgorithm, hashValue string) (RawEventReference, error) {
-	if err := required("raw event reference", reference); err != nil {
+	const prefix = "rawref:sha256:"
+	if !strings.HasPrefix(reference, prefix) {
+		return RawEventReference{}, fmt.Errorf("raw event reference must be a platform-generated %s digest id", prefix)
+	}
+	referenceDigest := strings.TrimPrefix(reference, prefix)
+	if referenceDigest != strings.ToLower(referenceDigest) {
+		return RawEventReference{}, fmt.Errorf("raw event reference digest must use lowercase hexadecimal")
+	}
+	if err := validateSHA256("raw event reference", referenceDigest); err != nil {
 		return RawEventReference{}, err
 	}
 	if !availability.valid() {
@@ -199,14 +214,22 @@ func NewRawEventReference(reference string, availability RawAvailability, hashAl
 		return RawEventReference{}, fmt.Errorf("raw event hash algorithm and value must be supplied together")
 	}
 	if hashAlgorithm != "" {
-		if err := required("raw event hash algorithm", hashAlgorithm); err != nil {
-			return RawEventReference{}, err
+		if hashAlgorithm != "sha256" {
+			return RawEventReference{}, fmt.Errorf("unsupported raw event hash algorithm %q", hashAlgorithm)
 		}
-		if err := required("raw event hash value", hashValue); err != nil {
+		if err := validateSHA256("raw event sha256 value", hashValue); err != nil {
 			return RawEventReference{}, err
 		}
 	}
 	return RawEventReference{reference: reference, availability: availability, hashAlgorithm: hashAlgorithm, hashValue: hashValue}, nil
+}
+
+func validateSHA256(label, value string) error {
+	digest, err := hex.DecodeString(value)
+	if err != nil || len(digest) != sha256.Size {
+		return fmt.Errorf("%s must be 64 hexadecimal characters", label)
+	}
+	return nil
 }
 
 func (r RawEventReference) Reference() string             { return r.reference }
@@ -224,6 +247,7 @@ func (r RawEventReference) validate() error {
 // source reports remain representable without invented values.
 type ObservationInput struct {
 	Envelope          Envelope
+	Basis             ObservationBasis
 	ObservationType   string
 	Source            SourceIdentity
 	Collector         CollectorIdentity
@@ -235,14 +259,13 @@ type ObservationInput struct {
 	Object            *EntityReference
 	RawEvent          *RawEventReference
 	Evidence          []EvidenceReference
-	MissingFields     []string
-	ParserWarnings    []string
 }
 
 // Observation is an immutable normalized claim about what one source reported.
 // It is not a correlation, inference, recommendation, or action.
 type Observation struct {
 	envelope          Envelope
+	basis             ObservationBasis
 	observationType   string
 	source            SourceIdentity
 	collector         CollectorIdentity
@@ -254,8 +277,6 @@ type Observation struct {
 	object            *EntityReference
 	rawEvent          *RawEventReference
 	evidence          []EvidenceReference
-	missingFields     []string
-	parserWarnings    []string
 }
 
 func NewObservation(in ObservationInput) (Observation, error) {
@@ -264,6 +285,9 @@ func NewObservation(in ObservationInput) (Observation, error) {
 	}
 	if in.Envelope.lifecycle.dataClass != DataClassNormalizedObservation {
 		return Observation{}, fmt.Errorf("observation requires data class %s", DataClassNormalizedObservation)
+	}
+	if !in.Basis.valid() {
+		return Observation{}, fmt.Errorf("observation requires source-report basis")
 	}
 	if err := required("observation type", in.ObservationType); err != nil {
 		return Observation{}, err
@@ -276,6 +300,23 @@ func NewObservation(in ObservationInput) (Observation, error) {
 	}
 	if in.ObservedTimestamp.IsZero() || in.IngestedAt.IsZero() {
 		return Observation{}, fmt.Errorf("observed timestamp and ingest time are required")
+	}
+	observedAt := in.ObservedTimestamp.UTC()
+	ingestedAt := in.IngestedAt.UTC()
+	if ingestedAt.Before(observedAt) {
+		return Observation{}, fmt.Errorf("ingest time cannot precede collector-observed time")
+	}
+	switch in.Envelope.lifecycle.retentionClock {
+	case RetentionFromObserved:
+		if !in.Envelope.lifecycle.retentionStart.Equal(observedAt) {
+			return Observation{}, fmt.Errorf("retention start must equal collector-observed time")
+		}
+	case RetentionFromIngest:
+		if !in.Envelope.lifecycle.retentionStart.Equal(ingestedAt) {
+			return Observation{}, fmt.Errorf("retention start must equal recorded ingest fallback")
+		}
+	default:
+		return Observation{}, fmt.Errorf("unsupported observation retention clock %q", in.Envelope.lifecycle.retentionClock)
 	}
 	control, err := copyOptional(in.Control, func(value ControlIdentity) error { return value.validate() })
 	if err != nil {
@@ -301,17 +342,16 @@ func NewObservation(in ObservationInput) (Observation, error) {
 	}
 	sourceTimestamp := copyTime(in.SourceTimestamp)
 	return Observation{
-		envelope: in.Envelope, observationType: in.ObservationType,
+		envelope: in.Envelope, basis: in.Basis, observationType: in.ObservationType,
 		source: in.Source, collector: in.Collector, control: control,
-		sourceTimestamp: sourceTimestamp, observedTimestamp: in.ObservedTimestamp.UTC(),
-		ingestedAt: in.IngestedAt.UTC(), subject: subject, object: object,
+		sourceTimestamp: sourceTimestamp, observedTimestamp: observedAt,
+		ingestedAt: ingestedAt, subject: subject, object: object,
 		rawEvent: rawEvent, evidence: evidence,
-		missingFields:  append([]string(nil), in.MissingFields...),
-		parserWarnings: append([]string(nil), in.ParserWarnings...),
 	}, nil
 }
 
 func (o Observation) Envelope() Envelope           { return o.envelope }
+func (o Observation) Basis() ObservationBasis      { return o.basis }
 func (o Observation) ObservationType() string      { return o.observationType }
 func (o Observation) Source() SourceIdentity       { return o.source }
 func (o Observation) Collector() CollectorIdentity { return o.collector }
@@ -320,9 +360,6 @@ func (o Observation) IngestedAt() time.Time        { return o.ingestedAt }
 func (o Observation) Evidence() []EvidenceReference {
 	return append([]EvidenceReference(nil), o.evidence...)
 }
-func (o Observation) MissingFields() []string  { return append([]string(nil), o.missingFields...) }
-func (o Observation) ParserWarnings() []string { return append([]string(nil), o.parserWarnings...) }
-
 func (o Observation) SourceTimestamp() (time.Time, bool)  { return valueTime(o.sourceTimestamp) }
 func (o Observation) Control() (ControlIdentity, bool)    { return valueOptional(o.control) }
 func (o Observation) Subject() (EntityReference, bool)    { return valueOptional(o.subject) }
@@ -331,12 +368,11 @@ func (o Observation) RawEvent() (RawEventReference, bool) { return valueOptional
 
 func (o Observation) validate() error {
 	_, err := NewObservation(ObservationInput{
-		Envelope: o.envelope, ObservationType: o.observationType,
+		Envelope: o.envelope, Basis: o.basis, ObservationType: o.observationType,
 		Source: o.source, Collector: o.collector, Control: o.control,
 		SourceTimestamp: o.sourceTimestamp, ObservedTimestamp: o.observedTimestamp,
 		IngestedAt: o.ingestedAt, Subject: o.subject, Object: o.object,
-		RawEvent: o.rawEvent, Evidence: o.evidence, MissingFields: o.missingFields,
-		ParserWarnings: o.parserWarnings,
+		RawEvent: o.rawEvent, Evidence: o.evidence,
 	})
 	return err
 }
