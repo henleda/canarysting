@@ -7,7 +7,7 @@ import (
 
 // CurrentSchemaVersion is the canonical record schema implemented by this
 // package. It is independent of any future protobuf package version.
-const CurrentSchemaVersion uint32 = 1
+const CurrentSchemaVersion uint32 = 2
 
 // DataClass binds a durable record to its reviewed lifecycle policy.
 type DataClass string
@@ -75,6 +75,28 @@ const (
 func (r RetentionProfile) valid() bool {
 	return r == RetentionLean || r == RetentionStandard || r == RetentionRegulated || r == RetentionOverride
 }
+
+// RetentionClock records which trusted CanaryView timestamp started retention.
+// Source/vendor time is never a retention clock.
+type RetentionClock string
+
+const (
+	RetentionFromObserved RetentionClock = "OBSERVED_TIME"
+	RetentionFromIngest   RetentionClock = "INGEST_TIME_FALLBACK"
+)
+
+func (c RetentionClock) valid() bool {
+	return c == RetentionFromObserved || c == RetentionFromIngest
+}
+
+// ObservationBasis makes schema-v2 Observation records source reports only.
+// Correlation, inference, recommendation, and action modes belong to later
+// canonical record types and cannot be encoded as an Observation.
+type ObservationBasis string
+
+const ObservationSourceReport ObservationBasis = "SOURCE_REPORT"
+
+func (b ObservationBasis) valid() bool { return b == ObservationSourceReport }
 
 // LifecycleState distinguishes expiry, hold, deletion, and invalidation. These
 // states are never interchangeable.
