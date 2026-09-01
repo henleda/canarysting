@@ -48,9 +48,9 @@ A syntactically valid SPIFFE URI is not, by itself, `VERIFIED`. “Deterministic
 Every durable canonical record should carry a common envelope, even if a connector retains a richer vendor payload elsewhere. Fields are required where applicable rather than populated with misleading empty values:
 
 - stable record identifier, `schema_version`, and validity/version state;
-- `tenant_id`, `scope_id`, and deployment boundary;
+- `tenant_id`, `scope_id`, deployment boundary, and `residency_cell_id`;
 - `data_class`, `sensitivity`, `retention_profile`, policy/override version, `retention_start`, `expires_at`, lifecycle state, and legal-hold references;
-- `residency` and `encryption_key_ref` (a reference, never key material);
+- residency policy and purpose-scoped `encryption_key_ref` (a reference, never key material);
 - `source_system`, source instance, `source_timestamp`, `observed_timestamp`, and ingest time;
 - collector identity and `collector_version`;
 - assertion mode and producer type (deterministic, correlation, inference, model-generated, operator);
@@ -58,7 +58,7 @@ Every durable canonical record should carry a common envelope, even if a connect
 - evidence references;
 - `raw_event_ref` and `raw_event_hash`, not necessarily embedded raw content;
 - `derivation_lineage` to parent observations/correlations;
-- `model_use_policy`, separately authorized from retention;
+- separate operational-processing, per-tenant model-use, and cross-tenant model-use policy references;
 - `synthetic` and `scenario_id` for generated lab evidence;
 - integrity/audit metadata;
 - labels limited to approved, non-sensitive canonical attributes;
@@ -79,6 +79,18 @@ The M2A.0.2 lifecycle baseline makes retention executable data rather than prose
 - a raw snapshot records its approved trigger, minimum field set, redaction, authorizer, acquisition time, integrity hash, expiry, and lineage. Ordinary snapshots cannot contain secrets, credentials, actual canary values, authorization headers, or unredacted request bodies.
 
 The class-by-class clocks, profile durations, hold eligibility, deletion effects, and snapshot triggers are authoritative in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. Persistence implementations must deterministically test those decisions; a backend default cannot replace them.
+
+### Logical persistence and reconstruction contract
+
+M2A.0.3 assigns each durable canonical record to one tenant and approved residency cell and gives it a purpose-scoped logical key reference. Operational retention/processing and the two model-use grants are independent: retention cannot enable training, per-tenant authorization cannot enable cross-tenant use, and a legal hold cannot change either. Both model-use grants default off.
+
+Normalized observations and append-only relationship assertions/retractions are the durable inputs for graph reconstruction. A graph, trace/search index, summary, feature cache, or other projection records its tenant, residency cell, schema/policy versions, input high-water mark, build time, and integrity digest. Such a projection is not evidence by itself and cannot become the only representation of provenance, lifecycle, or historical state.
+
+Relationship events preserve assertion ID, typed endpoints, validity/observation intervals, assertion mode, confidence, source and derivation lineage, and supersession/retraction/lifecycle state. Compaction must be semantically lossless across those fields. Deletion or expiry removes protected content, appends the lifecycle/retraction decision, and causes affected projections to rebuild or become explicitly invalidated.
+
+Model artifacts use the registry as the authority for purpose, input windows/lineage, grants, evaluation bounds, constraint, deployment, and retirement. Affected input deletion or authorization withdrawal invokes a zero-tolerance default: an artifact without a pre-approved and tested nonzero removal rule is constrained and withdrawn, not silently reused. Synthetic records are rejected by production feature/model paths and live in a separate internal domain and registry namespace.
+
+The authoritative layer matrix, reconstruction tests, tenant/residency/key and backup boundaries, hold roles/cadence, deletion objectives, model gate, and estimation contract are in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. Production storage engines and physical regional/key products remain unselected.
 
 ## Entity model
 

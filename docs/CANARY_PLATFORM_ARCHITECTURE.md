@@ -119,9 +119,9 @@ source-owned telemetry -> normalized evidence -> traces/cases -> relationship hi
                                                       +-> authorized historical features/models
 ```
 
-The graph view is rebuildable and cannot become the only truth. Relationship history and evidence provenance preserve how it was derived. Operational retention permission is separate from model-use authorization. Cross-tenant learning requires explicit opt-in and additional privacy, cohort, residency, purpose, lineage, and deletion controls. Synthetic CanaryAttacker evidence is an isolated, versioned lab corpus and never silently enters production baselines or customer models.
+The graph view is rebuildable and cannot become the only truth. Immutable/versioned observations plus append-only relationship assertions, retractions, validity intervals, provenance, and lifecycle events are authoritative; graph/search/trace projections carry a high-water mark and digest and are reconstructable. Operational retention permission is separate from both per-tenant and cross-tenant model-use authorization, which default off until explicitly granted. Cross-tenant learning additionally requires de-identification, a declared cohort, residency, purpose, lineage, and deletion controls. Synthetic CanaryAttacker evidence is isolated by internal domain, residency/key/registry namespace, and evaluation path and never silently enters production baselines or customer models.
 
-The common lifecycle fields, recommended profiles, logical storage layers, deletion behavior, and architecture gate are defined in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0 reviews that architecture before M2A implements the canonical model.
+Every durable record belongs to one tenant and approved residency cell and carries a purpose-scoped logical key reference. Backups stay in the same boundary unless an explicit migration/multi-region policy is approved; restores replay the deletion ledger before service. Legal-hold roles do not grant evidence access, and Regulated hold creation/release requires separation of duties. The common lifecycle fields, accepted logical truth/rebuild and governance contracts, cost-estimation inputs/outputs, recommended profiles, deletion objectives, and remaining backend decisions are defined in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0 reviews that architecture before M2A implements the canonical model.
 
 ## CanaryView and CanarySting feedback loop
 
@@ -201,29 +201,29 @@ Working runtime components are refactored only when a future implementation task
 
 ## Open architecture questions
 
-These questions are intentionally recorded rather than guessed. They do not block this architecture bootstrap. M2A.0.2 has accepted the Lean/Standard/Regulated defaults, per-class lifecycle clocks, minimum-snapshot trigger/content rules, reference availability states, hold semantics, and deletion/invalidation outcomes in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; the questions below retain only implementation-, source-, or governance-specific choices that remain open.
+These questions are intentionally recorded rather than guessed. They do not block this architecture bootstrap. M2A.0.2 accepted lifecycle policy. M2A.0.3 accepted the logical truth/rebuild model, tenant/residency/purpose-key and same-cell backup boundaries, hold governance, zero-tolerance default model rebuild gate, synthetic isolation, supported override categories, deletion/restore objectives, and estimation contract in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. The questions below retain only implementation-, source-, or product-specific choices that remain open.
 
 1. Where should the canonical CanaryView model live in the Go package hierarchy?
 2. How much of `internal/intelligence` belongs to CanaryView versus remaining a CanarySting evidence source?
 3. Should `internal/engine/observebaseline` topology storage become the first CanaryView graph backend or feed a separate graph representation?
 4. Which production storage engines should back normalized observations, relationship history, security cases, audit records, and model features?
-5. What volume, latency, and cost targets apply to each data class and collector?
-6. Which concrete advanced-override catalog and Regulated periods should the product support beyond the accepted defaults?
+5. What measured volume, latency, rebuild-time, and unit-cost targets apply to each data class and collector once M2B exposes the accepted counters and size distributions?
+6. Which organization/regulation-specific maxima and concrete Regulated periods should be supported within the accepted override catalog?
 7. How are correlation windows selected, extended, and closed?
 8. What is the calibrated identity-resolution confidence model?
 9. How are NAT and proxy translations represented without losing either tuple?
 10. Should OpenTelemetry trace semantics be reused directly, extended, or mapped only at ingestion?
-11. What graph persistence, reconstruction, compaction, and historical-query semantics support provenance, scope isolation, expiry, and bounded queries?
+11. Which engine and physical checkpoint/compaction strategy best implements the accepted relationship-history reconstruction contract and bounded historical queries?
 12. Which APIs are shared by human and agent consumers, and where do view-specific projections begin?
 13. What is the final `CanaryPlacementRecommendation`/`CanaryOpportunity` wire contract?
 14. How does CanaryView deliver an approved recommendation to CanarySting without circular dependencies?
 15. What is the long-term authorization model for vendor actions and delegated agents?
 16. Which source/category-specific field manifests implement the accepted minimum-snapshot triggers without copying excess payload?
-17. What backend deletion/retry objectives and model-rebuild thresholds implement the accepted lineage propagation outcomes?
-18. Which data-residency and encryption-key boundaries apply per tenant?
-19. Which RBAC roles, separation-of-duties rules, and review cadence implement legal-hold creation/review/release/audit?
-20. How are operational retention permission and model-use permission represented and enforced separately?
-21. How does historical evidence age or receive lower weighting in current behavior models?
+17. Which backend mechanisms prove the accepted online deletion, backup aging, restore-ledger replay, key-destruction, and zero-tolerance default model-rebuild objectives?
+18. Which physical regions, disaster-recovery pairs, single-tenancy options, rotation periods, and customer-managed-key products implement the accepted logical boundaries?
+19. Which identity-provider groups and approval integrations map to the accepted lifecycle administrator, hold creator/reviewer/releaser, protected-reader, and auditor roles?
+20. Which policy and registry APIs implement the accepted separate operational, per-tenant model-use, and cross-tenant model-use grants?
+21. Which feature-specific windows or deterministic decay functions should be approved beyond the accepted requirement that every feature declare and test one?
 22. How does each connector detect moved or integrity-mismatched source references and distinguish those states from expiry, deletion, or access denial?
 
 Connector SDK, execution-location, credentials, schema evolution, certification, licensing, regional deployment, telemetry coverage, and multi-adapter conflict/rollback questions are recorded without duplication in `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`.
