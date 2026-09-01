@@ -1,6 +1,6 @@
 # CanaryPlatform Architecture
 
-Status: approved architecture baseline (M2A.0.4, 2026-09-01). This document defines product boundaries and dependency direction. It does not rename packages, change runtime behavior, or claim that planned capabilities exist.
+Status: approved architecture baseline (M2A.0.4, 2026-09-01) with the M2A.1 canonical-model boundary recorded. This document defines product boundaries and dependency direction. It does not rename packages, change runtime behavior, or claim that planned capabilities exist.
 
 ## Product definition
 
@@ -159,7 +159,7 @@ This mapping is descriptive and avoids duplicate abstractions:
 
 | Existing implementation | Natural future role | Boundary note |
 |---|---|---|
-| `internal/engine/observebaseline` topology store | Initial OBSERVED topology source or backend candidate. | Rule 10 forbids a second observation truth; whether it is the backend or feeds a separate graph remains an open decision. |
+| `internal/engine/observebaseline` topology store | Sole local source for current socket-cookie-attributed OBSERVED topology; it feeds canonical observations/relationship history through a one-way adapter. | Rule 10 forbids a second capture or attribution truth. Its bounded, expiring current-state store is not the CanaryView graph/history backend. |
 | `internal/intelligence` scoped events, audit, profiles, L7 evidence, and network egress filter | CanarySting evidence producers and reusable provenance/audit mechanisms. | The package is not wholesale reclassified as CanaryView; much of it is touch-dependent or Sting-specific, and rule 9 remains absolute. |
 | `internal/identity` | Workload identity and confidence foundation. | Syntactic identifiers must not be confused with cryptographically verified identity. |
 | `internal/dashboard` and `dashboard/app` | Existing read models, flow drilldowns, topology, evidence, and console shell. | These are useful UI assets but not yet the CanaryPlatform incident/recommendation/action experience. |
@@ -213,13 +213,62 @@ The 2026-09-01 review approved the platform, canonical-model, operator-experienc
 
 The open questions below are therefore implementation decisions, not gaps that permit weakening the approved contracts. M2A.1 resolves the package/reuse/API boundary it names before code is introduced; later tasks resolve backend-, source-, identity-, correlation-, and authorization-specific choices at their declared gates.
 
-## Open architecture questions
+## M2A.1 canonical model boundary and reuse decision
 
-These questions are intentionally recorded rather than guessed. They do not block this architecture bootstrap. M2A.0.2 accepted lifecycle policy. M2A.0.3 accepted the logical truth/rebuild model, tenant/residency/purpose-key and same-cell backup boundaries, hold governance, zero-tolerance default model rebuild gate, synthetic isolation, supported override categories, deletion/restore objectives, and estimation contract in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. The questions below retain only implementation-, source-, or product-specific choices that remain open.
+The 2026-09-01 M2A.1 review accepts `internal/canaryview/model` as the future Go source of truth for the minimum vendor-neutral CanaryView domain model. The package does not exist yet; M2A.2 creates only the approved minimum contracts. The model package will import only the Go standard library. It must not import CanarySting engine, contract, intelligence, adapter, dashboard, Kubernetes/vendor SDK, transport, or persistence packages.
 
-1. Where should the canonical CanaryView model live in the Go package hierarchy?
-2. How much of `internal/intelligence` belongs to CanaryView versus remaining a CanarySting evidence source?
-3. Should `internal/engine/observebaseline` topology storage become the first CanaryView graph backend or feed a separate graph representation?
+`internal/contract` remains the narrow CanarySting `FlowIdentity` plus `SignalEvent` in / `Verdict` out runtime seam. It is not renamed, moved, or expanded into the platform model. Likewise, `canarysting.v1` remains the existing Sting wire contract. A future external CanaryView transport begins in a separate versioned namespace, `api/proto/canaryview/v1` with protobuf package `canaryview.v1` and generated package `api/gen/canaryview/v1`. The Go domain model is the semantic source of truth; explicit conversion code and round-trip/drift tests keep the transport contract aligned. Additive compatible fields may remain in v1. A breaking semantic or knowledge-state change requires v2 and explicit translators. Every durable record also carries its own `schema_version`; correction appends or supersedes a record rather than rewriting the original source report.
+
+Dependency direction is one way:
+
+```text
+source/runtime packages
+  (connectors, observebaseline, identity, Sting intelligence/audit)
+                    |
+                    v
+        source-specific integration adapters
+                    |
+                    v
+        internal/canaryview/model  (stdlib only)
+                    |
+                    v
+      CanaryView application/query services
+          |                         |
+          v                         v
+ human view projections      structured agent/API projections
+
+approved CanaryOpportunity + immutable ActionPlan version
+                    |
+                    v
+ CanaryView-to-Sting integration adapter -> existing Sting control plane
+```
+
+Neither CanarySting runtime packages nor `internal/contract` import CanaryView. Translation and approved-plan delivery live in outer integration/composition packages that may depend on both sides. CanaryView application/query services expose the same domain objects, evidence, confidence, authorization state, and audit identity to human and agent consumers. UI-shaped and transport-shaped projections begin outside `model`; they may format or omit fields for progressive disclosure but cannot create a second interpretation, evidence path, or authority path.
+
+### Accepted and rejected reuse
+
+| Existing area | Accepted reuse | Rejected ownership or coupling |
+|---|---|---|
+| `internal/engine/observebaseline` | Remains the sole local source for current, socket-cookie-attributed `OBSERVED` topology under rule 10. A one-way adapter may emit canonical observations and relationship assertions from its snapshots or future deltas without duplicating capture or attribution. | It is not the CanaryView graph/history backend: its 4,096-node/edge caps, 30-day TTL, local-rich addresses, and current-state folding cannot provide immutable provenance or append-only lifecycle history. A downstream canonical history is not a second attribution source. |
+| `internal/identity` | Reuse mesh-first resolution, proof/source vocabulary, and explicitly lower-confidence fallback semantics through an adapter. | Current `WorkloadID`, naming, and `scopemap` types are not canonical cross-vendor identity/entity contracts. Syntactic SPIFFE parsing never becomes CanaryView `VERIFIED`; live trust evidence is required. Sting scope mapping does not become tenant authority. |
+| `internal/intelligence` events/stores | Treat canary interaction, L7, profile, cost, reconnaissance, feed, and related outputs as Sting-owned evidence producers that can be normalized through adapters. | Do not wholesale move or relabel them as CanaryView. Touch-dependent events are not passive observations, their stores are not the canonical evidence repository, and Sting learned state remains scope-local. |
+| `internal/intelligence/audit` | Reuse its hash-chain, high-water, verification, and tamper-evidence design patterns where the later platform audit implementation benefits. | Do not reuse `AuditRecord` as the canonical audit schema or its current store as lifecycle-complete platform audit storage. It carries local-rich Sting decision fields and different retention/access semantics. |
+| `internal/intelligence/network` | Preserve it as the single default-deny egress chokepoint for Sting-derived cross-deployment patterns. | It is not general CanaryView connector transport and must not be bypassed by a model or adapter. |
+| `internal/intelligence/transport` and `siem` | Reuse bounded-delivery and outward-projection lessons. | Neither becomes the Site Gateway spool, connector SDK, canonical API, or canonical store. |
+| `internal/dashboard` and `dashboard/app` | Reuse console shell, drilldown, credibility, topology, and presentation patterns. | Existing JSON/view structs remain projections; they do not become canonical records, and the dashboard must not continue direct source-package coupling for new CanaryView workflows. |
+| `api/proto/contract.proto`, `api/convert`, `api/enginegrpc` | Reuse explicit conversion and round-trip testing patterns. | Do not add CanaryView concepts to `canarysting.v1` or make transport-generated types the domain source of truth. |
+
+The lifecycle envelope's value types belong in `internal/canaryview/model` and are composed into every durable canonical record. They express tenant/scope, class/sensitivity, retention clock and expiry, lifecycle/hold state, residency cell, purpose-key reference, lineage, model-use grants, and synthetic state. Policy evaluation, authorization, persistence, expiry work, deletion retries, projection rebuilds, and backend-specific enforcement belong to later application/repository services. A source adapter cannot claim lifecycle compliance merely because its source store has a TTL; canonical persistence is refused until the reviewed envelope is complete. This decision selects no storage engine.
+
+`CanaryOpportunity` is the canonical domain and wire name. `CanaryPlacementRecommendation` is an operator-facing `Recommendation` projection that references one immutable, versioned `CanaryOpportunity`; it is not a second placement object. After preview and human approval, an outer CanaryView-to-Sting integration adapter delivers the immutable opportunity and approved `ActionPlan` version to the existing CanarySting control plane. CanarySting alone selects and materializes the safe asset form and reports placement/outcome evidence back through the intake adapter. This preserves one-way dependencies, separate authority, and the rule that initial placement is never automatic.
+
+## Architecture decision and open-question ledger
+
+This numbered ledger preserves both M2A.1 decisions and the choices still intentionally open; later work must not reopen a resolved boundary incidentally. M2A.0.2 accepted lifecycle policy. M2A.0.3 accepted the logical truth/rebuild model, tenant/residency/purpose-key and same-cell backup boundaries, hold governance, zero-tolerance default model rebuild gate, synthetic isolation, supported override categories, deletion/restore objectives, and estimation contract in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. Unresolved entries are implementation-, source-, or product-specific choices for their declared gates.
+
+1. **Resolved by M2A.1:** the canonical Go model will live at `internal/canaryview/model` as a standard-library-only leaf; `internal/contract` remains the narrow Sting runtime seam.
+2. **Resolved by M2A.1:** `internal/intelligence` remains Sting-owned; its outputs may feed CanaryView through one-way adapters and selected integrity/delivery patterns may be reused without reusing its source-specific schemas or stores.
+3. **Resolved by M2A.1:** `observebaseline` remains the sole local OBSERVED attribution source and feeds canonical relationship history through an adapter; its bounded current-state topology is not the CanaryView graph/history backend.
 4. Which production storage engines should back normalized observations, relationship history, security cases, audit records, and model features?
 5. What measured volume, latency, rebuild-time, and unit-cost targets apply to each data class and collector once M2B exposes the accepted counters and size distributions?
 6. Which organization/regulation-specific maxima and concrete Regulated periods should be supported within the accepted override catalog?
@@ -228,9 +277,9 @@ These questions are intentionally recorded rather than guessed. They do not bloc
 9. How are NAT and proxy translations represented without losing either tuple?
 10. Should OpenTelemetry trace semantics be reused directly, extended, or mapped only at ingestion?
 11. Which engine and physical checkpoint/compaction strategy best implements the accepted relationship-history reconstruction contract and bounded historical queries?
-12. Which APIs are shared by human and agent consumers, and where do view-specific projections begin?
-13. What is the final `CanaryPlacementRecommendation`/`CanaryOpportunity` wire contract?
-14. How does CanaryView deliver an approved recommendation to CanarySting without circular dependencies?
+12. **Resolved by M2A.1:** human and agent consumers share CanaryView application/query services and canonical evidence, confidence, authorization, and audit semantics; UI and transport projections begin outside `internal/canaryview/model` and confer no extra authority.
+13. **Resolved by M2A.1:** `CanaryOpportunity` is the canonical domain/wire object; `CanaryPlacementRecommendation` is a `Recommendation` projection that references it, not a second placement contract.
+14. **Resolved by M2A.1:** an outer integration/composition adapter delivers an approved immutable opportunity and exact `ActionPlan` version to CanarySting; neither core package imports the other and `internal/contract` is not broadened.
 15. What is the long-term authorization model for vendor actions and delegated agents?
 16. Which source/category-specific field manifests implement the accepted minimum-snapshot triggers without copying excess payload?
 17. Which backend mechanisms prove the accepted online deletion, backup aging, restore-ledger replay, key-destruction, and zero-tolerance default model-rebuild objectives?
