@@ -45,7 +45,7 @@ A targeted replay proves a repair. Only the final risk-appropriate Level 2 gate 
 | `make check-adversarial` | Full bounded local adversarial scenario manifest. | No |
 | `make check-last-failed` | Compatible failed/blocked IDs, prerequisites, and conservative affected expansion after working-tree changes. | No |
 | `make check-integration-full` / `make check-merge-local` | Level 3 complete local race/integration/replay/frontend/eBPF/harness graph. | Integration/nightly/release evidence |
-| `make check-campaign` | Level 4 deterministic prerequisites. Scheduled CI additionally requires the bounded live campaign, which currently fails closed pending M2C. | Campaign evidence only when all live jobs pass |
+| `make check-campaign` | Level 4 deterministic prerequisites. Scheduled CI additionally requires the bounded live campaign, which currently fails closed pending the re-baselined M2D laboratory. | Campaign evidence only when all live jobs pass |
 | `make check-dgx` | Explicit read-only DGX safety preflight. It does not pretend to execute a task-specific kernel/Kubernetes/attacker proof. | No |
 | `make check-merge` | Compatibility interface for explicit full tier qualification; not the ordinary PR command. | Integration/release evidence for the declared tier only |
 
@@ -125,7 +125,7 @@ This mapping is a speed feature, not a coverage exemption. Shared-model and unce
 
 Each scenario declares its ID/version, title/objective, target scope, binaries/services/privilege, allowed hosts/ports, fixtures, deterministic seed, setup/actions, expected observations, expected CanaryView evidence, expected CanarySting behavior, prohibited outcomes, timeout, cleanup, after-state assertions, isolation key, replay, `AttackerIntent`, `AttackerAction`, ground truth, validation forms, affected paths, live-smoke profile, and exact test names that must report `PASS` in the Go JSON event stream. Port `0` means an OS-assigned ephemeral port and is valid only with a loopback host declaration. Per-run JSON records declarations separately from parsed observed/missing test evidence; it does not manufacture identity, correlation, or CanaryView evidence from a zero exit code. Cleanup status and process-group after-state are recorded independently.
 
-The present local scenarios are deterministic legacy fixture proofs, not a claim that the roadmap CanaryAttacker/Qwen correlation laboratory exists. They use only Go test fixtures and loopback. The bounded Qwen tool policy, live CanaryView evidence correlation, and DGX scenarios remain M2C/M2D work and cannot be inferred from this gate.
+The present local scenarios are deterministic legacy fixture proofs, not a claim that the roadmap CanaryAttacker/Qwen correlation laboratory exists. They use only Go test fixtures and loopback. The bounded Qwen tool policy, live CanaryView evidence correlation, and DGX scenarios remain in the re-baselined M2D laboratory (decomposed by the preserved detailed M2C/M2D rows) and cannot be inferred from this gate.
 
 ## Previous gate inventory and baseline
 
@@ -151,4 +151,4 @@ The first complete new gate used an intentionally isolated cold Go cache and pas
 
 PR CI first records explainable LOW/STANDARD/HIGH/CRITICAL risk, then runs one shared Level 2 local graph. Frontend and eBPF prerequisites are installed only when selected. Privileged and DGX jobs wait for that graph and run only when required; PR concurrency cancels superseded commits, and the DGX job has its own per-PR cancellation group. Feature pushes do not duplicate the PR workflow. Failed jobs upload `.test-artifacts/gates/`; the compact risk decision is always retained.
 
-Pushes to `main`, nightly schedules, and integration dispatches run Level 3 once. Weekly and campaign dispatches proceed to Level 4 only after Level 3 succeeds. The live Qwen step is scheduled but deliberately fails closed until the M2C bounded tool/runtime contract exists. The privileged `ebpf-privileged` check retains its structured zero-skip PASS floor when selected.
+Pushes to `main`, nightly schedules, and integration dispatches run Level 3 once. Weekly and campaign dispatches proceed to Level 4 only after Level 3 succeeds. The live Qwen step is scheduled but deliberately fails closed until the re-baselined M2D bounded tool/runtime contract exists. The privileged `ebpf-privileged` check retains its structured zero-skip PASS floor when selected.

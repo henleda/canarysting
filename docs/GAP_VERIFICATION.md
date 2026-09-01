@@ -1,5 +1,7 @@
 # CanarySting — GAP_REPORT Verification (Milestone 0, code-grounded)
 
+**2026-08-31 status note:** this remains the code-grounded M0 record and its implementation evidence is preserved. References to Kubernetes-only scope describe the historical pivot it verified. The View-first product re-baseline changes future sequence and deployment posture, not these code facts or completed proofs.
+
 **Status of this document:** verification + planning only. No feature code was written. No
 existing file was modified. This is the code-grounded delta the GAP_REPORT itself asked for
 ("the agent that can see the code should still run a quick verification pass").

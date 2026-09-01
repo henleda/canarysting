@@ -6,6 +6,8 @@ Status: product-experience contract for architecture review. It defines workflow
 
 CanaryPlatform is architecturally modular and experientially unified. CanaryView and CanarySting appear as capabilities in one console, preserve investigation context, and use the same evidence, confidence, recommendation, approval, action, and rollback contracts.
 
+CanaryView is the lead experience and begins with read-only value. An operator can connect existing security systems, inspect a cross-control trace, understand impact, and receive an evidence-grounded next step without deploying CanarySting or new per-workload software. The console progressively discloses whether a capability uses SaaS only, a Site Gateway, a managed canary asset, or a local response runtime.
+
 Connector category, capability, health, and authority semantics come from `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`; the interface displays those contracts rather than inferring support from successful authentication.
 
 The primary user is a traditional security or network operator. Core workflows assume no software-development, Kubernetes, eBPF, distributed-tracing, query-language, schema, or vendor-API expertise. The product speaks first in incidents, applications, identities, flows, risk, policies, canaries, recommendations, actions, approvals, and rollback.
@@ -30,7 +32,7 @@ Every significant finding answers, in one workspace:
 | Auditor/risk owner | Determine why a conclusion/action occurred and who approved it. | Durable provenance, confidence, approvals, execution evidence, and rollback history. |
 | Data/privacy administrator | Set retention, residency, legal-hold, and model-use boundaries and understand cost. | Guided profiles, explicit consequences, separate permissions, audit, and lifecycle visibility without policy code. |
 
-Agents are non-human consumers, not a privileged persona. They use the same contracts and authorization gates.
+AI agents are non-human consumers, not a privileged persona. They use the same contracts and authorization gates. Managed canary assets, Site Gateways, endpoint products, and local response runtimes are not called agents.
 
 ## Operator jobs
 
@@ -45,6 +47,7 @@ Agents are non-human consumers, not a privileged persona. They use the same cont
 - Inspect raw evidence without losing case context.
 - Onboard a connector and understand coverage, permissions, freshness, and gaps.
 - Select a retention profile, inspect expiry/holds/residency/cost, and authorize model use separately from storage.
+- Ask CanaryView to explain a trace or case, identify missing/conflicting evidence, assess impact, and recommend a next step without losing the visual workflow or evidence chain.
 
 ## Unified console information architecture
 
@@ -211,6 +214,18 @@ The interface visibly distinguishes:
 - completed action.
 
 AI-generated text summarizes but never replaces the deterministic evidence, confidence, correlation method, or authorization record. Operators can use every core workflow without prompts or prompt engineering. Agent suggestions appear under the same recommendation contract and cannot execute through hidden authority.
+
+The initial agentic-operation catalog is read-only and recommendation-oriented: explain trace/path, summarize case, identify missing/conflicting evidence, assess impact, find dark reachability/canary opportunities, recommend a next step, generate an action preview, and explain expected impact/rollback. Each result shows its evidence sources, provenance, confidence, deterministic facts, model interpretation, operator decision point, and execution authority. Write-capable operations follow only after preview, approval, validation, and rollback contracts are proven.
+
+## Deployment profile and local-footprint experience
+
+Integrations and setup present the four profiles defined in `docs/CANARYPLATFORM_DEPLOYMENT_PROFILES.md`. Profile 1 is the default. Before advancing to a higher profile, the console states why direct SaaS/existing integrations are insufficient, required privileges, deployment unit, upgrade owner, failure mode, removal path, support burden, and whether the component is optional.
+
+Canary placement starts with low-footprint managed assets. The interface calls them honeytokens, credentials, routes, API endpoints, data objects, synthetic identities, external decoys, or Kubernetes/service assets as applicable—never agents. Kubernetes implementation details are shown only for a Kubernetes deployment profile.
+
+## SIEM workflow
+
+The SIEM remains the broad event, alert, hunting, compliance, and enterprise incident record. CanaryView consumes authorized SIEM evidence and historical search results, and publishes enriched cases, traces, evidence references, impact assessments, canary touches, recommendations, approved plans, execution, and rollback outcomes. Operators should recognize the SIEM handoff without being forced to leave CanaryView to understand the workload security journey.
 
 ## Connector onboarding and Integrations workspace
 

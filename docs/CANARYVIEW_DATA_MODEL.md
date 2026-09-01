@@ -18,6 +18,8 @@ The model is optimized for explainability:
 - actions require authorization and retain execution and rollback evidence;
 - every record is scope-isolated and bounded by retention/resource policy.
 
+The model is authoritative across all four deployment profiles. Connector execution location, Site Gateway presence, managed-asset form, Kubernetes runtime, or response mechanism must not change the meaning of canonical evidence. Every vendor contributes an evidence fragment, never universal truth.
+
 ## Knowledge-state distinctions
 
 These states must never collapse into a single “event” or “truth” flag:
@@ -29,6 +31,8 @@ These states must never collapse into a single “event” or “truth” flag:
 | Inference | A conclusion derived from observations/correlations under stated logic or a model. | The request likely crossed a trust boundary. |
 | Recommendation | Proposed operator outcome with evidence, risk, approval, and rollback expectations. | Place a harmless credential canary on a dark path. |
 | Action | Approved or executed mutation by a named control plane. | CanarySting placed canary C after operator approval. |
+
+The lifecycle vocabulary also keeps `observed`, `declared`, `correlated`, `inferred`, `model-generated`, `recommended`, `approved`, `executed`, and `verified` distinct. Model-generated language may summarize or interpret evidence; it cannot promote an inference to observation, a recommendation to approval, or a requested action to a verified outcome.
 
 Every assertion also carries an assertion mode:
 
@@ -70,7 +74,7 @@ Every entity has a stable canonical ID, an operator-facing display name when kno
 
 - **Identity** — a resolved principal with one or more identifiers and confidence-bearing proofs.
 - **Human** — a person acting through a system or credential.
-- **Agent** — an automated software or AI principal; it has no implicit authority.
+- **AI agent** — a model-driven or automated non-human principal; it has no implicit authority. The term does not describe a managed canary asset, Site Gateway, endpoint collector, or local response runtime.
 - **Workload** — a deployable/runtime workload identity.
 - **Process** — a host process with executable/runtime evidence.
 
@@ -124,6 +128,7 @@ Every entity has a stable canonical ID, an operator-facing display name when kno
 - **ActionPlan** — immutable, previewed vendor-native mutation proposal with validation and rollback, optionally derived from a `SecurityIntent`.
 - **ActionExecution** — approved execution, result, validation, and rollback history.
 - **CanaryOpportunity** — evidence-backed candidate for human-approved CanarySting placement.
+- **CanaryPlacementRecommendation** — operator-facing recommendation form derived from a `CanaryOpportunity`; naming may converge during wire-contract review, but neither form is a placement or action.
 - **DataClass** — classification that binds sensitivity and lifecycle requirements to an object.
 - **RetentionProfile** — named Lean, Standard, Regulated, or approved override policy for expiration by class.
 - **DataLifecyclePolicy** — expiration, deletion, invalidation, hold, residency, encryption, and storage-impact behavior.
@@ -420,6 +425,12 @@ These are declared lab ground truth about harness intent/execution—not trusted
 The same canonical objects drive the graphical console and structured machine access. Human projections emphasize application, service, identity, environment, asset, and business scope. Technical identifiers remain one disclosure level below. Agent APIs expose structured evidence and confidence, not an alternate unlogged raw path or extra authority.
 
 Initial conceptual read operations are `query_graph`, `explain_path`, `get_trace`, `get_evidence`, `get_identity`, `get_policy_decisions`, `find_dark_reachability`, `find_attack_path`, `find_canary_opportunities`, and `recommend_canary_placement`. Action simulation and approved execution are later phases.
+
+## Evidence-grounded agentic operations
+
+Agentic operations consume normalized evidence, provenance, confidence, identity, traces, policy decisions, graph relationships, historical cases, and action outcomes. Initial read-only/recommendation operations are `explain_trace`, `explain_path`, `summarize_case`, `identify_missing_evidence`, `identify_conflicting_evidence`, `assess_impact`, `find_dark_reachability`, `find_canary_opportunities`, `recommend_next_step`, `generate_action_preview`, `explain_expected_impact`, and `explain_rollback`.
+
+Every conclusion links to its evidence. Every recommendation includes reason, confidence, expected result, affected scope, executing control plane, approval requirement, validation plan, and rollback plan. The operation records deterministic facts, model-generated interpretation, operator decision point, execution authority, validation, and rollback separately. Core workflows work without prompts; natural language supplements the visual console. Later `simulate_action`, `request_approval`, `execute_approved_action`, `validate_action`, and `propose_rollback` operations may exist only through the same reviewed contracts and authority as human users.
 
 ## Persistence, retention, and privacy requirements
 

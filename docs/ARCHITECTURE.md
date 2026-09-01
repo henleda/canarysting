@@ -5,6 +5,8 @@
 **Document:** Architecture and product definition
 **Status:** Working draft
 
+**Scope:** This document defines the CanarySting subsystem inside CanaryPlatform. CanaryView is the lead product and default connector-first adoption path. CanarySting remains optional and strategic; this subsystem specification does not imply that CanaryView, every managed canary asset, or every customer requires a proxy, Kubernetes, eBPF, a DaemonSet, an operator, or per-workload software. See `docs/CANARYPLATFORM_PRODUCT_STRATEGY.md` and `docs/CANARYPLATFORM_DEPLOYMENT_PROFILES.md`.
+
 ---
 
 ## 1. What CanarySting is
@@ -18,6 +20,8 @@ The product has two named components.
 **Sting** is the response. It takes the verdict produced from canary interaction and acts. Sting spans containment (blocking, rate-limiting, jailing) and multi-dimensional attrition: imposing cost across velocity, information quality, finite capacity, exploit inventory, and operational exposure. Sting is where CanarySting stops being a detector and becomes a control that imposes cost on the attacker.
 
 The core thesis: detection alone is a commodity, and containment alone is defensive. The differentiated value is the ability to impose asymmetric cost on automated attackers across multiple dimensions — their speed, the quality of their intelligence, their finite compute capacity, their exploit inventory, and their operational exposure. The cost lands whether the attacker runs metered API inference, self-hosted open-weight models, or stolen compute, because it attacks a velocity-dependent adversary's scarce resources, not just a metered bill.
+
+Within CanaryPlatform, adoption begins with the least intrusive useful managed asset: honeytokens and inert credentials, decoy routes/API endpoints, data objects, synthetic identities, or external decoy services. Kubernetes services, proxy-integrated routes, workload-local placement, and the local response runtime are progressive options. CanaryView recommends placements from evidence; an operator approves them; CanarySting selects the safe materialization form and reports lifecycle and outcome evidence.
 
 ---
 

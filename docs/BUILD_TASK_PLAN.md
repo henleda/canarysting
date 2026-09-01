@@ -1,6 +1,8 @@
 # CanarySting — Build Task Plan
 ### Sequenced milestones for the Kubernetes-native pivot. Feed to Claude Code.
 
+**2026-08-31 status note.** This is a preserved historical decomposition for the Kubernetes CanarySting reference profile. It is not the active product sequence and must not be used to replay completed work. `docs/DEVELOPMENT_PLAN.md` now governs View-first execution; `docs/CANARYPLATFORM_PRODUCT_STRATEGY.md` governs commercial/default deployment posture. The technical constraints remain applicable when Kubernetes Profiles 3/4 are selected.
+
 **How to use this plan.** Read the companion Architecture Spec first, it is the target state. This plan sequences the work to get there. The first milestone is reconciliation: you (Claude Code) can see the actual repo and the human and the spec author cannot, so your first job is to ground this plan in the real code before building anything. Do not start Milestone 1 until Milestone 0 is done and its gap report is reviewed.
 
 **Standing rules for every task.**
@@ -8,7 +10,7 @@
 - Honor the load-bearing decisions in the spec (per-node DaemonSet not sidecar, socket-cookie host-local, identity as spine, canary-touch-only trigger, per-scope isolation, observe-before-enforce). If a task seems to require violating one, stop and flag it.
 - Two invariants are non-negotiable and must have tests: (a) baseline deviation alone never produces a Tier 1+ action, (b) no cross-scope state bleed and scope resolution fails closed.
 - Mark new code and docs as prototype, productized, or roadmap. Do not imply maturity that does not exist.
-- Kubernetes-only is the build target. Do not invest in generic non-K8s paths this phase, but keep the proxy contract abstract.
+- For this preserved reference profile, Kubernetes-specific work keeps the proxy contract abstract. Do not interpret this historical line as the CanaryPlatform product boundary or as authorization to pull Kubernetes work ahead of the active development plan.
 
 ---
 

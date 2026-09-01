@@ -4,13 +4,17 @@ Status: architecture baseline for review. This document defines product boundari
 
 ## Product definition
 
-CanaryPlatform is one security operations product with three architectural systems:
+CanaryPlatform is one security operations product family. CanaryView leads the product and default adoption path; local capabilities are progressive and optional. Its major systems are:
 
-- **CanaryView** is the vendor-neutral security intelligence plane. It normalizes and correlates observations from existing security and telemetry systems, explains conclusions, models reachability, and prepares evidence-backed recommendations.
-- **CanarySting** is the deception, high-confidence detection, containment, and bounded-response system already implemented in this repository. Its eleven architectural rules and all safety invariants remain unchanged.
-- **CanaryAttacker** is the bounded synthetic-adversary and validation harness. It produces declared intent and executed-action ground truth so CanaryView correlation can be measured rather than merely demonstrated.
+- **CanaryView Core** is the central SaaS, vendor-neutral security intelligence plane. It registers connectors; ingests and normalizes evidence; resolves identity and translations; constructs security traces and the intelligence graph; exposes provenance and confidence; produces `SecurityCase`, `Explanation`, `ImpactAssessment`, `Recommendation`, and `ActionPlan`; operates the console and evidence-grounded agentic operations; and governs retention, connector health, and telemetry gaps.
+- **Canary Site Gateway** is an optional single local component per approved site, cluster, cloud account, private network, or trust zone. It supplies outbound connectivity, private-source access, bounded buffering, preprocessing, policy/configuration cache, controlled action delivery, health reporting, and residency enforcement. It is not a per-workload agent.
+- **CanarySting Managed Assets** are optional programmable canary assets and active-sensing capabilities. Lower-footprint honeytokens, credentials, routes, API endpoints, data objects, synthetic identities, and external decoys precede broader runtime placement.
+- **CanarySting Local Response** is optional and separately authorized. It retains the implemented deception, high-confidence detection, precise containment, and bounded-response system and all eleven architectural rules.
+- **CanaryAttacker** is the internal bounded synthetic-adversary and validation harness. It produces declared intent and executed-action ground truth so CanaryView correlation can be measured rather than merely demonstrated.
 
-The three systems are modular in code and responsibility but unified in the operator experience. Operators use one CanaryPlatform console; they should not have to reconstruct an incident by moving among vendor portals or by understanding socket cookies, BPF maps, CRDs, YAML, or raw event schemas.
+The systems are modular in code and responsibility but unified in the operator experience. Operators use one CanaryPlatform console; they should not have to reconstruct an incident by moving among vendor portals or by understanding socket cookies, BPF maps, CRDs, YAML, or raw event schemas.
+
+The four progressive commercial deployment profiles are defined in `docs/CANARYPLATFORM_DEPLOYMENT_PROFILES.md`. Profile 1 requires no new customer-side CanaryPlatform data-plane software. A higher profile is chosen only when its additional value justifies its footprint and authority.
 
 `AGENTS.md` remains authoritative for coding and safety invariants. `docs/ARCHITECTURE.md` remains the detailed CanarySting subsystem specification. This document adds the broader product boundary without weakening either.
 
@@ -21,13 +25,15 @@ The category contracts, collector/capability/action separation, connector operat
 | System | Owns | Does not own |
 |---|---|---|
 | CanaryView | Canonical intelligence concepts; normalized observations; evidence and provenance; identity and security-trace correlation; explicit confidence and disagreement; reachability and attack-path analysis; explanations; impact assessments; recommendations; action previews; lifecycle-governed intelligence storage; connector capability/health/coverage; telemetry-gap detection; human and agent read interfaces. | Vendor configuration, native vendor control planes, unnecessary duplication of raw telemetry, CanarySting scoring/tiering, automatic enforcement, or arbitrary mutation of source systems. |
-| CanarySting | Canary generation and placement; canary-touch signals; proxy-neutral scoring; tiered verdicts; precise eBPF containment; bounded attrition; kill switch; scoped CanarySting evidence and audit. | General cross-vendor intelligence-plane availability or unapproved execution of CanaryView recommendations. |
+| Canary Site Gateway | Approved private-source access; outbound secure connection; bounded local spool; preprocessing/minimization; policy/configuration cache; controlled delivery; residency and health enforcement. | Per-workload endpoint behavior, hidden data egress, detection/scoring logic, or implicit write authority. |
+| CanarySting Managed Assets | Canary definitions, materialization, lifecycle, touch evidence, cleanup, and selected deployment forms. | A requirement that every asset use Kubernetes, eBPF, a proxy, or local runtime. |
+| CanarySting Local Response | Proxy-neutral scoring; canary-touch signals; tiered verdicts; precise eBPF/native containment; bounded attrition; kill switch; scoped response evidence and audit. | General cross-vendor intelligence-plane availability or unapproved execution of CanaryView recommendations. |
 | CanaryAttacker | Lab-scoped scenarios; bounded attacker tools; local model orchestration; declared `AttackerIntent`; recorded `AttackerAction`; cleanup; reproducible correlation ground truth. | Production telemetry truth, unrestricted shell access, unconstrained targets, or operational authority. |
 | Vendor control planes | Native configuration, policy, enforcement, health, and vendor-specific source records. | Cross-stack correlation or the CanaryPlatform canonical interpretation. |
 
 ## Dependency principle
 
-CanaryView must provide useful intelligence without CanarySting. CanarySting may consume CanaryView recommendations and publish its observations back to CanaryView. CanaryAttacker publishes ground truth to CanaryView but is never a trusted telemetry source. No circular Go package dependency should be introduced.
+CanaryView must provide useful intelligence without CanarySting or new customer-side data-plane software. Its default collectors use vendor APIs, event streams, log pipelines, cloud-native integrations, SIEM integrations, and customer-owned telemetry stores. A Site Gateway is introduced only when direct SaaS connectivity, buffering, residency, private access, preprocessing, or controlled delivery requires it. CanarySting may consume approved CanaryView recommendations and publish its observations back to CanaryView. CanaryAttacker publishes ground truth to CanaryView but is never a trusted telemetry source. No circular Go package dependency should be introduced.
 
 If implementation later needs shared contracts, place them at a neutral boundary only after the canonical-model architecture is reviewed. Do not broaden `internal/contract/` automatically: it is currently the deliberately narrow CanarySting flow/signal/verdict contract and remains authoritative for that runtime seam.
 
@@ -73,11 +79,21 @@ Vendor-specific identifiers and decision details remain attached as evidence. Th
 
 Collectors are read-only by default, their capability and health are product data, and passive onboarding does not request write credentials. Read and write authority remain separate. CanaryView may eventually delegate an approved action to a native control plane only through a capability-declared Action Adapter. Delegation requires exact preview, human approval, action provenance, native change identity, validation, expiration, rollback, and audit. A recommendation or `SecurityIntent` is never itself an action.
 
+## Relationship to the SIEM
+
+The SIEM remains the broad telemetry, alert, incident-record, hunting, compliance, and long-term search system. CanaryPlatform models and operates the cross-control workload security journey. SIEM evidence, identity events, incidents, threat intelligence, searches, and compliance records may enter CanaryView; enriched cases, traces, evidence references, impact assessments, canary touches, recommendations, approved plans, executions, and rollback results may return.
+
+CanaryView must not collapse into a log-ingestion/rule/incident clone. Its differentiated responsibilities are explicit evidence provenance, identity and translation resolution, active ground truth, programmable canary assets, placement intelligence, the security-journey graph, precise optional response, and coordinated vendor-native plans.
+
+## Deployment posture
+
+The deployment profiles progress from CanaryView SaaS, to optional Site Gateway, to managed assets, to separately authorized local response. Kubernetes is the first CanarySting reference runtime and DGX laboratory, not the CanaryPlatform product boundary. The Kubernetes operator, DaemonSet, Cilium/Hubble, Envoy, eBPF, socket-cookie work, cookiespike, and enforcespike remain strategically valuable for Profiles 3 and 4.
+
 ## Passive and active value
 
 | Mode | Available capability |
 |---|---|
-| Passive CanaryView | Cross-stack security-flow visualization, distributed security tracing, topology, identity mapping, policy-decision correlation, dark-reachability analysis, blast-radius estimates, provenance, disagreement, and telemetry-gap detection. |
+| Passive CanaryView | Connector-first cross-stack security-flow visualization, distributed security tracing, topology, identity mapping, policy-decision correlation, dark-reachability analysis, blast-radius estimates, provenance, disagreement, telemetry-gap detection, impact assessment, and evidence-grounded explanation/recommendation without new data-plane software. |
 | CanaryView plus approved CanarySting placement | Evidence-backed canary opportunities are previewed and approved; CanarySting decides the safe materialization details and reports placement state. |
 | Canary touch | CanarySting supplies high-confidence deception evidence and a verdict; CanaryView adds the event to the correlated trace and adversarial graph. |
 | Approved response | CanaryPlatform presents an action plan; an authorized control plane executes it; CanaryView records result, validation, and rollback state. |
@@ -135,6 +151,8 @@ The primary user is a traditional security or network operator using graphical c
 
 Machine consumers use structured equivalents of the same objects. Read operations come first (`query_graph`, `get_trace`, `get_evidence`, `explain_path`, `find_dark_reachability`, and `find_canary_opportunities`). Mutation remains behind the same approval and authorization boundaries visible to people.
 
+Agentic operations are an experience layer over the common evidence model. Initial operations explain traces/paths, summarize cases, find missing or conflicting evidence, assess impact, find dark reachability and canary opportunities, recommend a next step, generate an action preview, and explain expected impact and rollback. Each conclusion cites evidence and separates deterministic facts from model interpretation. Natural language supplements rather than replaces the visual console.
+
 ## Existing implementation mapping
 
 This mapping is descriptive and avoids duplicate abstractions:
@@ -156,26 +174,28 @@ This mapping is descriptive and avoids duplicate abstractions:
 
 ## Phased implementation philosophy
 
-1. Finish the already-sequenced DGX harness and CanarySting socket/enforcement proofs (M1B.6, M1C, M1D).
+1. Preserve completed M1C/M1D socket-cookie and precise-enforcement proofs as option-preserving technical evidence.
 2. Review the M2A.0 storage/data-lifecycle architecture gate without selecting or implementing a production backend.
-3. Review and implement the smallest CanaryView observation/evidence/provenance/confidence contracts.
-4. Prove local correlation with the systems already available in the DGX lab; build the first operator trace slice at the same time.
-5. Add the bounded Ollama/Qwen CanaryAttacker and compare correlation against emitted ground truth.
-6. Extend the graph and evidence-backed canary-placement recommendations.
-7. Complete the CanarySting Kubernetes vertical slice using CanaryView observations where appropriate.
-8. Expand human and read-only agent interfaces, then the category-based CanaryView connector ecosystem, then controlled cross-vendor action through native control planes.
+3. Implement the minimum CanaryView evidence model and operator contracts.
+4. Establish the read-only connector framework and Wave 0 collectors for existing sources.
+5. Build cross-tool correlation and the first operator-readable trace alongside backend work.
+6. Add bounded CanaryAttacker ground truth and measure correlation quality.
+7. Ship evidence-grounded read-only agentic insights and their visual operator workflow.
+8. Extend the intelligence graph and then evidence-backed, low-footprint canary placement.
+9. Add optional CanarySting deployment forms in increasing order of customer-side footprint; Kubernetes/eBPF remain reference implementations, not prerequisites.
+10. Expand the operator experience, structured agent interface, category connector waves, and controlled cross-vendor actions.
 
 Working runtime components are refactored only when a future implementation task benefits from it. Product naming alone is not justification for a source move or mass rename.
 
 ## Current alignment findings
 
 - `docs/ARCHITECTURE.md` describes CanarySting, not the whole future platform. Scoping it as the Sting subsystem resolves the naming overlap without changing its runtime intent.
-- `docs/BUILD_TASK_PLAN.md` and the Kubernetes architecture documents remain useful pivot design records, but their old milestone order is superseded for execution by `docs/DEVELOPMENT_PLAN.md`. Their Kubernetes-only “current phase” is compatible with the DGX-first roadmap; it must be revisited before the M6 connector ecosystem expands beyond the reference local/DGX sources.
+- `docs/BUILD_TASK_PLAN.md` and `docs/ARCHITECTURE_SPEC_K8S.md` remain useful historical/reference-profile records for Kubernetes local response. Their Kubernetes-only product and milestone wording is superseded by this View-first architecture and `docs/DEVELOPMENT_PLAN.md`; it is retained to explain the option-preserving design decisions rather than silently rewritten as current commercial scope.
 - `internal/identity/mesh.ParseSPIFFE` currently assigns `ConfidenceVerified` after URI parsing without carrying cryptographic peer/trust-chain proof. That is not sufficient for the CanaryView `VERIFIED` assertion or the existing mesh-first safety wording. M3.2 must separate syntactic parsing from verified identity; this bootstrap does not change runtime behavior.
 - The existing dashboard has strong flow/topology/credibility/evidence building blocks, but its navigation and technical framing do not yet meet the unified Incident/Recommendation/Action contracts or interaction budgets. M2B.5 begins the incremental operator slice.
 - Existing scoped intelligence types are valuable CanarySting evidence but do not represent passive cross-vendor observations, correlations, cases, recommendations, and actions. The ownership split remains an explicit M2A review decision.
 - The existing Anthropic LLM attacker is bounded and useful, but it is not the Ollama/Qwen CanaryAttacker or the proposed intent/action ground-truth harness. Future work should reuse its safe fixed-target/budget/replay mechanisms without disrupting it.
-- The authoritative user baseline says M1B.5 is complete, while this checkout still contains a fail-closed collection scaffold and no detailed evidence. The plan preserves the completion state and records the reconciliation gap rather than fabricating or replaying evidence.
+- M1B.5 is complete: the missing collector was recovered, negative-tested, and validated with recorded DGX evidence. The post-meeting re-baseline preserves that completion and does not replay or reinterpret it.
 - M1B.7 was already `DONE` in the checked-out plan, despite the prompt describing it as an expected next task. Its completion was preserved; this architecture bootstrap only evolved the environment document.
 - Current persistence is a set of useful CanarySting stores rather than one CanaryView lifecycle system: bbolt event/audit state has no general retention service, topology/deviants use 30-day TTLs, L7 evidence has a nominal TTL without a production periodic caller, NDJSON spools do not rotate or acknowledge, and feature/cross-scope ledgers are in memory. These facts are mapped in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; no production database was selected here.
 
