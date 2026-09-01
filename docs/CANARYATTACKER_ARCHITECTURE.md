@@ -6,7 +6,9 @@ Status: conceptual architecture for a future DGX lab harness. No attacker runtim
 
 CanaryAttacker is CanaryPlatform's bounded synthetic adversary and correlation-validation harness. Its primary job is to generate reproducible, labeled ground truth: what an attacker intended, what tool action actually ran, and what the independent security stack observed.
 
-The initial execution environment is the DGX Spark CanaryPlatform correlation laboratory. Ollama and `qwen3-coder:30b-a3b-q8_0` were previously observed there. That is historical state, not a permanent assumption; the future M2C task must verify service reachability, model presence, version, resource availability, and loopback binding before use.
+It is an internal development and validation system, not the default customer-facing product, a managed canary asset, or a reason to deploy customer-side software. Deterministic ground-truth replay supports ordinary development; live Ollama/Qwen campaigns remain bounded laboratory work.
+
+The initial execution environment is the DGX Spark CanaryPlatform correlation laboratory and Kubernetes reference environment. That laboratory choice does not make Kubernetes or local Qwen part of the CanaryView customer deployment boundary. Ollama and `qwen3-coder:30b-a3b-q8_0` were previously observed there. That is historical state, not a permanent assumption; the future attacker-laboratory task must verify service reachability, model presence, version, resource availability, and loopback binding before use.
 
 CanaryAttacker is not a general penetration-testing agent and is not production telemetry. It targets only explicitly designated CanarySting lab fixtures.
 
@@ -87,7 +89,7 @@ Tool arguments are structured and schema-validated. The executor—not the model
 
 Before any scenario:
 
-1. Select the M2C/M2D plan task and DGX attacker/correlation validation tier.
+1. Select the applicable M2D ground-truth-laboratory decomposition and DGX attacker/correlation validation tier.
 2. Inspect local Git state and run `scripts/dgx/check.sh`.
 3. Verify the exact K3s namespace, workload, service, endpoint, and run ID in scope.
 4. State remote mutations, traffic effects, budgets, evidence collection, abort conditions, and cleanup.
@@ -199,8 +201,8 @@ PR validation is split from live campaign generation:
 - **Targeted live smoke (Level 2 HIGH/CRITICAL)** is limited to one or two fixed approved-lab scenarios when attacker tools, trigger behavior, deployment, or response behavior changes. It requires strict timeout, fixed tool policy, before/after evidence, and cleanup.
 - **Full live campaign (Level 4)** is scheduled weekly/on demand and measures trace, identity, correlation, response, resource, cleanup, and repeatability. It is not an ordinary PR blocker.
 
-The repository currently implements deterministic legacy replay and bounded cookie/enforcement DGX profiles, not the live Qwen planner. The Level 4 CI entry is deliberately fail-closed until M2C supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
+The repository currently implements deterministic legacy replay and bounded cookie/enforcement DGX profiles, not the live Qwen planner. The Level 4 CI entry is deliberately fail-closed until the re-baselined M2D work supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
 
-M2C first verifies Ollama/Qwen, defines scenarios/contracts/tools, implements bounded execution, and proves cleanup. M2D then runs scenarios against the DGX stack, correlates observations, and publishes evidence-backed metrics. Initial execution remains small and deterministic; model-adaptive variation is added only after the fixed scenarios and safety denials are reliable.
+Re-baselined M2D first verifies Ollama/Qwen, defines scenarios/contracts/tools, implements bounded execution, and proves cleanup, then runs scenarios against the DGX stack, correlates observations, and publishes evidence-backed metrics. The preserved detailed M2C/M2D rows in `docs/DEVELOPMENT_PLAN.md` jointly decompose that work. Initial execution remains small and deterministic; model-adaptive variation is added only after the fixed scenarios and safety denials are reliable.
 
 Open decisions include Ollama API/model version pinning, process/container isolation, outbound network enforcement, fixture credential delivery, scenario schema location, clock synchronization, evidence-retention limits, and how generic safety code is extracted from the existing attacker without disrupting its working behavior.

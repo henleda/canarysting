@@ -6,7 +6,7 @@ This document defines the supported development split between the Mac workstatio
 
 The Mac is the canonical source and build environment. Source editing, Go development, unit tests, static analysis, generated-code checks, cross-compilation, CI-equivalent checks, and Git operations happen here. Do not make the DGX the canonical checkout and do not edit source on it unless the user explicitly requests that exception.
 
-The DGX Spark is the canonical Linux ARM64 integration environment. It is used for K3s, Cilium coexistence, Envoy integration, eBPF load/attach, socket-cookie and cgroup behavior, kernel enforcement, workload identity, NetworkPolicy, operator/DaemonSet deployment, and end-to-end validation. It is also CanaryPlatform's initial correlation laboratory: CanaryView will compare observations from the local Kubernetes/Cilium/Hubble/Envoy/kernel/CanarySting stack against controlled CanaryAttacker ground truth there. Synthetic lab evidence remains execution output governed by `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; it is not canonical source and must remain isolated from production baselines and customer models.
+The DGX Spark is the canonical Linux ARM64 integration environment and Kubernetes reference laboratory. It is used for K3s, Cilium coexistence, Envoy integration, eBPF load/attach, socket-cookie and cgroup behavior, kernel enforcement, workload identity, NetworkPolicy, optional operator/DaemonSet deployment, and end-to-end validation. It is also CanaryPlatform's initial correlation laboratory: CanaryView will compare observations from the local Kubernetes/Cilium/Hubble/Envoy/kernel/CanarySting stack against controlled CanaryAttacker ground truth there. Synthetic lab evidence remains execution output governed by `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; it is not canonical source and must remain isolated from production baselines and customer models. This laboratory role does not make Kubernetes, the DGX, or customer-side software prerequisites for CanaryView SaaS.
 
 The build/execution boundary is deliberate. The Mac owns source, builds, tests, manifests, and Git history. The DGX executes checksum-identified ARM64 artifacts and declarative lab fixtures from repository scripts. Do not create a canonical source checkout or edit source directly on the DGX; a remote staging directory is an execution input, not a development workspace.
 
@@ -20,6 +20,8 @@ Preferred flow:
 6. Execute a repository script; collect logs and before/after state.
 7. Remove only resources bearing the run identifier, then verify K3s/Cilium/connectivity and BPF state.
 8. Record evidence in `docs/DEVELOPMENT_PLAN.md`.
+
+Product deployment profiles are separate from this development split. Profile 1 runs CanaryView through direct read-only integrations with no new customer-side data-plane software. Profile 2 adds one optional Site Gateway where private access, buffering, residency, preprocessing, or controlled delivery requires it. Profiles 3 and 4 add selected managed assets and local response; Kubernetes/eBPF are reference implementations for relevant cases, not universal requirements.
 
 ## Mac workstation
 
@@ -101,7 +103,7 @@ Required for CanaryAttacker scenarios, Ollama/Qwen execution, ground-truth emiss
 
 Validation tier describes what environment a change ultimately requires; PR risk describes when and how much of that tier runs. Use `make check-fast` while editing, `make check-pr-local` before push, and the authoritative CI `make check-pr` profile for merge. LOW/STANDARD changes do not use DGX. HIGH changes use remote smoke only when their path/dependency map requires it. CRITICAL kernel, containment, attacker-authority, or DGX-harness changes require the relevant remote profile. Unknown impact expands to HIGH, and a manual override can only increase coverage.
 
-The complete Level 3 local and DGX matrices run once per integration/main batch, nightly, on demand, and before release; they are not required after each repair. Weekly Level 4 adds soak and live campaigns. The planned Qwen harness is not implemented yet, so that scheduled live step fails closed pending M2C rather than granting the model any substitute authority. See `docs/CI_TESTING_STRATEGY.md`.
+The complete Level 3 local and DGX matrices run once per integration/main batch, nightly, on demand, and before release; they are not required after each repair. Weekly Level 4 adds soak and live campaigns. The planned Qwen harness is not implemented yet, so that scheduled live step fails closed pending the re-baselined M2D ground-truth laboratory rather than granting the model any substitute authority. See `docs/CI_TESTING_STRATEGY.md`.
 
 For compatible kernel workflows, `scripts/dgx/pr.sh` performs one read-only preflight, one allowlisted ARM64 build, and one checksum-verified transfer. Its short-lived proof is bound to host, run ID, source revision, and age. Leaf scenarios may reuse only that read-only inspection; they still verify artifacts and before/after state, enforce exact scope, and clean run-owned state. Superseded PR jobs are cancelled by CI. Do not duplicate a full manual DGX run in CI for the same commit.
 

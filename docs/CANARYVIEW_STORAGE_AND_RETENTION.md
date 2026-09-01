@@ -6,6 +6,8 @@ Status: architecture baseline for review and the M2A.0 gate. This document defin
 
 **Retain intelligence longer than telemetry.** Raw telemetry has the highest volume, cost, and privacy exposure. Normalized evidence, correlated traces, relationship history, security cases, operator decisions, action outcomes, and learned features preserve more meaning in less data.
 
+This lifecycle applies across CanaryView SaaS, optional Site Gateway, managed assets, and local response profiles. Profile 1 does not require a local spool; the edge spool exists only when an approved gateway or local connector needs buffering. Deployment profile never changes the common envelope, evidence distinctions, deletion lineage, or separation of retention from model use.
+
 ```text
 raw telemetry
   -> normalized observations
@@ -77,6 +79,8 @@ Ingest time and validity interval should also be present when they differ from t
 
 Raw telemetry remains in the originating system or a customer-owned archive where practical: Hubble/Cilium, Envoy/NGINX/F5, SIEM, OpenTelemetry backends, object storage, and customer log platforms remain their own records of authority.
 
+CanaryView Core may receive customer-authorized, minimized evidence through direct vendor integrations in Profile 1 or through a Site Gateway in Profile 2. That transfer requires an explicit tenant, scope, residency, retention, and encryption boundary. It does not reuse or weaken CanarySting's default-deny cross-deployment intelligence egress: raw CanarySting traffic, baselines, scope state, decoy contents, and environment-identifying details remain governed by rule 9, while separately authorized CanaryView connector evidence follows this lifecycle architecture.
+
 CanaryView normally retains:
 
 - source-system and source-instance identifiers;
@@ -121,7 +125,7 @@ Legal hold overrides expiry for held objects until authorized release. It does n
 
 The logical layers are contracts, not database selections:
 
-1. **Edge spool** — short, encrypted, quota-bounded local delivery buffer with acknowledgement, replay, deduplication, 24–72-hour expiry, and observable loss/failure.
+1. **Optional Site Gateway/edge spool** — short, encrypted, quota-bounded local delivery buffer with acknowledgement, replay, deduplication, 24–72-hour expiry, and observable loss/failure. It is absent in the SaaS-only profile unless a source-owned integration supplies its own buffer.
 2. **Raw evidence layer** — federated source references plus minimum redacted incident snapshots. It does not duplicate full vendor streams by default.
 3. **Normalized observation store** — tenant-isolated, compact, time-queryable, immutable/versioned observations and evidence envelopes.
 4. **Append-only relationship history** — relationship assertions, retractions, provenance, and validity intervals from which current and historical graph views can be rebuilt.

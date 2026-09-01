@@ -21,6 +21,8 @@ Each vendor retains its native control plane and configuration source of truth. 
 
 CanaryView is not an F5, Cilium, firewall, endpoint, identity, cloud, or Kubernetes management layer. It is not a replacement SIEM and is not a lowest-common-denominator policy engine.
 
+Connector-first is the default adoption posture. Evidence Collectors normally execute through CanaryView SaaS using vendor APIs, event streams, log pipelines, cloud-native integrations, SIEM integrations, or customer-owned telemetry stores. One optional Canary Site Gateway is introduced only when direct SaaS connectivity, private API access, buffering, preprocessing, residency, or controlled action delivery requires it. Neither mode requires a new per-host or per-workload CanaryPlatform agent.
+
 ## Scope and existing seams
 
 This architecture extends existing CanaryPlatform contracts rather than creating parallel ones:
@@ -47,7 +49,7 @@ This architecture extends existing CanaryPlatform contracts rather than creating
 8. **Traditional click-ops is a first-class path.** An operator can onboard, inspect, test, rotate, and disconnect a connector without CLI, YAML, raw JSON, or vendor API expertise.
 9. **Capabilities are verified at implementation time.** Roadmap examples are candidates, not promises. Before a connector or action adapter is implemented, current behavior must be verified against official vendor documentation and a licensed test or design-partner environment. The published manifest records versions, editions, regions, licensing assumptions, and a sanitized non-identifying validation attestation; detailed environment evidence remains protected and deployment scoped.
 
-This program does not broaden CanarySting rule 9 or create a second egress path. Under the current architecture, customer-rich observations, source records, identities, and configuration evidence stay inside their deployment boundary. Only already-approved anonymized patterns may cross it through `internal/intelligence/network`. Any future hosted or hybrid execution model that would move customer-rich evidence across that boundary requires explicit architecture and privacy review; a connector implementation may not assume that authority.
+This program does not broaden CanarySting rule 9 or create a second CanarySting intelligence-egress path. CanarySting raw traffic, baselines, scope state, decoy contents, and environment-identifying detail remain local; only approved anonymized patterns cross through `internal/intelligence/network`. Separately, a customer may authorize minimized CanaryView evidence to move to CanaryView Core under the selected deployment profile, tenant/scope, residency, encryption, retention, and model-use policy. Direct SaaS collection and Site Gateway delivery use the same canonical model and lifecycle; a connector may not invent an undeclared egress path.
 
 ## Three separate contracts
 
@@ -226,6 +228,8 @@ Example sources and destinations: Splunk, Elastic, Microsoft Sentinel, Google Se
 
 These systems may be an evidence source, a destination for CanaryView `SecurityCase` and trace projections, a workflow/ticket orchestration system, or the owner of historical raw-event references. They do not define the CanaryView canonical model.
 
+The SIEM remains authoritative for broad telemetry, hunting, compliance, and the enterprise incident record. CanaryView focuses on the cross-control workload security journey, identity/translation resolution, active ground truth, canary placement intelligence, evidence-grounded recommendations, and optional precise response. Inbound SIEM evidence and outbound enriched cases/traces/actions must preserve provenance rather than turning CanaryView into a duplicate log/rule/incident system.
+
 ## Prioritization and architecture gates
 
 Connector order is ranked using explicit evidence:
@@ -382,7 +386,7 @@ These questions do not block the M6 plan update. They must be resolved by the ta
 
 1. How is the connector SDK packaged and versioned?
 2. Which pull, push, webhook, stream, file, and customer-owned-bus deployment patterns are supported by category?
-3. Does each connector execute in the customer environment, CanaryPlatform service, or a hybrid of the two?
+3. Which connectors can run directly in CanaryView Core, and which require the optional Site Gateway because of private access, buffering, residency, preprocessing, or delivery constraints?
 4. How are secrets stored, scoped, rotated, revoked, and audited without exposing their values?
 5. What is the per-vendor schema-evolution and compatibility strategy?
 6. What remains of a raw-event reference when source retention expires?

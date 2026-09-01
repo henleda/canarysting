@@ -1,9 +1,11 @@
 # CanarySting — Kubernetes-Native Platform Architecture Spec
 ### Standing reference for the build. Read this first, before any task.
 
+**2026-08-31 status note.** This document is preserved as the technical reference architecture for Kubernetes-based CanarySting managed assets and local response (Profiles 3 and 4). Its Kubernetes-only product boundary and build sequence are superseded by `docs/CANARYPLATFORM_PRODUCT_STRATEGY.md` and `docs/DEVELOPMENT_PLAN.md`. The per-node/socket-cookie/eBPF constraints remain load-bearing when this deployment form is selected; they do not make Kubernetes, a DaemonSet, an operator, or local response prerequisites for CanaryView.
+
 **Purpose of this document.** This is the target-state architecture for CanarySting as a Kubernetes-native platform. It is the standing context the project works against. It describes where we are going, not necessarily where the current repo is. The companion document (the Build Task Plan) sequences the work, and its first task is to reconcile this target against the actual repo. Do not assume the repo matches this spec. Treat any divergence as something to surface, not silently overwrite.
 
-**Scope decision.** CanarySting is now Kubernetes-only for the foreseeable build. We are not maintaining generic non-K8s east-west support in this phase. The proxy-agnostic contract stays in the design so we are not permanently boxed in, but the build target is Kubernetes-native.
+**Historical scope decision.** This record originally made CanarySting Kubernetes-only for the foreseeable build. The post-meeting re-baseline replaces that commercial/default sequence with optional progressive CanarySting forms while preserving this design as the Kubernetes reference profile. The proxy-agnostic contract and all safety invariants remain intact.
 
 ---
 

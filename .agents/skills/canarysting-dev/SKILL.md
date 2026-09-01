@@ -1,6 +1,6 @@
 ---
 name: canarysting-dev
-description: Execute one plan-driven CanaryPlatform task across CanaryView, CanarySting, CanaryAttacker, shared platform, or development infrastructure for requests to continue, resume, take the next task, or work on Kubernetes/DGX integration.
+description: Execute one plan-driven CanaryPlatform task across CanaryView Core, agentic operations, Site Gateway, CanarySting managed assets/local response, CanaryAttacker, shared platform, or development infrastructure.
 ---
 
 # CanaryPlatform Development
@@ -12,6 +12,7 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 1. Read `AGENTS.md` and `docs/DEVELOPMENT_PLAN.md` fully.
 2. Read `docs/DEVELOPMENT_ENVIRONMENT.md` for environment, Kubernetes, Cilium, kernel, eBPF, deployment, identity, DGX, attacker, or correlation work.
 3. Read the applicable product architecture:
+   - Product strategy, deployment posture, Site Gateway, or product validation: `docs/CANARYPLATFORM_PRODUCT_STRATEGY.md`, `docs/CANARYPLATFORM_DEPLOYMENT_PROFILES.md`, and `docs/CANARYPLATFORM_PRODUCT_VALIDATION_PLAN.md` as applicable.
    - CanaryPlatform/CanaryView/shared model: `docs/CANARY_PLATFORM_ARCHITECTURE.md` and `docs/CANARYVIEW_DATA_MODEL.md`.
    - CanaryView connector or cross-vendor action work: `docs/CANARYVIEW_CONNECTOR_ARCHITECTURE.md`.
    - Persistence, evidence lifecycle, graph history, cases, retention, or model work: `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`.
@@ -19,15 +20,38 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
    - CanaryAttacker: `docs/CANARYATTACKER_ARCHITECTURE.md`.
    - Any operator-facing task: `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md`.
 4. Inspect `git status` and relevant diffs. Treat all uncommitted and untracked work as user-owned; never overwrite, discard, reset, clean, stash, or silently reformat it.
-5. If one task is `IN_PROGRESS`, resume it. Otherwise select the first `TODO` task in document order whose dependencies are all `DONE`. Do not start a second task while another is `IN_PROGRESS`.
+5. If one task is `IN_PROGRESS`, resume it. Otherwise follow the post-meeting roadmap authority in `docs/DEVELOPMENT_PLAN.md` and select its first executable `TODO` decomposition whose dependencies are all `DONE`. Do not start a second task while another is `IN_PROGRESS`, and do not let preserved Kubernetes-pivot headings override the View-first sequence.
 6. Classify and record the selected task before editing:
-   - **PRODUCT AREA:** `CanaryView`, `CanarySting`, `CanaryAttacker`, `Shared platform`, or `Development infrastructure`.
+   - **PRODUCT AREA:** `CanaryView Core`, `CanaryView Agentic Operations`, `Canary Site Gateway`, `CanarySting Managed Assets`, `CanarySting Local Response`, `CanaryAttacker`, `Shared platform`, or `Development infrastructure`.
+   - **DEPLOYMENT PROFILE:** `Profile 1: SaaS only`, `Profile 2: SaaS plus Site Gateway`, `Profile 3: managed canary assets`, or `Profile 4: local response`; record all affected profiles and choose the lowest profile that provides the required value.
    - **VALIDATION TIER:** `local`, `DGX integration`, `DGX Kubernetes end-to-end`, or `DGX attacker/correlation`.
    - **PR RISK:** `LOW`, `STANDARD`, `HIGH`, or `CRITICAL`, with changed-path reasons and any required remote profile. Unknown impact is `HIGH`; manual direction may only increase coverage.
 7. Inspect the relevant architecture, implementation, tests, and `internal/contract/` when cross-layer behavior is involved.
 8. Before editing, state the objective, acceptance criteria, expected files, product area, validation tier, DGX requirement, safety considerations, and—when operator-facing—the operator job, interaction path, and expected click count. Then mark only that task `IN_PROGRESS`.
 
 ## Product-area rules
+
+### Deployment posture
+
+- CanaryView Core is the lead product and connector-first/read-only is the default. Preserve standalone value without CanarySting or new customer-side data-plane software.
+- Use the lowest-footprint deployment profile that satisfies the task. CanarySting, a Site Gateway, Kubernetes, eBPF, or a local runtime is never implied merely by product naming.
+- Managed canary assets are not agents. Reserve agent for AI agents or third-party endpoint agents when context requires it.
+- CanaryPlatform complements the SIEM; do not implement a duplicate log/rule/incident system in place of the evidence-grounded workload security journey.
+
+### Local footprint review
+
+For every new local component, record before implementation:
+
+- why CanaryView SaaS or an existing vendor integration is insufficient;
+- required privileges and network/data access;
+- deployment unit and deployment profile;
+- upgrade owner and compatibility responsibility;
+- failure mode and effect on customer traffic/data;
+- removal and rollback path;
+- expected support burden; and
+- whether the component is optional.
+
+An unjustified local component does not proceed. A Site Gateway is one optional component per approved boundary, not a per-workload agent.
 
 ### CanaryView
 
@@ -36,6 +60,13 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 - Retain raw-event references; distinguish source observation, correlation, inference, model interpretation, recommendation, and action.
 - Reuse the existing observation path and models where appropriate; do not create a parallel source of truth.
 - Keep recommendations advisory and never auto-enforce them.
+
+### CanaryView Agentic Operations
+
+- Record evidence sources, provenance, confidence, deterministic facts, model-generated interpretation, operator decision point, execution authority, validation path, and rollback path for every operation.
+- Initial operations are read-only and recommendation-oriented. Core workflows must work without prompt engineering; natural language supplements the visual console.
+- Every conclusion cites evidence. Every recommendation includes reason, confidence, expected result, affected scope, executing control plane, approval requirement, validation plan, and rollback plan.
+- No hidden execution authority exists. Write-capable operations use the same preview, approval, authorization, verification, expiry, rollback, and audit contracts as human users.
 
 ### Connector work
 
@@ -68,6 +99,14 @@ Use `docs/DEVELOPMENT_PLAN.md` to select, execute, validate, and record exactly 
 - Preserve canary-touch-only punitive triggering, engine-side scope authority, bounded response, and precise socket-cookie containment.
 - Consume CanaryView opportunities conservatively and only through reviewed contracts and approval.
 - Publish placement, touch, verdict, response, containment, and outcome back to CanaryView as provenance-bearing evidence.
+
+### Canary asset review
+
+For every new canary type, record its asset form, placement method, local footprint, expected legitimate usage, trigger semantics, lifecycle, cleanup, evidence returned, and required customer approval. Prefer lower-friction honeytoken, credential, route/API, data-object, synthetic-identity, and external-decoy forms before broader runtime deployment when they deliver the required signal.
+
+### Kubernetes review
+
+For Kubernetes work, state why a Kubernetes-specific implementation is required, whether the abstraction supports non-Kubernetes estates, and whether the work belongs to the reference implementation or the core product. Do not block justified Kubernetes work, and do not let Kubernetes implementation details define neutral CanaryView contracts. Kubernetes/eBPF local response retains all existing DGX validation and cleanup requirements.
 
 ### CanaryAttacker
 

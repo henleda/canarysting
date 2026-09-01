@@ -14,7 +14,7 @@ This document defines the validation policy for pull requests, integration batch
 
 Level 0 and targeted replay are repair evidence, not merge evidence. Level 1 is recommended before push and does not replace CI. Level 2 is the PR authority. Level 3 is deliberately not required after every repair or before every push.
 
-The repository does not yet contain the M2C bounded Ollama/Qwen runtime or its approved tool catalog. The scheduled Level 4 workflow therefore fails closed at that exact boundary rather than pretending deterministic legacy fixtures are a live campaign. M2C.1–M2C.4 in `docs/DEVELOPMENT_PLAN.md` are the unblock path.
+The repository does not yet contain the bounded Ollama/Qwen runtime or its approved tool catalog. The scheduled Level 4 workflow therefore fails closed at that exact boundary rather than pretending deterministic legacy fixtures are a live campaign. Re-baselined M2D, decomposed by the preserved detailed M2C/M2D rows in `docs/DEVELOPMENT_PLAN.md`, is the unblock path.
 
 ## Automatic risk classification
 
@@ -40,7 +40,7 @@ Multiple matches choose the highest. Unknown paths are HIGH. Manual CRITICAL wit
 | Engine, Sting, contract, trigger, scope | Full fast invariants, broad Go/race checks, affected deterministic replay | Selected datapath smoke only when kernel behavior changes |
 | `bpf/`, cgroup, kernel, cookiespike/enforcespike | All local eBPF compile/contract checks and privileged proof | `kernel-full` or enforcement profile with exact cleanup |
 | Operator, Kubernetes identity/manifests/deploy | Unit/envtest when present, broad local security checks | Kubernetes smoke is selected but currently fails closed because that M2 profile is not implemented |
-| CanaryAttacker scenario/runner/tool | Schema, bounded-policy tests, deterministic replay | Live smoke is selected for tool-authority changes; currently blocked on M2C |
+| CanaryAttacker scenario/runner/tool | Schema, bounded-policy tests, deterministic replay | Live smoke is selected for tool-authority changes; currently blocked on re-baselined M2D |
 | Test-gate orchestration | Gate self-tests, synthetic collect-all, broad Level 2 local graph | Level 3 through main/nightly/integration; DGX harness changes also select the relevant DGX profile |
 
 Go selection computes changed packages and repository reverse dependents from `go list -deps -test -json`. Module changes and unresolved package impact expand to `./...`. Scenario selection uses each manifest entry's `affected_paths`; unmapped security impact expands to the complete deterministic corpus.
@@ -55,7 +55,7 @@ The full suites retain redirect, integration, race, eBPF, and scenario variants.
 
 1. **Deterministic replay (Levels 1–3).** Versioned manifests record `AttackerIntent`, `AttackerAction`, deterministic seed, expected evidence/response, prohibited outcomes, exact required test passes, cleanup, ground truth, affected paths, and replay command. PRs select relevant entries; uncertain impact selects all.
 2. **Targeted live smoke (Level 2 HIGH/CRITICAL only).** One or two fixed scenarios, approved DGX target, strict timeout, one workflow preflight/build/transfer, and exact cleanup. The current bounded kernel `cookie`, `enforcement`, and `kernel-full` profiles are implemented. Kubernetes and live-Qwen profiles refuse weaker substitution until their planned harnesses exist.
-3. **Full live campaign (Level 4).** Weekly/on-demand only. The workflow is scheduled, but its Qwen step intentionally fails closed pending M2C. It must eventually measure trace completeness, identity/correlation accuracy, evidence gaps, response precision, resource ceilings, cleanup, and repeatability without giving Qwen shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network authority.
+3. **Full live campaign (Level 4).** Weekly/on-demand only. The workflow is scheduled, but its Qwen step intentionally fails closed pending re-baselined M2D. It must eventually measure trace completeness, identity/correlation accuracy, evidence gaps, response precision, resource ceilings, cleanup, and repeatability without giving Qwen shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network authority.
 
 ## DGX capacity and safety
 
