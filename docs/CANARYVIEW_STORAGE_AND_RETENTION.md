@@ -54,7 +54,7 @@ This inventory was code-grounded on 2026-08-31. “Owner” below means the curr
 
 ## Data classes and lifecycle envelope
 
-Every planned persistent object must declare a data class, lifecycle owner, and default sensitivity before implementation. Owners below are architectural defaults for review; M2A.0.2 and M2A.0.3 must define enforceable policy and storage boundaries.
+Every planned persistent object must declare a data class, lifecycle owner, and default sensitivity before implementation. Owners below are architectural defaults for review; M2A.0.2 and M2A.0.3 define the accepted lifecycle policy and logical storage boundaries that implementations must enforce.
 
 | Planned data class | Lifecycle owner | Default sensitivity | Intended content and guardrail |
 |---|---|---|---|
@@ -200,10 +200,10 @@ Snapshotting is a narrow preservation action, not a fallback archive. The decisi
 
 - A versioned policy computes `retention_start` and `expires_at` when a record is accepted or finalized. Policy changes append a new lifecycle decision; they do not rewrite source/observed times.
 - Expiry moves an object through `ACTIVE -> EXPIRY_DUE -> DELETION_PENDING -> DELETED` or `INVALIDATED`. A hold produces `HELD` and records the suspended original expiry. Errors produce `DELETION_FAILED` with retry/alert evidence; “expired” is never displayed as “deleted.”
-- Legal holds are exact-scope and exact-lineage by default. A hold request requires a reason, owner, review date, residency/key-boundary check, and an authorized creator. Release requires separate release permission; Regulated policy may require separation of duties. The concrete RBAC mapping and review cadence remain an M2A.0.3 governance decision.
+- Legal holds are exact-scope and exact-lineage by default. A hold request requires a reason, owner, review date, residency/key-boundary check, and an authorized creator. Release requires separate release permission. The accepted roles, separation of duties, and review cadence are defined below.
 - Releasing a hold restores the original lifecycle decision. If its expiry already passed, the operator sees a deletion preview and a bounded policy-defined grace period before deletion; release never creates indefinite retention.
 - Source-system expiry/deletion changes reference availability but cannot be treated as proof that CanaryView deleted its authorized copies. Conversely, CanaryView deletion cannot claim to delete source-owned data.
-- Backup/index/cache deletion must follow the same tenant, residency, key, and lineage scope. Concrete backup purge objectives belong to M2A.0.3 and the later backend selection.
+- Backup/index/cache deletion follows the same tenant, residency, key, and lineage scope. The logical completion objectives below are backend acceptance criteria; a later engine decision must prove it can meet them.
 
 ## Logical storage architecture
 
@@ -227,6 +227,34 @@ collectors -> encrypted edge spool -> normalized observations
 
 A graph database or materialized graph view must never be the only source of truth. Relationship history plus provenance must support reconstruction, correction, expiry, and historical queries. No production engine is selected by this bootstrap.
 
+### M2A.0.3 logical truth and rebuild decision
+
+The following authority boundaries are accepted. “Authoritative” means the durable record used to explain or reproduce a decision; it does not mean that the record can outlive its data-class policy.
+
+| Layer | Authoritative record | Rebuildable or disposable state | Boundary |
+|---|---|---|---|
+| Source system | Source-owned raw telemetry and its native identity/version. | CanaryView retrieval cache. | CanaryView records a reference, integrity state, and availability; it never claims authority over source deletion. |
+| Edge spool | Encrypted delivery item, tenant/site route, sequence, acknowledgement, and expiry until acknowledged or expired. | Transfer batches and retry scheduling. | The spool is delivery state, not permanent evidence. Acknowledgement transfers durability to the accepted destination record; expiry/loss is explicit. |
+| Raw evidence | Versioned source reference and an independently authorized minimum snapshot, when one exists. | Retrieval cache and rendered preview. | A snapshot proves only its named claim/action and never silently becomes a full raw archive. |
+| Normalized observations | Immutable/versioned canonical observations and evidence envelopes with provenance. | Time indexes, query caches, and denormalized search documents. | Corrections append a superseding record; source assertions are not rewritten. |
+| Relationships | Append-only assertions, retractions, validity intervals, provenance, and lifecycle events. | Current graph, historical graph slices, path indexes, and graph summaries. | Relationship history is the graph truth. No materialized graph is sufficient by itself. |
+| Cases and actions | Versioned cases, explanations, recommendations, approved plans, executions, holds, and audit facts independently authorized for those classes. | Incident lists, timelines, search indexes, and presentation projections. | A case may retain minimum case/audit facts but cannot copy or preserve expired source payload by implication. |
+| Connector operations | Manifest/checkpoint/health/replay decisions and their bounded history. | Health dashboards and rollups. | Credential values are never storage records; only secret references and permission results persist. |
+| Features and models | Registry entries for definitions, authorization, input windows/lineage, evaluation, versions, deployment, constraint, and retirement. | Feature caches, serving replicas, and generated explanations. | Retention is not model-use authority. Model output is interpretation/evidence, not hidden canonical truth. |
+
+Every rebuildable projection records the tenant, residency cell, schema and policy versions, input high-water mark, build time, and integrity digest. It is safe to delete only when its authoritative inputs remain available or the lifecycle decision explicitly requires invalidation.
+
+### Relationship reconstruction and compaction
+
+Each relationship event carries a stable assertion ID; tenant and scope; typed endpoints; relationship type; valid and observed intervals; assertion mode; confidence; source and derivation lineage; schema/policy version; and, when applicable, the ID and reason for supersession, retraction, or lifecycle invalidation.
+
+- Current and historical graph views rebuild from a compatible checkpoint plus subsequent relationship events. A full rebuild from retained normalized observations and relationship history remains possible without a checkpoint.
+- A checkpoint is a tenant- and residency-cell-scoped projection with an input high-water mark and digest. It is never promoted to sole truth, copied across a residency boundary, or shared between tenants.
+- Physical compaction may coalesce events only when it preserves the same assertions, retractions, validity intervals, provenance, hold state, and deletion lineage. It cannot compact away a held record or a still-retained historical distinction.
+- Expiry or deletion appends the lifecycle/retraction decision, removes protected fields as required, and rebuilds or invalidates affected projections. It does not rewrite prior source claims into a different claim.
+- Reconstruction tests compare a clean rebuild with the active projection for node/edge identity, state, provenance, confidence, and lifecycle visibility at the same high-water mark. A mismatch blocks promotion of the projection.
+- Queries are always tenant/scope and time bounded, and implementations must impose declared node/edge/result limits. Engine-specific latency and scale targets require measured workloads in the later backend-selection task.
+
 ## Deletion, expiration, and derived-data behavior
 
 Every persistent class defines its classification, sensitivity, profile, expiration behavior, hold behavior, deletion path, derived-data effect, residency, encryption boundary, model-use permission, lineage, and estimated storage impact.
@@ -238,8 +266,8 @@ The initial lifecycle rules are:
 3. Derived traces, edges, cases, recommendations, and features are found through `derivation_lineage`.
 4. Rebuildable views are rebuilt or invalidated. Non-rebuildable conclusions are marked evidence-unavailable and confidence is recalculated rather than silently preserved.
 5. A security case or audit record may retain the minimum independently authorized facts required by its own class, but must not use “derived” as a reason to retain deleted source payloads.
-6. Feature sets and model artifacts record affected input windows. Deletion either retrains/rebuilds, excludes the subject on future evaluation, or marks the artifact constrained, according to a documented policy. The exact thresholds remain unresolved.
-7. Legal hold suspends expiry for the held lineage and records who, why, when, scope, review date, and release. Creation and release are separate permissions; concrete RBAC roles and review cadence are assigned in M2A.0.3 governance review.
+6. Feature sets and model artifacts record affected input windows. Deletion immediately excludes the lineage from new feature/training work and invokes the zero-tolerance model gate below: an artifact without a reviewed removal/rebuild policy is withdrawn rather than silently reused.
+7. Legal hold suspends expiry for the held lineage and records who, why, when, scope, review date, and release. Creation, protected-content access, review, and release are distinct permissions under the governance contract below.
 8. Expiration never implies consent withdrawal from a source system, and a source-system deletion never goes unreported merely because CanaryView cannot enforce it remotely.
 
 ### Lifecycle and deletion scenarios
@@ -262,12 +290,40 @@ The initial lifecycle rules are:
 
 ## Residency, encryption, and access boundaries
 
-- Tenant and scope isolation applies in storage, indexing, caches, backups, exports, feature computation, and deletion jobs.
-- Every durable object records its residency and logical key reference; keys and secret values are not embedded in evidence.
-- Edge spools and snapshots require encryption at rest. Service-to-service transfer requires authenticated encryption.
-- Tenant or region key boundaries, backup residency, key rotation, and customer-managed-key support remain architecture decisions.
+- Tenant and scope isolation applies in storage, indexing, caches, backups, exports, feature computation, and deletion jobs. A shared physical service is permitted only if every access path and maintenance job enforces tenant scope and the backend passes cross-tenant negative tests.
+- Every durable object records `tenant_id`, `residency_cell_id`, and a logical `encryption_key_ref`; keys and secret values are not embedded in evidence. A residency cell is one approved regional storage, processing, backup, and key-management boundary.
+- Each tenant has a separate logical key namespace. Standard evidence, sensitive minimum snapshots, feature/model inputs, audit/hold records, and backups use distinct purpose-scoped key references under a region-bound key-encryption boundary. Key rotation preserves lineage and never makes an old key reference ambiguous.
+- Edge spools use a site/gateway-scoped encryption key controlled within that deployment boundary. Acknowledgement or expiry deletes the local item under the spool policy; the SaaS plane does not require the local key. Profile 1 introduces no CanaryPlatform edge key or spool.
+- Service-to-service transfer requires authenticated encryption. Exports inherit the tenant, residency, sensitivity, expiry, and model-use restrictions of their inputs and receive their own auditable key reference.
+- Backups remain in the same residency cell and tenant/key scope as the protected data. Cross-region disaster recovery requires an explicit customer-approved residency-cell migration or multi-region policy; it is never an implicit backup behavior.
 - Sensitive evidence uses least-privilege access and access audit. Raw-evidence access is narrower than normalized-case access.
 - A legal hold cannot silently move data to another region or key boundary.
+- Customer-managed keys, physical single-tenancy, supported regional pairs, rotation periods, and cryptographic provider/engine selection remain explicit commercial/backend decisions. Their absence cannot weaken the logical tenant, residency, or purpose-key boundaries above.
+
+### Legal-hold governance
+
+The initial role contract separates lifecycle administration from legal authority:
+
+| Permission | Responsibility | Separation rule |
+|---|---|---|
+| Lifecycle administrator | Select profiles/overrides and operate deletion. | Cannot create a hold merely to avoid expiry and gains no protected-content access. |
+| Hold creator | Create an exact-scope hold with reason, owner, authority, and review date. | Cannot release the same Regulated hold. |
+| Hold reviewer | Confirm continuing scope/authority and record the review. | Review does not widen scope, access, residency, or model use. |
+| Hold releaser | Preview and release a hold. | Distinct permission in all profiles; a different principal from the creator is mandatory for Regulated. |
+| Protected-evidence reader | View authorized held content. | A hold role alone never grants this permission. Every access is audited. |
+| Auditor | Read policy, hold, access, deletion, and release evidence. | Read-only; cannot mutate lifecycle state. |
+
+Lean and Standard holds require a review date no more than 90 days after creation or the previous review. Regulated holds require review at least every 30 days. A profile/organization may shorten, but not lengthen, these maxima. Missing review creates an overdue alert and escalation; it never silently releases the hold or changes access. Release after the original expiry enters a 24-hour `DELETION_PENDING` preview/grace period, unless a shorter approved policy applies, and then resumes deletion.
+
+### Deletion and restore objectives
+
+These are logical service objectives and minimum backend-selection criteria, not claims about the current prototype stores:
+
+- Entering `DELETION_PENDING` immediately removes the record from ordinary query, export, feature, training, and serving inputs while preserving only the access needed for authorized deletion, hold review, and audit.
+- Online primary records, indexes, caches, serving replicas, and rebuildable projections should complete deletion or invalidation within 24 hours and must either complete or enter visible `DELETION_FAILED` within 72 hours. Retries are bounded, idempotent, tenant-scoped, and audited.
+- A deletion failure names every incomplete copy/class, next retry, elapsed time, operator impact, and recovery owner. It never reports success based only on removal from a user-facing index.
+- Backups are not edited in place. Deleted records are made inaccessible to ordinary restore, every restore reapplies the deletion ledger before service, and backup copies age out within a declared window no longer than 35 days unless an exact legal hold applies. Tenant closure also destroys eligible tenant/purpose key material after online deletion verification; held partitions and keys remain isolated.
+- Backend selection must demonstrate deletion-ledger replay, restore without resurrection, key rotation/destruction, held-partition recovery, and the objectives above under failure. If a candidate cannot prove them, the architecture must revise the objective explicitly rather than imply compliance.
 
 ## Model building and long-term value
 
@@ -279,16 +335,41 @@ Cross-tenant learning requires separate explicit opt-in, de-identification, mini
 
 Synthetic CanaryAttacker intent/action evidence is marked `synthetic=true`, carries a scenario ID/version, and is retained as a versioned development-lab corpus. It is isolated from production baselines, customer behavior models, and production incident statistics. Attacker output is never trusted telemetry.
 
+### Model-use authority and rebuild gate
+
+Operational processing needed to normalize, correlate, explain, and enforce the selected retention policy is not permission to train or improve a model. The registry represents three independent decisions: operational retention/processing, per-tenant feature or model use, and cross-tenant feature or model use. Both model-use grants default off until explicitly authorized; enabling or disabling either never changes operational retention.
+
+Each grant names tenant/scope, purpose, allowed data classes, feature/model family, region, start/expiry, authorizer, policy version, and revocation/deletion behavior. Cross-tenant grants additionally require de-identification, a declared minimum cohort, proof that raw tenant identity cannot be recovered, and an approved regional cohort. A tenant may authorize per-tenant use without authorizing a cross-tenant cohort.
+
+Raw customer traffic, baselines, scope state, decoy content, and identifying environment detail never become cross-tenant training inputs. CanarySting rule 9 remains the floor: only policy-permitted anonymized derived patterns may cross a deployment boundary, through the default-deny intelligence egress path, and an opt-in cannot waive that safety rule.
+
+Withdrawal or input deletion stops new feature extraction, training, evaluation, retrieval, and promotion from the affected lineage immediately. The default rebuild threshold is zero: if any deployed artifact used affected data and lacks a pre-approved, tested removal/rebuild rule, it is marked `CONSTRAINED` and withdrawn from new decisions within 24 hours. A nonzero tolerance is valid only when the artifact contract declares the weighted contribution metric, maximum contribution, safety/calibration bounds, deletion method, validation data, and completion objective before deployment. Crossing any declared bound, missing lineage, synthetic contamination, prohibited data class, tenant/scope leak, or residency violation requires immediate withdrawal and a clean rebuild before redeployment.
+
+Historical weighting is part of each feature definition, not a hidden storage default. A feature declares a fixed window or deterministic decay, the evidence floor, and tests for time-boundary behavior. Expired data is unavailable regardless of weight.
+
+Synthetic ground truth lives in a separate internal tenant/domain, residency cell, key namespace, registry namespace, and evaluation pipeline. Production ingestion and feature builders reject `synthetic=true` inputs by default. It may evaluate a production-shaped model only against a versioned lab copy with no customer data; a discovered production dependency is a safety/isolation defect that invokes the zero-tolerance gate.
+
 ## Storage volume and cost controls
 
-Before activating a profile or override, CanaryPlatform estimates by class:
+Before activating a profile or override, CanaryPlatform estimates by class. Each input is labeled measured, customer-supplied, benchmarked, or assumed, with sample window, timestamp, uncertainty/range, and owner:
 
 ```text
-daily retained bytes = events per day * average persisted bytes per event
-retained footprint = daily retained bytes * retention days * replication/index/backup factor
+accepted events/day = source events/day * acceptance ratio
+logical ingest/day = accepted events/day * average persisted bytes/event
+logical retained bytes = sum(logical ingest/day * days in each retention tier)
+physical retained bytes = sum((tier bytes / compression ratio) * replica factor)
+                        + index bytes + backup bytes + held bytes + safety headroom
+monthly cost range = storage + requests + ingest/query/compaction compute
+                   + backup/restore + network/egress + feature/model processing
 ```
 
-The console shows measured or explicitly estimated event rate, average record size, retained volume, storage region/tier, sensitive fields, expiry, holds, and expected cost. Estimates distinguish source-owned raw telemetry from CanaryView-retained data. Quotas, sampling, aggregation, compaction, cold-tier transitions, and overload behavior are visible and fail without silently dropping high-value evidence. Cost pressure must not quietly widen privacy or shorten held/audit evidence.
+Required inputs are source and accepted event rate; average and p95 persisted size; rejection/duplicate/snapshot rates; hot/warm/cold duration; compression, index, replica, and backup factors; expected hold rate/duration; growth and burst factors; query/retrieval/export volume; compaction and full-rebuild frequency; feature/model compute; regional price basis; and spool outage/buffer window where Profile 2 applies.
+
+Required outputs are source-owned versus CanaryView-retained bytes; daily accepted records/bytes; peak edge-spool bytes; logical and physical bytes by hot/warm/cold, index, backup, hold, feature, and model class; monthly low/expected/high cost by storage, request, compute, backup, and network category; quota/headroom and exhaustion date; deletion/compaction backlog; expected full-rebuild input/time envelope; and the volume/cost/model-availability delta of the proposed profile or override.
+
+The console shows measured or explicitly estimated event rate, average/p95 record size, retained volume, storage region/tier, sensitive fields, expiry, holds, expected cost range, estimate freshness, and uncertainty. Estimates distinguish source-owned raw telemetry from CanaryView-retained data and never count source bytes as CanaryView savings or retained proof. Quotas, sampling, aggregation, compaction, cold-tier transitions, and overload behavior are visible and fail without silently dropping high-value evidence. Cost pressure must not quietly widen privacy, authorize model use, shorten held/audit evidence, or discard provenance.
+
+No architecture-stage number is presented as measured product capacity. M2B collectors must emit the per-class counters and size distributions needed to replace assumptions; a later backend decision must publish measured workloads, latency/rebuild results, and unit-cost inputs.
 
 ## Operator workflow requirements
 
@@ -296,8 +377,31 @@ The graphical workflow presents Lean, Standard, and Regulated profiles with Stan
 
 Operators can inspect an object's data class, expiry, hold, raw-reference availability, lineage, and model-use status from the claim it supports. Authorized hold creation/release and model-use changes are separate, auditable workflows. These requirements are expanded in `docs/CANARYPLATFORM_OPERATOR_EXPERIENCE.md`.
 
-## Open architecture questions
+The supported advanced-override catalog is intentionally narrow:
 
-M2A.0.2 resolves the profile defaults, per-class expiry/hold/deletion behavior, minimum-snapshot triggers, broken-reference states, and lifecycle scenario outcomes above. The remaining storage questions are part of the full list in `docs/CANARY_PLATFORM_ARCHITECTURE.md`: production engines, measured per-class volume/latency/cost targets, the concrete supported override catalog, tenant/region/key and backup boundaries, legal-hold RBAC/review cadence, graph reconstruction/compaction, model-use enforcement mechanisms, historical weighting, and backend deletion/retry objectives. M2A.0.3 owns those governance/logical-storage decisions; M2A.0.4 records the architecture review outcome.
+- shorten or extend a named class duration within the organization's approved minimum/maximum, without restoring deleted data;
+- select an approved hot/warm/cold transition for that class;
+- choose a replay window within the profile's 24–72-hour contract;
+- shorten a minimum snapshot below its normal maximum, or extend it only through a named case/audit/hold authorization;
+- enable the separate diagnostic sensitive-payload workflow for 24 hours by default and no more than seven days under its existing authorization; and
+- set the concrete policy-defined duration required by a Regulated class.
 
-M2A.0 records and reviews these decisions before M2A canonical-model implementation. The gate may approve logical contracts while leaving vendor selection to a later explicitly approved task; it must not smuggle a production backend implementation into architecture work.
+An override cannot change data class or sensitivity, capture new fields/payload, create a legal hold, alter tenant/residency/key boundaries, authorize per-tenant or cross-tenant model use, weaken deletion, raise query scope, or bypass source permission. Those are separate governed workflows. Unsupported overrides fail closed and identify the required review.
+
+## Remaining implementation decisions
+
+M2A.0.2 resolved lifecycle defaults and M2A.0.3 accepted the logical truth/rebuild, tenant/residency/purpose-key, backup/restore, legal-hold governance, model-use, synthetic-isolation, override, and cost-estimation contracts above. M2A.0.4 records the architecture review outcome before M2A canonical-model implementation.
+
+Production engines, physical tenancy options, supported regions/disaster-recovery pairs, customer-managed-key products, engine-specific deletion/retry mechanics, measured per-class volume/latency/rebuild/cost targets, connector-specific snapshot manifests, and any justified nonzero model-removal tolerance remain implementation decisions. They require explicit approval and measured evidence; no current prototype store or architecture-stage estimate selects them by implication.
+
+## M2A.0.3 architecture review record
+
+| Review lens | Accepted result | Fail-closed boundary |
+|---|---|---|
+| Threat and isolation | Tenant/scope enforcement covers stores, projections, jobs, exports, backups, features, and restores; residency and purpose-key boundaries follow every copy. | Cross-tenant negative-test failure, missing lineage, synthetic contamination, or region/key ambiguity blocks use/promotion. |
+| Privacy and governance | Operational retention, per-tenant model use, cross-tenant model use, legal hold, and protected-content access are separate grants. | No grant implies another; overdue holds alert without auto-release; an unsupported override is refused. |
+| Reconstruction | Immutable/versioned observations and append-only relationship history are truth; projections carry high-water marks/digests and pass clean-rebuild equivalence. | A graph-only fact, lossy compaction, restore resurrection, or rebuild mismatch blocks the projection/backend. |
+| Cost and capacity | Estimates expose provenance/uncertainty and report source versus retained, logical versus physical, class/tier/copy, cost range, quota, backlog, and rebuild envelope. | An assumption cannot be labeled measured; cost pressure cannot silently drop provenance, held/audit evidence, or change privacy/model authority. |
+| Implementation restraint | Logical contracts and backend acceptance objectives are accepted across Profiles 1–4. | No database, cloud region, KMS product, CMK option, or physical tenancy mode is selected by this task. |
+
+M2A.0.4 remains the explicit architecture approval gate. This decision record changes no runtime behavior, collection authority, credential authority, dependency, customer deployment, or DGX state.

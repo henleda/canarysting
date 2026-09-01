@@ -266,7 +266,7 @@ Retention is configured through graphical controls, not YAML, policy code, a que
 | Standard | Recommended balance of investigation value, privacy, and cost. | 24-hour correlation; 24–72-hour replay; 90-day hot/13-month normalized evidence; 13-month traces; 3-year cases/actions; 24-month features. |
 | Regulated | Preserve regulated case/action evidence under tighter governance. | Seven-year case/action defaults, policy-defined history, stronger hold/review visibility, and no automatic increase in sensitive payload capture. |
 
-Each profile card shows included data classes, retention by class, measured or estimated daily volume, estimated retained volume, sensitive fields collected, earliest/latest expiry, legal holds, model-use status, storage region/tier, and expected cost. Standard is preselected as a recommendation, not silently activated. One additional **Advanced overrides** screen may change a class; it shows the delta in volume, cost, exposure, expiry, and downstream model availability before confirmation.
+Each profile card shows included data classes, retention by class, measured or estimated daily volume, logical and physical retained volume, sensitive fields collected, earliest/latest expiry, legal holds, separate per-tenant/cross-tenant model-use status, residency cell/storage tier, estimate age/uncertainty, and expected cost range. Standard is preselected as a recommendation, not silently activated. One additional **Advanced overrides** screen may change a class; it shows the delta in volume, cost, exposure, expiry, rebuild work, and downstream model availability before confirmation.
 
 The M2A.0.2 baseline makes Standard concrete: 24-hour live correlation, 72-hour replay, source-owned raw telemetry by default, exceptional redacted raw snapshots with a 30-day normal maximum, 90-day hot/13-month normalized evidence, 13-month traces/relationship history, three-year cases/actions, 36-month graph summaries, 90-day connector health, and 24-month feature history. Sensitive-payload capture remains off; its separate diagnostic workflow defaults to 24 hours with a seven-day hard default ceiling. A Regulated “policy-defined” value must be set before that class can persist.
 
@@ -274,8 +274,8 @@ The approval summary separates four choices:
 
 1. operational retention;
 2. diagnostic sensitive-payload capture, off by default and visibly expiring;
-3. per-tenant model use;
-4. cross-tenant model use, off by default and requiring separate explicit opt-in.
+3. per-tenant model use, off until separately authorized; and
+4. cross-tenant model use, also off by default and requiring a separate explicit opt-in, declared cohort/purpose, and regional boundary.
 
 Accepting operational retention never checks a model-use box. Legal hold suspends expiration but never changes either model-use permission. A hold badge appears on cases, evidence, actions, and affected lineage; authorized users can open it to see scope, reason, owner, creation/review date, release authority, and audit without exposing protected content.
 
@@ -283,8 +283,10 @@ Profile selection and lifecycle changes follow the interaction budgets above:
 
 1. Profile cards expose consequences without navigation. Selecting a profile or override opens at most one preview showing records becoming due, source-owned exclusions, held records, broken-reference risk, model constraints, volume/cost delta, and the exact deletion schedule.
 2. One confirmation versions the policy and starts the lifecycle workflow. It never restores deleted data, captures additional payload, changes residency/key boundaries, or authorizes model use.
-3. A hold preview names exact records/lineage and shows original expiry, residency/key boundary, access, unrelated records that continue expiring, and whether a minimum snapshot is separately authorized. Hold create/release each require one confirmation and distinct permissions; Regulated policy may require separation of duties.
-4. Hold release restores the original lifecycle decision. If expiry passed, the UI shows `Deletion pending` and its bounded grace period rather than resetting retention from release time.
+3. A hold preview names exact records/lineage and shows original expiry, residency/key boundary, access, unrelated records that continue expiring, and whether a minimum snapshot is separately authorized. Hold create/review/release and protected-content access are distinct permissions. A Regulated hold requires a different creator and releaser.
+4. Hold release restores the original lifecycle decision. If expiry passed, the UI shows `Deletion pending` and the accepted 24-hour maximum preview/grace period rather than resetting retention from release time.
+
+The hold workspace shows the next review deadline and overdue state. Lean/Standard review intervals cannot exceed 90 days; Regulated intervals cannot exceed 30 days. A missed review alerts and escalates but never auto-releases the hold. Lifecycle administrators cannot create a hold merely to avoid expiry, and hold roles never grant protected-content access by implication.
 
 Lifecycle states are explicit: Active, Expiry due, Held, Deletion pending, Deleted, Invalidated, and Deletion failed. A failed deletion shows affected scope, protected copies/indexes still present, retry state, operator impact, and a named next step. “Expired” is never displayed as “deleted,” and source-system deletion is never presented as CanaryView deletion.
 
@@ -292,7 +294,9 @@ Data-lifecycle transparency follows the object. From a claim or evidence item, o
 
 The same drawer shows source timestamp, collector-observed timestamp, trusted retention-start basis, policy/override version, original and current expiry, lifecycle state, deletion/invalidated descendants, and any minimum-snapshot trigger/authorizer. It never reveals credential material, actual canary values, authorization headers, or unredacted request bodies.
 
-Storage estimates distinguish customer/source-owned bytes from CanaryView-retained bytes and label measured versus projected inputs. Cost surprises, quota pressure, replay loss, compaction, or cold-tier transitions appear in Operations and Integrations with a specific impact and next step.
+Storage estimates distinguish customer/source-owned bytes from CanaryView-retained bytes and label every input measured, customer-supplied, benchmarked, or assumed. The preview reports event/byte rates, logical versus physical hot/warm/cold/index/backup/hold volume, peak edge spool where applicable, low/expected/high monthly cost by category, quota runway, rebuild envelope, and estimate freshness/uncertainty. Cost surprises, quota pressure, replay loss, deletion backlog, compaction, or cold-tier transitions appear in Operations and Integrations with a specific impact and next step.
+
+Advanced overrides may change a named class duration or approved storage-tier transition, choose the bounded replay window, shorten a minimum snapshot, authorize a named case/audit/hold extension, enable the separately governed diagnostic payload window, or supply a required Regulated period. They cannot change sensitivity/class, capture fields, create a hold, move residency or key boundaries, authorize model use, expand query scope, or weaken deletion. Those choices remain separate workflows so one confirmation never carries hidden authority.
 
 ## Accessibility
 
