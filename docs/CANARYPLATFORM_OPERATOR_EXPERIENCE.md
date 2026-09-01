@@ -165,6 +165,10 @@ The canonical definitions live in `docs/CANARYVIEW_DATA_MODEL.md`. Human and age
 | Claim to raw evidence | One click. |
 | Complete correlated trace | Available within the incident/flow workspace. |
 | Integration capability/authority answers | Available together on the integration overview; no vendor/API navigation. |
+| Retention profile to consequence review | Zero clicks; consequences are on each profile card. |
+| Profile selection or advanced override to approval | At most one preview plus one confirmation. |
+| Evidence/claim to lifecycle detail | One click. |
+| Legal-hold create or release | At most one preview plus one confirmation, with separate permission enforced. |
 
 Click counts start from the visible summary/recommendation and exclude authentication only when a still-valid authenticated session exists. Modal open/close gymnastics, vendor navigation, copying IDs, and query construction count as failures, not hidden steps.
 
@@ -264,6 +268,8 @@ Retention is configured through graphical controls, not YAML, policy code, a que
 
 Each profile card shows included data classes, retention by class, measured or estimated daily volume, estimated retained volume, sensitive fields collected, earliest/latest expiry, legal holds, model-use status, storage region/tier, and expected cost. Standard is preselected as a recommendation, not silently activated. One additional **Advanced overrides** screen may change a class; it shows the delta in volume, cost, exposure, expiry, and downstream model availability before confirmation.
 
+The M2A.0.2 baseline makes Standard concrete: 24-hour live correlation, 72-hour replay, source-owned raw telemetry by default, exceptional redacted raw snapshots with a 30-day normal maximum, 90-day hot/13-month normalized evidence, 13-month traces/relationship history, three-year cases/actions, 36-month graph summaries, 90-day connector health, and 24-month feature history. Sensitive-payload capture remains off; its separate diagnostic workflow defaults to 24 hours with a seven-day hard default ceiling. A Regulated “policy-defined” value must be set before that class can persist.
+
 The approval summary separates four choices:
 
 1. operational retention;
@@ -273,7 +279,18 @@ The approval summary separates four choices:
 
 Accepting operational retention never checks a model-use box. Legal hold suspends expiration but never changes either model-use permission. A hold badge appears on cases, evidence, actions, and affected lineage; authorized users can open it to see scope, reason, owner, creation/review date, release authority, and audit without exposing protected content.
 
+Profile selection and lifecycle changes follow the interaction budgets above:
+
+1. Profile cards expose consequences without navigation. Selecting a profile or override opens at most one preview showing records becoming due, source-owned exclusions, held records, broken-reference risk, model constraints, volume/cost delta, and the exact deletion schedule.
+2. One confirmation versions the policy and starts the lifecycle workflow. It never restores deleted data, captures additional payload, changes residency/key boundaries, or authorizes model use.
+3. A hold preview names exact records/lineage and shows original expiry, residency/key boundary, access, unrelated records that continue expiring, and whether a minimum snapshot is separately authorized. Hold create/release each require one confirmation and distinct permissions; Regulated policy may require separation of duties.
+4. Hold release restores the original lifecycle decision. If expiry passed, the UI shows `Deletion pending` and its bounded grace period rather than resetting retention from release time.
+
+Lifecycle states are explicit: Active, Expiry due, Held, Deletion pending, Deleted, Invalidated, and Deletion failed. A failed deletion shows affected scope, protected copies/indexes still present, retry state, operator impact, and a named next step. “Expired” is never displayed as “deleted,” and source-system deletion is never presented as CanaryView deletion.
+
 Data-lifecycle transparency follows the object. From a claim or evidence item, one click shows data class, sensitivity, source ownership, raw-reference availability, snapshot/redaction status, expiry, legal hold, residency, encryption-key boundary identifier, lineage, model-use policy, and deletion/invalidation behavior. Broken source references are labeled expired, deleted, inaccessible, moved, or integrity-mismatched, and their effect on confidence is explained.
+
+The same drawer shows source timestamp, collector-observed timestamp, trusted retention-start basis, policy/override version, original and current expiry, lifecycle state, deletion/invalidated descendants, and any minimum-snapshot trigger/authorizer. It never reveals credential material, actual canary values, authorization headers, or unredacted request bodies.
 
 Storage estimates distinguish customer/source-owned bytes from CanaryView-retained bytes and label measured versus projected inputs. Cost surprises, quota pressure, replay loss, compaction, or cold-tier transitions appear in Operations and Integrations with a specific impact and next step.
 

@@ -49,7 +49,7 @@ Every durable canonical record should carry a common envelope, even if a connect
 
 - stable record identifier, `schema_version`, and validity/version state;
 - `tenant_id`, `scope_id`, and deployment boundary;
-- `data_class`, `sensitivity`, `retention_profile`, `expires_at`, and `legal_hold`;
+- `data_class`, `sensitivity`, `retention_profile`, policy/override version, `retention_start`, `expires_at`, lifecycle state, and legal-hold references;
 - `residency` and `encryption_key_ref` (a reference, never key material);
 - `source_system`, source instance, `source_timestamp`, `observed_timestamp`, and ingest time;
 - collector identity and `collector_version`;
@@ -65,6 +65,20 @@ Every durable canonical record should carry a common envelope, even if a connect
 - conflict and missing-evidence references.
 
 Canonical records should be append-only or versioned. Corrections supersede earlier interpretations without rewriting what a source originally reported.
+
+### Lifecycle policy contract
+
+The M2A.0.2 lifecycle baseline makes retention executable data rather than prose attached later:
+
+- `retention_start` uses a trusted collector-observed/ingest clock for collected records and the reviewed close, finalization, supersession, or retirement event for derived/workflow records. It never uses last access and never rewrites `source_timestamp` or `observed_timestamp`.
+- `expires_at` is computed by a versioned `DataLifecyclePolicy` from data class, profile, and an approved override. A Regulated policy-defined period must be concrete before the record can persist.
+- lifecycle state distinguishes `ACTIVE`, `EXPIRY_DUE`, `HELD`, `DELETION_PENDING`, `DELETED`, `INVALIDATED`, and `DELETION_FAILED`. Expired, deleted, held, and invalidated are not synonyms.
+- a legal hold names exact records/lineage, reason, owner, review date, authorization, release authority, original expiry, residency, and key boundary. It suspends expiration only; it does not widen access, snapshot content, or model use.
+- a lifecycle decision/event records policy version, trigger, actor/automation, affected lineage, before/after state, result, retries, and permitted tombstone. Profile changes append decisions rather than mutating history.
+- raw references expose `available`, `expired`, `deleted`, `access_denied`, `moved`, or `integrity_mismatch`. Availability changes may lower confidence but never erase provenance.
+- a raw snapshot records its approved trigger, minimum field set, redaction, authorizer, acquisition time, integrity hash, expiry, and lineage. Ordinary snapshots cannot contain secrets, credentials, actual canary values, authorization headers, or unredacted request bodies.
+
+The class-by-class clocks, profile durations, hold eligibility, deletion effects, and snapshot triggers are authoritative in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. Persistence implementations must deterministically test those decisions; a backend default cannot replace them.
 
 ## Entity model
 
@@ -169,7 +183,8 @@ An observation records what a source said even if another source disagrees. Vend
 - sensitivity, access control, retention, and redaction state;
 - identifiers extracted from the evidence;
 - claims it supports or contradicts;
-- availability status when raw data has expired or is inaccessible.
+- availability status when raw data has expired or is inaccessible;
+- when embedded as a minimum snapshot, the approved trigger, authorizer, selected/redacted field manifest, acquisition time, expiry, and lifecycle decision reference.
 
 Raw evidence is one click from the claim it supports, subject to authorization. Missing raw material must be represented as unavailable—not silently removed from provenance.
 
@@ -435,11 +450,13 @@ Every conclusion links to its evidence. Every recommendation includes reason, co
 ## Persistence, retention, and privacy requirements
 
 - Scope isolation applies to observations, correlations, graph state, learned parameters, evidence, and actions.
-- Storage and queries are bounded; the data class, profile, expiry, legal hold, residency, encryption boundary, model-use policy, lineage, and storage impact are explicit.
+- Storage and queries are bounded; the data class, profile/policy version, retention start, expiry, lifecycle state, legal hold, residency, encryption boundary, model-use policy, lineage, and storage impact are explicit.
 - Raw vendor events have separate sensitivity, access, and retention from normalized records and remain in their source systems by default.
 - Customer raw traffic, baselines, scope state, and identifying detail do not cross deployment boundaries; CanarySting rule 9 remains the cross-deployment egress floor.
-- Deletion/expiry of raw evidence removes protected content and leaves only a policy-permitted provenance tombstone; dependent traces, edges, cases, features, recommendations, and models are rebuilt, invalidated, or marked evidence-unavailable according to their own policy.
+- Deletion/expiry of raw evidence removes protected content and leaves only a policy-permitted provenance tombstone; dependent traces, edges, cases, features, recommendations, and models are rebuilt, invalidated, constrained, or marked evidence-unavailable according to their own policy. Deletion failure is a visible retry/alert state, never success.
 - Legal hold suspends expiration without widening access, residency, or model-use permission.
+- Source-owned raw expiry/deletion and CanaryView deletion are reported separately; neither system claims deletion in the other.
+- Minimum snapshots are created only for the approved open-case, canary-touch, action/audit, hold, or reproducibility triggers and contain only the authorized redacted fields needed for the named claim/outcome.
 - The append-only relationship history—not a graph materialization alone—supports current-state reconstruction and historical summaries.
 - Model prompts/outputs are evidence only when explicitly retained and authorized; they are never hidden decision state.
 - Synthetic CanaryAttacker data is marked and isolated from production baselines and customer models.
