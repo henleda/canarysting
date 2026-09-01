@@ -1,6 +1,6 @@
 # CanaryView Canonical Data Model
 
-Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary recorded. This document still defers persistence technology and runtime implementation.
+Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary and M2A.2 minimum schema-v1 implementation recorded. Persistence technology and runtime integration remain deferred.
 
 ## Purpose
 
@@ -66,7 +66,7 @@ Every durable canonical record should carry a common envelope, even if a connect
 
 Canonical records should be append-only or versioned. Corrections supersede earlier interpretations without rewriting what a source originally reported.
 
-The envelope and its lifecycle value types belong to the future standard-library-only `internal/canaryview/model` package and are composed into every durable canonical record. The model expresses the decision; it does not perform authorization, persistence, expiry, deletion, rebuild, or backend work. Those operations belong to later application and repository services. Source-specific TTLs or retention settings do not satisfy this contract by themselves, and a normalized record cannot persist until its reviewed envelope is complete.
+The envelope and its lifecycle value types live in the standard-library-only `internal/canaryview/model` package and are composed into every durable canonical record. The model expresses the decision; it does not perform authorization, persistence, expiry, deletion, rebuild, or backend work. Those operations belong to later application and repository services. Source-specific TTLs or retention settings do not satisfy this contract by themselves, and a normalized record cannot persist until its reviewed envelope is complete.
 
 The Go model is the semantic source of truth. A future external transport uses the separate `api/proto/canaryview/v1` path and `canaryview.v1` protobuf namespace, with explicit converters and round-trip/drift tests. The existing CanarySting `canarysting.v1` contract remains unchanged. Compatible additions may extend v1; breaking meaning or knowledge-state changes require v2 and explicit translators. Each durable record's `schema_version` identifies its record schema independently of the transport package version.
 
@@ -479,9 +479,17 @@ Every conclusion links to its evidence. Every recommendation includes reason, co
 
 The authoritative lifecycle defaults, current-store inventory, Lean/Standard/Regulated profiles, federated-evidence model, and logical storage layers are in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0.4 approved those contracts; each M2A implementation task must still resolve its declared package, schema, lifecycle, and validation decisions without weakening them.
 
+## M2A.2 implemented minimum
+
+M2A.2 implements the storage-neutral schema-v1 subset needed before collectors: immutable construction and copy-returning accessors for the common envelope, `Observation`, scope, source/collector/control identity, optional subject/object references, raw-event and evidence references, lifecycle/model-use state, lineage references, storage-estimate provenance, and synthetic scenario marking. `MarshalObservationV1` and `UnmarshalObservationV1` provide a deterministic canonical JSON fixture representation with an explicit schema gate; they are not the separately planned external protobuf transport or a persistence choice.
+
+Required tenant/scope/deployment/residency, record/schema, source/collector, observation/ingest time, data-class/sensitivity/profile/policy/expiry, residency/key/operational-policy, and storage-estimate fields fail closed. Source time, source instance, control, subject/object, raw reference, and evidence may remain absent so partial source reports do not acquire invented values. Model-use grants default off and remain independent of retention and hold; held records preserve their original expiry and require exact hold references. Synthetic records require a scenario ID. Vendor extensions are versioned `EvidenceReference` objects, not open canonical field maps. The public contract contains no raw payload, request-body, credential, token, authorization-header, or canary-secret carrier.
+
+M2A.3 remains responsible for explicit assertion modes, producer classification, confidence components, verification evidence, missing/conflicting-evidence semantics, and acyclic transformation provenance. M2A.4 remains responsible for cross-scope query/store behavior, collection bounds, deletion/invalidation execution fixtures, and synthetic production-path rejection. M2B introduces collectors and source adapters. No current code persists an `Observation` or changes CanarySting runtime behavior.
+
 ## Package and reuse boundary
 
-The M2A.1 review selected `internal/canaryview/model` as the future canonical package. It is a standard-library-only leaf and cannot import CanarySting engine/contract/intelligence packages, adapters, dashboard code, vendor/Kubernetes SDKs, transport-generated code, or persistence implementations. Source-specific integration adapters map into it; CanaryView application, correlation, graph, case, and query services depend on it; human/API/agent projections depend on those services. The existing Sting runtime never imports CanaryView.
+The M2A.1 review selected `internal/canaryview/model` as the canonical package, and M2A.2 created its minimum implementation. It is a standard-library-only leaf and cannot import CanarySting engine/contract/intelligence packages, adapters, dashboard code, vendor/Kubernetes SDKs, transport-generated code, or persistence implementations. Source-specific integration adapters map into it; CanaryView application, correlation, graph, case, and query services depend on it; human/API/agent projections depend on those services. The existing Sting runtime never imports CanaryView.
 
 The code-grounded reuse boundary is:
 
