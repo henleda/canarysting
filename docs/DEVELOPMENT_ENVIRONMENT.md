@@ -107,6 +107,14 @@ The complete Level 3 local and DGX matrices run once per integration/main batch,
 
 For compatible kernel workflows, `scripts/dgx/pr.sh` performs one read-only preflight, one allowlisted ARM64 build, and one checksum-verified transfer. Its short-lived proof is bound to host, run ID, source revision, and age. Leaf scenarios may reuse only that read-only inspection; they still verify artifacts and before/after state, enforce exact scope, and clean run-owned state. Superseded PR jobs are cancelled by CI. Do not duplicate a full manual DGX run in CI for the same commit.
 
+### DGX CI controller
+
+GitHub Actions DGX jobs require one repository-level self-hosted runner on the Mac with the custom label `canarysting-dgx-controller`. The runner is a user-level macOS LaunchAgent installed outside the repository; it is not installed on the DGX and does not change DGX configuration. GitHub-hosted runners cannot use the workstation's private `falcon1` SSH boundary, so the controller is required only for risk-selected DGX, Level 3, and Level 4 CI profiles. If it is absent or offline, those jobs remain queued with no runner assignment and no DGX mutation.
+
+The controller runs repository workflows with the workstation user's authority and may reach only the bounded repository DGX entry points used by the selected job. Its registration credential remains in the runner installation outside the repository; one-time registration tokens, PATs, SSH credentials, and runner diagnostics must never enter source, CI output, DGX artifacts, or test-gate results. The workstation owner operates and upgrades the runner. Failure stops remote qualification; it must never cause a hosted fallback, weaker profile, or manual passing status. Removal requires stopping and uninstalling the LaunchAgent and removing the repository runner registration before deleting its dedicated installation directory.
+
+`actions/setup-go` caching is disabled in self-hosted DGX jobs. The persistent controller already retains its local Go caches, while action caching would archive and upload the workstation user's global multi-project cache. Hosted jobs keep their language-native caches. The runner adds no customer deployment footprint and applies to development infrastructure across all four product deployment profiles.
+
 ## CanaryAttacker safety boundary
 
 The DGX model may plan only through a reviewed structured tool catalog such as bounded HTTP requests, DNS lookups, TCP connects, endpoint enumeration, same-target link following, explicit lab-fixture credential attempts, and response inspection. The model does not receive arbitrary shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network access. The executor—not the model—enforces target allowlists, method/payload rules, redirects, timeouts, concurrency, request/body/token budgets, credential references, and cancellation.
