@@ -1,6 +1,6 @@
 # CanaryPlatform Operator Experience
 
-Status: product-experience contract for architecture review. It defines workflows and validation requirements, not polished visual design.
+Status: approved product-experience contract (M2A.0.4, 2026-09-01). It defines workflows and validation requirements, not polished visual design.
 
 ## Experience promise
 
@@ -263,7 +263,7 @@ Retention is configured through graphical controls, not YAML, policy code, a que
 | Profile | Operator intent | Summary |
 |---|---|---|
 | Lean | Minimize local storage and privacy exposure. | Short correlation/history windows, source-owned raw telemetry, and reduced historical depth. |
-| Standard | Recommended balance of investigation value, privacy, and cost. | 24-hour correlation; 24–72-hour replay; 90-day hot/13-month normalized evidence; 13-month traces; 3-year cases/actions; 24-month features. |
+| Standard | Recommended balance of investigation value, privacy, and cost. | 24-hour correlation; 72-hour replay; 90-day hot/13-month normalized evidence; 13-month traces; 3-year cases/actions; 24-month features. |
 | Regulated | Preserve regulated case/action evidence under tighter governance. | Seven-year case/action defaults, policy-defined history, stronger hold/review visibility, and no automatic increase in sensitive payload capture. |
 
 Each profile card shows included data classes, retention by class, measured or estimated daily volume, logical and physical retained volume, sensitive fields collected, earliest/latest expiry, legal holds, separate per-tenant/cross-tenant model-use status, residency cell/storage tier, estimate age/uncertainty, and expected cost range. Standard is preselected as a recommendation, not silently activated. One additional **Advanced overrides** screen may change a class; it shows the delta in volume, cost, exposure, expiry, rebuild work, and downstream model availability before confirmation.
