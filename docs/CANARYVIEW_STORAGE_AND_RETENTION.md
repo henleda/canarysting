@@ -1,6 +1,6 @@
 # CanaryView Storage and Retention Architecture
 
-Status: architecture baseline for review and the M2A.0 gate. This document defines lifecycle principles and logical storage requirements. It does not select or implement a production database, change current CanarySting runtime behavior, or authorize collection of additional data.
+Status: approved architecture baseline (M2A.0.4, 2026-09-01). This document defines lifecycle principles and logical storage requirements. It does not select or implement a production database, change current CanarySting runtime behavior, or authorize collection of additional data.
 
 ## Guiding principle
 
@@ -390,11 +390,11 @@ An override cannot change data class or sensitivity, capture new fields/payload,
 
 ## Remaining implementation decisions
 
-M2A.0.2 resolved lifecycle defaults and M2A.0.3 accepted the logical truth/rebuild, tenant/residency/purpose-key, backup/restore, legal-hold governance, model-use, synthetic-isolation, override, and cost-estimation contracts above. M2A.0.4 records the architecture review outcome before M2A canonical-model implementation.
+M2A.0.2 resolved lifecycle defaults and M2A.0.3 accepted the logical truth/rebuild, tenant/residency/purpose-key, backup/restore, legal-hold governance, model-use, synthetic-isolation, override, and cost-estimation contracts above. M2A.0.4 approved those contracts before M2A canonical-model implementation.
 
 Production engines, physical tenancy options, supported regions/disaster-recovery pairs, customer-managed-key products, engine-specific deletion/retry mechanics, measured per-class volume/latency/rebuild/cost targets, connector-specific snapshot manifests, and any justified nonzero model-removal tolerance remain implementation decisions. They require explicit approval and measured evidence; no current prototype store or architecture-stage estimate selects them by implication.
 
-## M2A.0.3 architecture review record
+## M2A.0 architecture decision record
 
 | Review lens | Accepted result | Fail-closed boundary |
 |---|---|---|
@@ -404,4 +404,4 @@ Production engines, physical tenancy options, supported regions/disaster-recover
 | Cost and capacity | Estimates expose provenance/uncertainty and report source versus retained, logical versus physical, class/tier/copy, cost range, quota, backlog, and rebuild envelope. | An assumption cannot be labeled measured; cost pressure cannot silently drop provenance, held/audit evidence, or change privacy/model authority. |
 | Implementation restraint | Logical contracts and backend acceptance objectives are accepted across Profiles 1–4. | No database, cloud region, KMS product, CMK option, or physical tenancy mode is selected by this task. |
 
-M2A.0.4 remains the explicit architecture approval gate. This decision record changes no runtime behavior, collection authority, credential authority, dependency, customer deployment, or DGX state.
+M2A.0.4 approved this decision record on 2026-09-01 after cross-checking the platform boundary, canonical envelope and knowledge states, operator lifecycle workflows, profile defaults, reconstruction model, deletion/restore objectives, and remaining implementation decisions. The approved open decisions are production engines; physical tenant/region/DR/key products; source snapshot manifests; identity-provider role mappings; measured per-class capacity, latency, rebuild, and cost targets; and any justified nonzero model-removal tolerance. They do not permit an implementation to weaken the accepted lifecycle contract. This decision changes no runtime behavior, collection authority, credential authority, dependency, customer deployment, or DGX state.

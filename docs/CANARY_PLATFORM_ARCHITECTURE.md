@@ -1,6 +1,6 @@
 # CanaryPlatform Architecture
 
-Status: architecture baseline for review. This document defines product boundaries and dependency direction. It does not rename packages, change runtime behavior, or claim that planned capabilities exist.
+Status: approved architecture baseline (M2A.0.4, 2026-09-01). This document defines product boundaries and dependency direction. It does not rename packages, change runtime behavior, or claim that planned capabilities exist.
 
 ## Product definition
 
@@ -121,7 +121,7 @@ source-owned telemetry -> normalized evidence -> traces/cases -> relationship hi
 
 The graph view is rebuildable and cannot become the only truth. Immutable/versioned observations plus append-only relationship assertions, retractions, validity intervals, provenance, and lifecycle events are authoritative; graph/search/trace projections carry a high-water mark and digest and are reconstructable. Operational retention permission is separate from both per-tenant and cross-tenant model-use authorization, which default off until explicitly granted. Cross-tenant learning additionally requires de-identification, a declared cohort, residency, purpose, lineage, and deletion controls. Synthetic CanaryAttacker evidence is isolated by internal domain, residency/key/registry namespace, and evaluation path and never silently enters production baselines or customer models.
 
-Every durable record belongs to one tenant and approved residency cell and carries a purpose-scoped logical key reference. Backups stay in the same boundary unless an explicit migration/multi-region policy is approved; restores replay the deletion ledger before service. Legal-hold roles do not grant evidence access, and Regulated hold creation/release requires separation of duties. The common lifecycle fields, accepted logical truth/rebuild and governance contracts, cost-estimation inputs/outputs, recommended profiles, deletion objectives, and remaining backend decisions are defined in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0 reviews that architecture before M2A implements the canonical model.
+Every durable record belongs to one tenant and approved residency cell and carries a purpose-scoped logical key reference. Backups stay in the same boundary unless an explicit migration/multi-region policy is approved; restores replay the deletion ledger before service. Legal-hold roles do not grant evidence access, and Regulated hold creation/release requires separation of duties. The common lifecycle fields, accepted logical truth/rebuild and governance contracts, cost-estimation inputs/outputs, recommended profiles, deletion objectives, and remaining backend decisions are defined in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0 approved that architecture before M2A implements the canonical model.
 
 ## CanaryView and CanarySting feedback loop
 
@@ -175,7 +175,7 @@ This mapping is descriptive and avoids duplicate abstractions:
 ## Phased implementation philosophy
 
 1. Preserve completed M1C/M1D socket-cookie and precise-enforcement proofs as option-preserving technical evidence.
-2. Review the M2A.0 storage/data-lifecycle architecture gate without selecting or implementing a production backend.
+2. Apply the approved M2A.0 storage/data-lifecycle architecture without selecting or implementing a production backend by implication.
 3. Implement the minimum CanaryView evidence model and operator contracts.
 4. Establish the read-only connector framework and Wave 0 collectors for existing sources.
 5. Build cross-tool correlation and the first operator-readable trace alongside backend work.
@@ -198,6 +198,20 @@ Working runtime components are refactored only when a future implementation task
 - M1B.5 is complete: the missing collector was recovered, negative-tested, and validated with recorded DGX evidence. The post-meeting re-baseline preserves that completion and does not replay or reinterpret it.
 - M1B.7 was already `DONE` in the checked-out plan, despite the prompt describing it as an expected next task. Its completion was preserved; this architecture bootstrap only evolved the environment document.
 - Current persistence is a set of useful CanarySting stores rather than one CanaryView lifecycle system: bbolt event/audit state has no general retention service, topology/deviants use 30-day TTLs, L7 evidence is capped and receives hourly TTL reap only when the optional SIEM drainer is enabled, NDJSON spools do not rotate or acknowledge, and feature/cross-scope ledgers are in memory. These facts are mapped in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`; no production database was selected here.
+
+## M2A.0.4 architecture approval record
+
+The 2026-09-01 review approved the platform, canonical-model, operator-experience, and storage/retention contracts as the architecture baseline for M2A implementation. Approval means implementations must preserve the following boundaries; it is not approval of a backend, runtime behavior, new collection, credential authority, or customer-side component.
+
+| Review lens | Approved contract | Implementation boundary |
+|---|---|---|
+| Product and deployment | CanaryView remains useful in Profile 1 through connector-first, read-only evidence; Site Gateway, managed assets, and local response remain progressive and optional. | No local component or higher profile is inferred from persistence or canonical-model work. |
+| Evidence and truth | Source reports remain immutable/versioned observations; append-only relationship assertions and lifecycle events are authoritative; graph, trace, search, summary, feature, and model projections remain rebuildable or explicitly invalidated. | No graph-only truth, provenance erasure, source-claim rewrite, or parallel observation path. |
+| Lifecycle and governance | Data class, sensitivity, trusted retention clock, expiry state, exact lineage, tenant/scope, residency cell, purpose-key reference, hold state, and separate operational/per-tenant/cross-tenant model-use authority remain explicit. | No hold implies access or model use; no retention grant implies training; deletion cannot report success while protected copies remain unresolved. |
+| Operator contract | Profile consequences are visible before approval; Standard uses the accepted concrete defaults; hold/model-use permissions are separate; lifecycle detail stays one click from a claim. | No YAML, query, CLI, prompt, hidden authority, or ambiguous expired-versus-deleted state in the core workflow. |
+| Implementation restraint | The logical layers, reconstruction checks, deletion/restore objectives, synthetic isolation, and estimation contract are approved across Profiles 1–4. | Production engines, regions/DR pairs, physical tenancy, CMK products, identity-provider mappings, source manifests, and measured capacity/cost targets require later evidence and approval. |
+
+The open questions below are therefore implementation decisions, not gaps that permit weakening the approved contracts. M2A.1 resolves the package/reuse/API boundary it names before code is introduced; later tasks resolve backend-, source-, identity-, correlation-, and authorization-specific choices at their declared gates.
 
 ## Open architecture questions
 

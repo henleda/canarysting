@@ -1,6 +1,6 @@
 # CanaryView Canonical Data Model
 
-Status: conceptual specification for architecture review. This document deliberately defers Go package placement, wire schemas, persistence technology, and runtime implementation.
+Status: approved conceptual specification (M2A.0.4, 2026-09-01). This document deliberately defers Go package placement, wire schemas, persistence technology, and runtime implementation.
 
 ## Purpose
 
@@ -473,7 +473,7 @@ Every conclusion links to its evidence. Every recommendation includes reason, co
 - Model prompts/outputs are evidence only when explicitly retained and authorized; they are never hidden decision state.
 - Synthetic CanaryAttacker data is marked and isolated from production baselines and customer models.
 
-The authoritative lifecycle defaults, current-store inventory, Lean/Standard/Regulated profiles, federated-evidence model, and logical storage layers are in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A implementation is gated on M2A.0 review of that document.
+The authoritative lifecycle defaults, current-store inventory, Lean/Standard/Regulated profiles, federated-evidence model, and logical storage layers are in `docs/CANARYVIEW_STORAGE_AND_RETENTION.md`. M2A.0.4 approved those contracts; each M2A implementation task must still resolve its declared package, schema, lifecycle, and validation decisions without weakening them.
 
 ## Reuse and unresolved implementation choices
 
