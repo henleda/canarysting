@@ -216,6 +216,8 @@ Every derived object retains an acyclic lineage to input observations/evidence a
 - what deterministic or model logic ran;
 - who or what approved any action.
 
+The schema-v3 canonical implementation records a root record, exact transformation ID and version, direct inputs, and an optional ancestry closure of child-to-parent links. Construction fails when direct inputs disagree with the envelope lineage, a link is duplicated or disconnected, or any back-edge creates a cycle. Source observations still carry their normalization procedure even when a partial source report has no raw parent reference. A schema-v2 record cannot be promoted by inventing this security metadata; it requires trusted-source re-ingestion as schema v3.
+
 ## Confidence model
 
 Confidence is explicit, contextual, and auditable. A future implementation may choose numeric bands, but it must retain these components:
@@ -232,6 +234,12 @@ Confidence is explicit, contextual, and auditable. A future implementation may c
 
 Confidence in identity, correlation, explanation, impact, and recommendation are separate dimensions. Aggregation must not convert several weak observations into “verified” without a defined verification rule. Label-derived identity remains explicitly lower confidence than authenticated mesh identity.
 
+M2A.3 deliberately selects named `LOW`, `MEDIUM`, and `HIGH` bands rather than a numeric probability. The record retains method, source quality, identity assurance, completeness, candidate count, time uncertainty, algorithm/model identity and version, calibration state, and human review state as separate fields. Missing evidence uses a closed typed vocabulary, while conflicting material remains a versioned evidence reference with the `CONTRADICTING` role; neither accepts free-form parser or model text.
+
+The normalized-observation fixture's explicitly assumed storage impact is revised from 768 to 2,048 bytes per record to account for the v3 metadata. This is a conservative planning assumption, not measured backend capacity or a pricing claim; M2B collector counters and size distributions must replace it before production capacity decisions.
+
+Knowledge state, assertion mode, and producer are independently encoded and compatibility-checked. A source observation cannot carry correlation or inference state; correlations and inferences cannot masquerade as observations; recommendations cannot become actions; and model-generated output cannot claim observation, verification, or execution. `VERIFIED` requires a named, versioned deterministic or operator verification procedure plus supporting evidence. Parsing a syntactically valid identifier creates only a `DECLARED` entity reference and can never establish trust on its own.
+
 ## Identity model
 
 An `Identity` may retain Kubernetes namespace, service account, pod UID, owner/workload, selected labels, Cilium identity, SPIFFE ID, process/host identity, human identity, and vendor principal IDs. Each identifier has:
@@ -243,6 +251,8 @@ An `Identity` may retain Kubernetes namespace, service account, pod UID, owner/w
 - aliases and mappings;
 - confidence;
 - scope.
+
+The current minimal `EntityReference` implements the identifier, type, assertion mode, and verification-evidence boundary. Issuer, validity interval, aliases/mappings, full identity-resolution records, and live trust-source adapters remain later identity tasks. The neutral contract therefore prevents false verification now without treating parse-only SPIFFE handling as live mesh proof or changing the existing CanarySting identity runtime.
 
 Resolution prefers validated mesh/SPIFFE identity, then lower-confidence declared/label-derived workload identity. Conflicting identities are retained as alternatives. Ambiguity must not fall back to a global scope or enable precise enforcement.
 

@@ -7,54 +7,67 @@ import (
 	"time"
 )
 
-var errObservationV1RequiresReingestion = errors.New("observation schema v1 requires trusted-source re-ingestion as schema v2")
+var (
+	errObservationV1RequiresReingestion = errors.New("observation schema v1 requires trusted-source re-ingestion as schema v3")
+	errObservationV2RequiresReingestion = errors.New("observation schema v2 requires trusted-source re-ingestion as schema v3")
+)
 
 // MarshalObservationV1 refuses to emit the unsafe pre-consumer schema. Version
 // 1 did not encode the mandatory observation basis, explicit synthetic
 // classification, or trusted retention decision and clock. Those values cannot
-// be reconstructed safely from an in-memory version 2 observation.
+// be reconstructed safely from an in-memory version 3 observation.
 func MarshalObservationV1(Observation) ([]byte, error) {
 	return nil, errObservationV1RequiresReingestion
 }
 
 // UnmarshalObservationV1 refuses to invent security-relevant fields absent
-// from version 1. Callers must re-ingest the trusted source record as version 2.
+// from version 1. Callers must re-ingest the trusted source record as version 3.
 func UnmarshalObservationV1([]byte) (Observation, error) {
 	return Observation{}, errObservationV1RequiresReingestion
 }
 
-// MarshalObservationV2 serializes an observation into the storage-neutral
-// canonical JSON fixture representation for schema version 2. It is not the
-// separately planned external protobuf transport.
-func MarshalObservationV2(observation Observation) ([]byte, error) {
+// MarshalObservationV2 refuses to erase mandatory schema-v3 knowledge state.
+func MarshalObservationV2(Observation) ([]byte, error) {
+	return nil, errObservationV2RequiresReingestion
+}
+
+// UnmarshalObservationV2 refuses to invent security-relevant knowledge state.
+func UnmarshalObservationV2([]byte) (Observation, error) {
+	return Observation{}, errObservationV2RequiresReingestion
+}
+
+// MarshalObservationV3 serializes the storage-neutral canonical JSON fixture.
+// It is not the separately planned external protobuf transport.
+func MarshalObservationV3(observation Observation) ([]byte, error) {
 	if err := observation.validate(); err != nil {
-		return nil, fmt.Errorf("marshal observation v2: %w", err)
+		return nil, fmt.Errorf("marshal observation v3: %w", err)
 	}
-	blob, err := json.Marshal(toObservationV2(observation))
+	blob, err := json.Marshal(toObservationV3(observation))
 	if err != nil {
-		return nil, fmt.Errorf("marshal observation v2: %w", err)
+		return nil, fmt.Errorf("marshal observation v3: %w", err)
 	}
 	return blob, nil
 }
 
-// UnmarshalObservationV2 decodes and validates schema version 2. Unknown JSON
-// fields are ignored so additive v2 fields remain forward compatible; an
+// UnmarshalObservationV3 decodes and validates schema version 3. Unknown JSON
+// fields are ignored so additive v3 fields remain forward compatible; an
 // unsupported schema version always fails closed.
-func UnmarshalObservationV2(blob []byte) (Observation, error) {
-	var wire observationV2
+func UnmarshalObservationV3(blob []byte) (Observation, error) {
+	var wire observationV3
 	if err := json.Unmarshal(blob, &wire); err != nil {
-		return Observation{}, fmt.Errorf("unmarshal observation v2: %w", err)
+		return Observation{}, fmt.Errorf("unmarshal observation v3: %w", err)
 	}
 	observation, err := wire.toModel()
 	if err != nil {
-		return Observation{}, fmt.Errorf("unmarshal observation v2: %w", err)
+		return Observation{}, fmt.Errorf("unmarshal observation v3: %w", err)
 	}
 	return observation, nil
 }
 
-type observationV2 struct {
+type observationV3 struct {
 	Envelope          envelopeV2            `json:"envelope"`
 	Basis             ObservationBasis      `json:"basis"`
+	Knowledge         knowledgeV3           `json:"knowledge"`
 	ObservationType   string                `json:"observation_type"`
 	Source            sourceIdentityV2      `json:"source"`
 	Collector         collectorIdentityV2   `json:"collector"`
@@ -62,8 +75,8 @@ type observationV2 struct {
 	SourceTimestamp   *time.Time            `json:"source_timestamp,omitempty"`
 	ObservedTimestamp time.Time             `json:"observed_timestamp"`
 	IngestedAt        time.Time             `json:"ingested_at"`
-	Subject           *entityReferenceV2    `json:"subject,omitempty"`
-	Object            *entityReferenceV2    `json:"object,omitempty"`
+	Subject           *entityReferenceV3    `json:"subject,omitempty"`
+	Object            *entityReferenceV3    `json:"object,omitempty"`
 	RawEvent          *rawEventReferenceV2  `json:"raw_event,omitempty"`
 	Evidence          []evidenceReferenceV2 `json:"evidence,omitempty"`
 }
@@ -135,9 +148,11 @@ type controlIdentityV2 struct {
 	Kind string `json:"kind"`
 }
 
-type entityReferenceV2 struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+type entityReferenceV3 struct {
+	ID            string          `json:"id"`
+	Kind          string          `json:"kind"`
+	AssertionMode AssertionMode   `json:"assertion_mode"`
+	Verification  *verificationV3 `json:"verification,omitempty"`
 }
 
 type evidenceReferenceV2 struct {
@@ -155,9 +170,56 @@ type rawEventReferenceV2 struct {
 	HashValue     string          `json:"hash_value,omitempty"`
 }
 
-func toObservationV2(observation Observation) observationV2 {
-	w := observationV2{
+type confidenceV3 struct {
+	Level             ConfidenceLevel      `json:"level"`
+	Method            ConfidenceMethod     `json:"method"`
+	SourceQuality     AssuranceLevel       `json:"source_quality"`
+	IdentityAssurance AssuranceLevel       `json:"identity_assurance"`
+	Completeness      EvidenceCompleteness `json:"completeness"`
+	CandidateCount    uint32               `json:"candidate_count"`
+	TimeUncertainty   TimeUncertainty      `json:"time_uncertainty"`
+	TimeWindowNanos   int64                `json:"time_window_nanos,omitempty"`
+	AlgorithmID       string               `json:"algorithm_id"`
+	AlgorithmVersion  string               `json:"algorithm_version"`
+	Calibration       CalibrationState     `json:"calibration"`
+	HumanReview       HumanReviewState     `json:"human_review"`
+}
+
+type verificationV3 struct {
+	ProcedureID      string                `json:"procedure_id"`
+	ProcedureVersion string                `json:"procedure_version"`
+	Producer         ProducerType          `json:"producer"`
+	Evidence         []evidenceReferenceV2 `json:"evidence"`
+}
+
+type lineageLinkV3 struct {
+	Child  recordReferenceV2 `json:"child"`
+	Parent recordReferenceV2 `json:"parent"`
+}
+
+type provenanceV3 struct {
+	Root                  recordReferenceV2   `json:"root"`
+	TransformationID      string              `json:"transformation_id"`
+	TransformationVersion string              `json:"transformation_version"`
+	Inputs                []recordReferenceV2 `json:"inputs,omitempty"`
+	Links                 []lineageLinkV3     `json:"links,omitempty"`
+}
+
+type knowledgeV3 struct {
+	State               KnowledgeState        `json:"state"`
+	AssertionMode       AssertionMode         `json:"assertion_mode"`
+	Producer            ProducerType          `json:"producer"`
+	Confidence          confidenceV3          `json:"confidence"`
+	Provenance          provenanceV3          `json:"provenance"`
+	MissingEvidence     []MissingEvidenceKind `json:"missing_evidence,omitempty"`
+	ConflictingEvidence []evidenceReferenceV2 `json:"conflicting_evidence,omitempty"`
+	Verification        *verificationV3       `json:"verification,omitempty"`
+}
+
+func toObservationV3(observation Observation) observationV3 {
+	w := observationV3{
 		Envelope: toEnvelopeV2(observation.envelope), Basis: observation.basis,
+		Knowledge:         toKnowledgeV3(observation.knowledge),
 		ObservationType:   observation.observationType,
 		Source:            sourceIdentityV2{System: observation.source.system, Instance: observation.source.instance},
 		Collector:         collectorIdentityV2{ID: observation.collector.id, Version: observation.collector.version},
@@ -168,10 +230,12 @@ func toObservationV2(observation Observation) observationV2 {
 		w.Control = &controlIdentityV2{ID: observation.control.id, Kind: observation.control.kind}
 	}
 	if observation.subject != nil {
-		w.Subject = &entityReferenceV2{ID: observation.subject.id, Kind: observation.subject.kind}
+		value := toEntityReferenceV3(*observation.subject)
+		w.Subject = &value
 	}
 	if observation.object != nil {
-		w.Object = &entityReferenceV2{ID: observation.object.id, Kind: observation.object.kind}
+		value := toEntityReferenceV3(*observation.object)
+		w.Object = &value
 	}
 	if observation.rawEvent != nil {
 		w.RawEvent = &rawEventReferenceV2{
@@ -187,6 +251,75 @@ func toObservationV2(observation Observation) observationV2 {
 		})
 	}
 	return w
+}
+
+func toKnowledgeV3(knowledge Knowledge) knowledgeV3 {
+	w := knowledgeV3{
+		State: knowledge.state, AssertionMode: knowledge.assertionMode, Producer: knowledge.producer,
+		Confidence: confidenceV3{
+			Level: knowledge.confidence.level, Method: knowledge.confidence.method,
+			SourceQuality:     knowledge.confidence.sourceQuality,
+			IdentityAssurance: knowledge.confidence.identityAssurance,
+			Completeness:      knowledge.confidence.completeness,
+			CandidateCount:    knowledge.confidence.candidateCount,
+			TimeUncertainty:   knowledge.confidence.timeUncertainty,
+			TimeWindowNanos:   int64(knowledge.confidence.timeWindow),
+			AlgorithmID:       knowledge.confidence.algorithmID,
+			AlgorithmVersion:  knowledge.confidence.algorithmVersion,
+			Calibration:       knowledge.confidence.calibration,
+			HumanReview:       knowledge.confidence.humanReview,
+		},
+		Provenance: provenanceV3{
+			Root:                  recordReferenceV2{ID: knowledge.provenance.root.id, SchemaVersion: knowledge.provenance.root.schemaVersion},
+			TransformationID:      knowledge.provenance.transformationID,
+			TransformationVersion: knowledge.provenance.transformationVersion,
+		},
+		MissingEvidence: append([]MissingEvidenceKind(nil), knowledge.missingEvidence...),
+	}
+	for _, input := range knowledge.provenance.inputs {
+		w.Provenance.Inputs = append(w.Provenance.Inputs, recordReferenceV2{ID: input.id, SchemaVersion: input.schemaVersion})
+	}
+	for _, link := range knowledge.provenance.links {
+		w.Provenance.Links = append(w.Provenance.Links, lineageLinkV3{
+			Child:  recordReferenceV2{ID: link.child.id, SchemaVersion: link.child.schemaVersion},
+			Parent: recordReferenceV2{ID: link.parent.id, SchemaVersion: link.parent.schemaVersion},
+		})
+	}
+	for _, conflict := range knowledge.conflictingEvidence {
+		w.ConflictingEvidence = append(w.ConflictingEvidence, toEvidenceReferenceV2(conflict))
+	}
+	if knowledge.verification != nil {
+		value := toVerificationV3(*knowledge.verification)
+		w.Verification = &value
+	}
+	return w
+}
+
+func toEntityReferenceV3(entity EntityReference) entityReferenceV3 {
+	w := entityReferenceV3{ID: entity.id, Kind: entity.kind, AssertionMode: entity.assertionMode}
+	if entity.verification != nil {
+		value := toVerificationV3(*entity.verification)
+		w.Verification = &value
+	}
+	return w
+}
+
+func toVerificationV3(verification Verification) verificationV3 {
+	w := verificationV3{
+		ProcedureID: verification.procedureID, ProcedureVersion: verification.procedureVersion,
+		Producer: verification.producer,
+	}
+	for _, evidence := range verification.evidence {
+		w.Evidence = append(w.Evidence, toEvidenceReferenceV2(evidence))
+	}
+	return w
+}
+
+func toEvidenceReferenceV2(evidence EvidenceReference) evidenceReferenceV2 {
+	return evidenceReferenceV2{
+		ID: evidence.id, SchemaVersion: evidence.schemaVersion, Role: evidence.role,
+		ExtensionNamespace: evidence.extensionNamespace, ExtensionVersion: evidence.extensionVersion,
+	}
 }
 
 func toEnvelopeV2(envelope Envelope) envelopeV2 {
@@ -222,7 +355,7 @@ func toEnvelopeV2(envelope Envelope) envelopeV2 {
 	return w
 }
 
-func (w observationV2) toModel() (Observation, error) {
+func (w observationV3) toModel() (Observation, error) {
 	envelope, err := w.Envelope.toModel()
 	if err != nil {
 		return Observation{}, err
@@ -239,11 +372,11 @@ func (w observationV2) toModel() (Observation, error) {
 	if err != nil {
 		return Observation{}, err
 	}
-	subject, err := optionalEntityFromV2(w.Subject)
+	subject, err := optionalEntityFromV3(w.Subject)
 	if err != nil {
 		return Observation{}, err
 	}
-	object, err := optionalEntityFromV2(w.Object)
+	object, err := optionalEntityFromV3(w.Object)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -259,13 +392,114 @@ func (w observationV2) toModel() (Observation, error) {
 		}
 		evidence = append(evidence, ref)
 	}
+	knowledge, err := w.Knowledge.toModel()
+	if err != nil {
+		return Observation{}, fmt.Errorf("knowledge: %w", err)
+	}
 	return NewObservation(ObservationInput{
-		Envelope: envelope, Basis: w.Basis, ObservationType: w.ObservationType,
-		Source: source, Collector: collector, Control: control,
+		Envelope: envelope, Basis: w.Basis, Knowledge: knowledge,
+		ObservationType: w.ObservationType,
+		Source:          source, Collector: collector, Control: control,
 		SourceTimestamp: copyTime(w.SourceTimestamp), ObservedTimestamp: w.ObservedTimestamp,
 		IngestedAt: w.IngestedAt, Subject: subject, Object: object, RawEvent: rawEvent,
 		Evidence: evidence,
 	})
+}
+
+func (w knowledgeV3) toModel() (Knowledge, error) {
+	confidence, err := NewConfidence(ConfidenceInput{
+		Level: w.Confidence.Level, Method: w.Confidence.Method,
+		SourceQuality:     w.Confidence.SourceQuality,
+		IdentityAssurance: w.Confidence.IdentityAssurance,
+		Completeness:      w.Confidence.Completeness,
+		CandidateCount:    w.Confidence.CandidateCount,
+		TimeUncertainty:   w.Confidence.TimeUncertainty,
+		TimeWindow:        time.Duration(w.Confidence.TimeWindowNanos),
+		AlgorithmID:       w.Confidence.AlgorithmID,
+		AlgorithmVersion:  w.Confidence.AlgorithmVersion,
+		Calibration:       w.Confidence.Calibration,
+		HumanReview:       w.Confidence.HumanReview,
+	})
+	if err != nil {
+		return Knowledge{}, err
+	}
+	root, err := w.Provenance.Root.toModel()
+	if err != nil {
+		return Knowledge{}, err
+	}
+	inputs := make([]RecordReference, 0, len(w.Provenance.Inputs))
+	for _, value := range w.Provenance.Inputs {
+		ref, err := value.toModel()
+		if err != nil {
+			return Knowledge{}, err
+		}
+		inputs = append(inputs, ref)
+	}
+	links := make([]LineageLink, 0, len(w.Provenance.Links))
+	for _, value := range w.Provenance.Links {
+		child, err := value.Child.toModel()
+		if err != nil {
+			return Knowledge{}, err
+		}
+		parent, err := value.Parent.toModel()
+		if err != nil {
+			return Knowledge{}, err
+		}
+		link, err := NewLineageLink(child, parent)
+		if err != nil {
+			return Knowledge{}, err
+		}
+		links = append(links, link)
+	}
+	provenance, err := NewProvenance(root, w.Provenance.TransformationID, w.Provenance.TransformationVersion, inputs, links)
+	if err != nil {
+		return Knowledge{}, err
+	}
+	conflicts, err := evidenceReferencesFromV2(w.ConflictingEvidence)
+	if err != nil {
+		return Knowledge{}, err
+	}
+	verification, err := optionalVerificationFromV3(w.Verification)
+	if err != nil {
+		return Knowledge{}, err
+	}
+	return NewKnowledge(KnowledgeInput{
+		State: w.State, AssertionMode: w.AssertionMode, Producer: w.Producer,
+		Confidence: confidence, Provenance: provenance,
+		MissingEvidence: w.MissingEvidence, ConflictingEvidence: conflicts,
+		Verification: verification,
+	})
+}
+
+func (w recordReferenceV2) toModel() (RecordReference, error) {
+	return NewRecordReference(w.ID, w.SchemaVersion)
+}
+
+func evidenceReferencesFromV2(values []evidenceReferenceV2) ([]EvidenceReference, error) {
+	result := make([]EvidenceReference, 0, len(values))
+	for _, value := range values {
+		ref, err := NewEvidenceReference(value.ID, value.SchemaVersion, value.Role, value.ExtensionNamespace, value.ExtensionVersion)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, ref)
+	}
+	return result, nil
+}
+
+func optionalVerificationFromV3(value *verificationV3) (*Verification, error) {
+	if value == nil {
+		return nil, nil
+	}
+	evidence, err := evidenceReferencesFromV2(value.Evidence)
+	if err != nil {
+		return nil, err
+	}
+	verification, err := NewVerification(value.ProcedureID, value.ProcedureVersion, value.Producer, evidence)
+	if err != nil {
+		return nil, err
+	}
+	return &verification, nil
 }
 
 func (w envelopeV2) toModel() (Envelope, error) {
@@ -341,11 +575,15 @@ func optionalControlFromV2(value *controlIdentityV2) (*ControlIdentity, error) {
 	return &control, nil
 }
 
-func optionalEntityFromV2(value *entityReferenceV2) (*EntityReference, error) {
+func optionalEntityFromV3(value *entityReferenceV3) (*EntityReference, error) {
 	if value == nil {
 		return nil, nil
 	}
-	entity, err := NewEntityReference(value.ID, value.Kind)
+	verification, err := optionalVerificationFromV3(value.Verification)
+	if err != nil {
+		return nil, err
+	}
+	entity, err := NewEntityReferenceWithAssertion(value.ID, value.Kind, value.AssertionMode, verification)
 	if err != nil {
 		return nil, err
 	}

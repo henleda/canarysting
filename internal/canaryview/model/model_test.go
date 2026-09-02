@@ -16,13 +16,13 @@ var (
 	fixtureIngested       = fixtureObserved.Add(2 * time.Second)
 )
 
-func TestObservationV2CompleteRoundTrip(t *testing.T) {
+func TestObservationV3CompleteRoundTrip(t *testing.T) {
 	observation := completeObservationFixture(t)
-	blob, err := MarshalObservationV2(observation)
+	blob, err := MarshalObservationV3(observation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := UnmarshalObservationV2(blob)
+	decoded, err := UnmarshalObservationV3(blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +31,11 @@ func TestObservationV2CompleteRoundTrip(t *testing.T) {
 	}
 
 	for _, field := range []string{
-		`"schema_version":2`, `"tenant_id":"tenant-a"`,
+		`"schema_version":3`, `"tenant_id":"tenant-a"`,
 		`"basis":"SOURCE_REPORT"`,
+		`"state":"SOURCE_OBSERVATION"`, `"assertion_mode":"OBSERVED"`,
+		`"producer":"DETERMINISTIC"`, `"level":"HIGH"`,
+		`"transformation_id":"normalize.hubble.flow"`,
 		`"source_timestamp":"2026-09-01T17:01:01.0000003Z"`,
 		`"data_class":"NORMALIZED_OBSERVATION"`, `"retention_profile":"STANDARD"`,
 		`"retention_decision_ref":"retention/observation-1"`,
@@ -41,7 +44,7 @@ func TestObservationV2CompleteRoundTrip(t *testing.T) {
 		`"encryption_key_ref":"key://tenant-a/evidence"`,
 		`"per_tenant_model_use":{"allowed":true,"policy_ref":"model-use/per-tenant-v1"}`,
 		`"cross_tenant_model_use":{"allowed":false}`,
-		`"derivation_lineage":[{"id":"raw-42","schema_version":2}]`,
+		`"derivation_lineage":[{"id":"raw-42","schema_version":3}]`,
 		`"synthetic":true`, `"scenario_id":"scenario-7"`,
 		`"role":"VENDOR_EXTENSION"`, `"extension_namespace":"hubble.io/v1"`,
 	} {
@@ -56,9 +59,9 @@ func TestObservationV2CompleteRoundTrip(t *testing.T) {
 	}
 }
 
-func TestObservationV2SupportsPartialSourceReports(t *testing.T) {
+func TestObservationV3SupportsPartialSourceReports(t *testing.T) {
 	observation := partialObservationFixture(t)
-	blob, err := MarshalObservationV2(observation)
+	blob, err := MarshalObservationV3(observation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +70,7 @@ func TestObservationV2SupportsPartialSourceReports(t *testing.T) {
 			t.Errorf("optional field %q should be absent: %s", absent, blob)
 		}
 	}
-	decoded, err := UnmarshalObservationV2(blob)
+	decoded, err := UnmarshalObservationV3(blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,24 +85,31 @@ func TestObservationV2SupportsPartialSourceReports(t *testing.T) {
 	}
 }
 
-func TestObservationV2AdditiveFieldsAndVersionGate(t *testing.T) {
-	blob, err := MarshalObservationV2(partialObservationFixture(t))
+func TestObservationV3AdditiveFieldsAndVersionGate(t *testing.T) {
+	blob, err := MarshalObservationV3(partialObservationFixture(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	withFutureField := append(append([]byte(nil), blob[:len(blob)-1]...), []byte(`,"future_additive_field":{"value":1}}`)...)
-	if _, err := UnmarshalObservationV2(withFutureField); err != nil {
-		t.Fatalf("additive v2 field should be ignored: %v", err)
+	if _, err := UnmarshalObservationV3(withFutureField); err != nil {
+		t.Fatalf("additive v3 field should be ignored: %v", err)
 	}
 	withoutBasis := bytes.Replace(blob, []byte(`"basis":"SOURCE_REPORT",`), nil, 1)
 	if len(withoutBasis) == len(blob) {
 		t.Fatalf("source-report basis not found in fixture: %s", blob)
 	}
-	if _, err := UnmarshalObservationV2(withoutBasis); err == nil || !strings.Contains(err.Error(), "source-report basis") {
+	if _, err := UnmarshalObservationV3(withoutBasis); err == nil || !strings.Contains(err.Error(), "source-report basis") {
 		t.Fatalf("wire record without source-report basis was accepted: %v", err)
 	}
-	unsupported := bytes.Replace(blob, []byte(`"schema_version":2`), []byte(`"schema_version":3`), 1)
-	if _, err := UnmarshalObservationV2(unsupported); err == nil || !strings.Contains(err.Error(), "unsupported schema version 3") {
+	withoutKnowledge := bytes.Replace(blob, []byte(`"knowledge":`), []byte(`"ignored_knowledge":`), 1)
+	if len(withoutKnowledge) == len(blob) {
+		t.Fatalf("knowledge metadata not found in fixture: %s", blob)
+	}
+	if _, err := UnmarshalObservationV3(withoutKnowledge); err == nil || !strings.Contains(err.Error(), "knowledge") {
+		t.Fatalf("wire record without knowledge metadata was accepted: %v", err)
+	}
+	unsupported := bytes.Replace(blob, []byte(`"schema_version":3`), []byte(`"schema_version":4`), 1)
+	if _, err := UnmarshalObservationV3(unsupported); err == nil || !strings.Contains(err.Error(), "unsupported schema version 4") {
 		t.Fatalf("unsupported version was not rejected: %v", err)
 	}
 }
@@ -110,6 +120,15 @@ func TestObservationV1RequiresTrustedSourceReingestion(t *testing.T) {
 	}
 	if _, err := UnmarshalObservationV1([]byte(`{"envelope":{"schema_version":1}}`)); !errors.Is(err, errObservationV1RequiresReingestion) {
 		t.Fatalf("schema v1 unmarshal did not require re-ingestion: %v", err)
+	}
+}
+
+func TestObservationV2RequiresTrustedSourceReingestion(t *testing.T) {
+	if _, err := MarshalObservationV2(partialObservationFixture(t)); !errors.Is(err, errObservationV2RequiresReingestion) {
+		t.Fatalf("schema v2 marshal did not require re-ingestion: %v", err)
+	}
+	if _, err := UnmarshalObservationV2([]byte(`{"envelope":{"schema_version":2}}`)); !errors.Is(err, errObservationV2RequiresReingestion) {
+		t.Fatalf("schema v2 unmarshal did not require re-ingestion: %v", err)
 	}
 }
 
@@ -210,7 +229,7 @@ func TestSyntheticContextRequiresScenario(t *testing.T) {
 		t.Fatal("unclassified envelope silently became production")
 	}
 
-	blob, err := MarshalObservationV2(partialObservationFixture(t))
+	blob, err := MarshalObservationV3(partialObservationFixture(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +237,7 @@ func TestSyntheticContextRequiresScenario(t *testing.T) {
 	if len(withoutClassification) == len(blob) {
 		t.Fatalf("synthetic classification not found in fixture: %s", blob)
 	}
-	if _, err := UnmarshalObservationV2(withoutClassification); err == nil || !strings.Contains(err.Error(), "classification is required") {
+	if _, err := UnmarshalObservationV3(withoutClassification); err == nil || !strings.Contains(err.Error(), "classification is required") {
 		t.Fatalf("wire record without synthetic classification was accepted: %v", err)
 	}
 }
@@ -244,7 +263,7 @@ func TestVendorExtensionsRemainEvidenceReferences(t *testing.T) {
 
 func TestObservationContractHasNoPayloadCarrier(t *testing.T) {
 	prohibitedNames := []string{"payload", "body", "secret", "credential", "token", "authorization"}
-	for _, value := range []any{RawEventReference{}, EvidenceReference{}, rawEventReferenceV2{}, evidenceReferenceV2{}, ObservationInput{}, observationV2{}} {
+	for _, value := range []any{RawEventReference{}, EvidenceReference{}, rawEventReferenceV2{}, evidenceReferenceV2{}, ObservationInput{}, observationV3{}, knowledgeV3{}, verificationV3{}} {
 		typeOf := reflect.TypeOf(value)
 		for i := 0; i < typeOf.NumField(); i++ {
 			field := typeOf.Field(i)
@@ -254,8 +273,9 @@ func TestObservationContractHasNoPayloadCarrier(t *testing.T) {
 					t.Errorf("%s.%s is a prohibited raw-data carrier", typeOf.Name(), field.Name)
 				}
 			}
+			isTypedMissingEvidence := field.Type == reflect.TypeOf([]MissingEvidenceKind(nil))
 			if field.Type.Kind() == reflect.Map ||
-				(field.Type.Kind() == reflect.Slice && (field.Type.Elem().Kind() == reflect.Uint8 || field.Type.Elem().Kind() == reflect.String)) {
+				(!isTypedMissingEvidence && field.Type.Kind() == reflect.Slice && (field.Type.Elem().Kind() == reflect.Uint8 || field.Type.Elem().Kind() == reflect.String)) {
 				t.Errorf("%s.%s can carry unbounded raw content", typeOf.Name(), field.Name)
 			}
 		}
@@ -277,16 +297,16 @@ func TestObservationContractHasNoPayloadCarrier(t *testing.T) {
 		t.Fatal("non-digest raw event hash value was accepted")
 	}
 
-	blob, err := MarshalObservationV2(partialObservationFixture(t))
+	blob, err := MarshalObservationV3(partialObservationFixture(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	legacyDiagnostic := append(append([]byte(nil), blob[:len(blob)-1]...), []byte(`,"parser_warnings":["Authorization: Bearer TOPSECRET"]}`)...)
-	decoded, err := UnmarshalObservationV2(legacyDiagnostic)
+	decoded, err := UnmarshalObservationV3(legacyDiagnostic)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reencoded, err := MarshalObservationV2(decoded)
+	reencoded, err := MarshalObservationV3(decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,9 +316,10 @@ func TestObservationContractHasNoPayloadCarrier(t *testing.T) {
 }
 
 func TestObservationRequiresSourceReportAndTrustedRetentionClock(t *testing.T) {
+	envelope := mustEnvelope(t, mustLifecycle(t, lifecycleInputFixture(t)), nil, ProductionContext())
 	base := ObservationInput{
-		Envelope: mustEnvelope(t, mustLifecycle(t, lifecycleInputFixture(t)), nil, ProductionContext()),
-		Basis:    ObservationSourceReport, ObservationType: "network.flow",
+		Envelope: envelope, Basis: ObservationSourceReport,
+		Knowledge: mustSourceKnowledge(t, envelope, nil, nil), ObservationType: "network.flow",
 		Source: mustSource(t), Collector: mustCollector(t),
 		ObservedTimestamp: fixtureObserved, IngestedAt: fixtureIngested,
 	}
@@ -352,6 +373,7 @@ func TestObservationIsImmutableFromCallerValues(t *testing.T) {
 	envelope := mustEnvelope(t, lifecycle, lineage, ProductionContext())
 	observation, err := NewObservation(ObservationInput{
 		Envelope: envelope, Basis: ObservationSourceReport,
+		Knowledge:       mustSourceKnowledge(t, envelope, nil, nil),
 		ObservationType: "network.flow", Source: mustSource(t),
 		Collector: mustCollector(t), Control: &control, SourceTimestamp: &sourceTimestamp,
 		ObservedTimestamp: fixtureObserved, IngestedAt: fixtureIngested,
@@ -417,6 +439,9 @@ func completeObservationFixture(t *testing.T) Observation {
 	sourceTimestamp := time.Date(2026, 9, 1, 17, 1, 1, 300, time.UTC)
 	observation, err := NewObservation(ObservationInput{
 		Envelope: envelope, Basis: ObservationSourceReport,
+		Knowledge: mustSourceKnowledge(t, envelope, []MissingEvidenceKind{MissingVerificationEvidence}, []EvidenceReference{
+			mustEvidenceRef(t, "evidence-conflict", EvidenceContradicting, "", ""),
+		}),
 		ObservationType: "network.flow", Source: mustSource(t),
 		Collector: mustCollector(t), Control: &control, SourceTimestamp: &sourceTimestamp,
 		ObservedTimestamp: fixtureObserved, IngestedAt: fixtureIngested,
@@ -438,6 +463,10 @@ func partialObservationFixture(t *testing.T) Observation {
 	envelope := mustEnvelope(t, lifecycle, nil, ProductionContext())
 	observation, err := NewObservation(ObservationInput{
 		Envelope: envelope, Basis: ObservationSourceReport,
+		Knowledge: mustSourceKnowledge(t, envelope, []MissingEvidenceKind{
+			MissingSourceTimestamp, MissingControlIdentity, MissingSubjectIdentity,
+			MissingObjectIdentity, MissingRawEvent, MissingSupportingEvidence,
+		}, nil),
 		ObservationType: "policy.decision", Source: mustSource(t),
 		Collector: mustCollector(t), ObservedTimestamp: fixtureObserved, IngestedAt: fixtureIngested,
 	})
@@ -449,7 +478,7 @@ func partialObservationFixture(t *testing.T) Observation {
 
 func lifecycleInputFixture(t *testing.T) LifecycleInput {
 	t.Helper()
-	estimate, err := NewStorageEstimate(768, EstimateAssumed)
+	estimate, err := NewStorageEstimate(2048, EstimateAssumed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,4 +576,45 @@ func mustEntity(t *testing.T, id, kind string) EntityReference {
 		t.Fatal(err)
 	}
 	return entity
+}
+
+func mustSourceKnowledge(t *testing.T, envelope Envelope, missing []MissingEvidenceKind, conflicts []EvidenceReference) Knowledge {
+	t.Helper()
+	root, err := NewRecordReference(envelope.RecordID(), envelope.SchemaVersion())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := envelope.DerivationLineage()
+	links := make([]LineageLink, 0, len(inputs))
+	for _, input := range inputs {
+		link, err := NewLineageLink(root, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		links = append(links, link)
+	}
+	provenance, err := NewProvenance(root, "normalize.hubble.flow", "1.0.0", inputs, links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confidence, err := NewConfidence(ConfidenceInput{
+		Level: ConfidenceHigh, Method: ConfidenceDirectSource,
+		SourceQuality: AssuranceDeclared, IdentityAssurance: AssuranceDeclared,
+		Completeness: EvidencePartial, CandidateCount: 1, TimeUncertainty: TimeBounded,
+		TimeWindow:  2 * time.Second,
+		AlgorithmID: "normalize.hubble.flow", AlgorithmVersion: "1.0.0",
+		Calibration: CalibrationNotApplicable, HumanReview: HumanUnreviewed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := NewKnowledge(KnowledgeInput{
+		State: KnowledgeSourceObservation, AssertionMode: AssertionObserved,
+		Producer: ProducerDeterministic, Confidence: confidence, Provenance: provenance,
+		MissingEvidence: missing, ConflictingEvidence: conflicts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return knowledge
 }

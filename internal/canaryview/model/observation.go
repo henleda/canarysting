@@ -248,6 +248,7 @@ func (r RawEventReference) validate() error {
 type ObservationInput struct {
 	Envelope          Envelope
 	Basis             ObservationBasis
+	Knowledge         Knowledge
 	ObservationType   string
 	Source            SourceIdentity
 	Collector         CollectorIdentity
@@ -266,6 +267,7 @@ type ObservationInput struct {
 type Observation struct {
 	envelope          Envelope
 	basis             ObservationBasis
+	knowledge         Knowledge
 	observationType   string
 	source            SourceIdentity
 	collector         CollectorIdentity
@@ -288,6 +290,12 @@ func NewObservation(in ObservationInput) (Observation, error) {
 	}
 	if !in.Basis.valid() {
 		return Observation{}, fmt.Errorf("observation requires source-report basis")
+	}
+	if err := in.Knowledge.validateForEnvelope(in.Envelope); err != nil {
+		return Observation{}, fmt.Errorf("knowledge: %w", err)
+	}
+	if in.Knowledge.state != KnowledgeSourceObservation {
+		return Observation{}, fmt.Errorf("Observation requires SOURCE_OBSERVATION knowledge state")
 	}
 	if err := required("observation type", in.ObservationType); err != nil {
 		return Observation{}, err
@@ -342,8 +350,9 @@ func NewObservation(in ObservationInput) (Observation, error) {
 	}
 	sourceTimestamp := copyTime(in.SourceTimestamp)
 	return Observation{
-		envelope: in.Envelope, basis: in.Basis, observationType: in.ObservationType,
-		source: in.Source, collector: in.Collector, control: control,
+		envelope: in.Envelope, basis: in.Basis, knowledge: in.Knowledge,
+		observationType: in.ObservationType,
+		source:          in.Source, collector: in.Collector, control: control,
 		sourceTimestamp: sourceTimestamp, observedTimestamp: observedAt,
 		ingestedAt: ingestedAt, subject: subject, object: object,
 		rawEvent: rawEvent, evidence: evidence,
@@ -352,6 +361,7 @@ func NewObservation(in ObservationInput) (Observation, error) {
 
 func (o Observation) Envelope() Envelope           { return o.envelope }
 func (o Observation) Basis() ObservationBasis      { return o.basis }
+func (o Observation) Knowledge() Knowledge         { return o.knowledge }
 func (o Observation) ObservationType() string      { return o.observationType }
 func (o Observation) Source() SourceIdentity       { return o.source }
 func (o Observation) Collector() CollectorIdentity { return o.collector }
@@ -368,8 +378,9 @@ func (o Observation) RawEvent() (RawEventReference, bool) { return valueOptional
 
 func (o Observation) validate() error {
 	_, err := NewObservation(ObservationInput{
-		Envelope: o.envelope, Basis: o.basis, ObservationType: o.observationType,
-		Source: o.source, Collector: o.collector, Control: o.control,
+		Envelope: o.envelope, Basis: o.basis, Knowledge: o.knowledge,
+		ObservationType: o.observationType,
+		Source:          o.source, Collector: o.collector, Control: o.control,
 		SourceTimestamp: o.sourceTimestamp, ObservedTimestamp: o.observedTimestamp,
 		IngestedAt: o.ingestedAt, Subject: o.subject, Object: o.object,
 		RawEvent: o.rawEvent, Evidence: o.evidence,

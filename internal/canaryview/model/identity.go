@@ -1,5 +1,7 @@
 package model
 
+import "fmt"
+
 // Scope is the mandatory tenant and isolation boundary for a canonical record.
 // Residency is part of the scope so a record cannot lose it during projection.
 type Scope struct {
@@ -111,27 +113,51 @@ func (c ControlIdentity) validate() error {
 	return err
 }
 
-// EntityReference is a partial canonical subject/object reference. Entity
-// attributes and resolution confidence are introduced by later model tasks.
+// EntityReference is a partial canonical subject/object reference with an
+// explicit assertion mode. The convenience constructor represents only a
+// syntactically accepted, declared identifier; it can never claim verification.
 type EntityReference struct {
-	id   string
-	kind string
+	id            string
+	kind          string
+	assertionMode AssertionMode
+	verification  *Verification
 }
 
 func NewEntityReference(id, kind string) (EntityReference, error) {
+	return NewEntityReferenceWithAssertion(id, kind, AssertionDeclared, nil)
+}
+
+func NewEntityReferenceWithAssertion(id, kind string, mode AssertionMode, verification *Verification) (EntityReference, error) {
 	if err := required("entity id", id); err != nil {
 		return EntityReference{}, err
 	}
 	if err := required("entity kind", kind); err != nil {
 		return EntityReference{}, err
 	}
-	return EntityReference{id: id, kind: kind}, nil
+	if !mode.valid() {
+		return EntityReference{}, fmt.Errorf("unsupported entity assertion mode %q", mode)
+	}
+	proof, err := copyOptional(verification, func(value Verification) error { return value.validate() })
+	if err != nil {
+		return EntityReference{}, fmt.Errorf("entity verification: %w", err)
+	}
+	if mode == AssertionVerified && proof == nil {
+		return EntityReference{}, fmt.Errorf("VERIFIED entity reference requires verification evidence")
+	}
+	if mode != AssertionVerified && proof != nil {
+		return EntityReference{}, fmt.Errorf("entity verification evidence requires VERIFIED assertion mode")
+	}
+	return EntityReference{id: id, kind: kind, assertionMode: mode, verification: proof}, nil
 }
 
-func (e EntityReference) ID() string   { return e.id }
-func (e EntityReference) Kind() string { return e.kind }
+func (e EntityReference) ID() string                   { return e.id }
+func (e EntityReference) Kind() string                 { return e.kind }
+func (e EntityReference) AssertionMode() AssertionMode { return e.assertionMode }
+func (e EntityReference) Verification() (Verification, bool) {
+	return valueOptional(e.verification)
+}
 
 func (e EntityReference) validate() error {
-	_, err := NewEntityReference(e.id, e.kind)
+	_, err := NewEntityReferenceWithAssertion(e.id, e.kind, e.assertionMode, e.verification)
 	return err
 }

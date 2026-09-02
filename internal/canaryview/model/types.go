@@ -7,7 +7,7 @@ import (
 
 // CurrentSchemaVersion is the canonical record schema implemented by this
 // package. It is independent of any future protobuf package version.
-const CurrentSchemaVersion uint32 = 2
+const CurrentSchemaVersion uint32 = 3
 
 // DataClass binds a durable record to its reviewed lifecycle policy.
 type DataClass string
@@ -89,7 +89,7 @@ func (c RetentionClock) valid() bool {
 	return c == RetentionFromObserved || c == RetentionFromIngest
 }
 
-// ObservationBasis makes schema-v2 Observation records source reports only.
+// ObservationBasis makes schema-v3 Observation records source reports only.
 // Correlation, inference, recommendation, and action modes belong to later
 // canonical record types and cannot be encoded as an Observation.
 type ObservationBasis string
@@ -97,6 +97,186 @@ type ObservationBasis string
 const ObservationSourceReport ObservationBasis = "SOURCE_REPORT"
 
 func (b ObservationBasis) valid() bool { return b == ObservationSourceReport }
+
+// KnowledgeState distinguishes facts about source reports from later joins,
+// interpretations, proposals, and mutations. These values are intentionally
+// not a lifecycle: one state cannot be promoted into another in place.
+type KnowledgeState string
+
+const (
+	KnowledgeSourceObservation KnowledgeState = "SOURCE_OBSERVATION"
+	KnowledgeCorrelation       KnowledgeState = "CORRELATION"
+	KnowledgeInference         KnowledgeState = "INFERENCE"
+	KnowledgeRecommendation    KnowledgeState = "RECOMMENDATION"
+	KnowledgeAction            KnowledgeState = "ACTION"
+)
+
+func (s KnowledgeState) valid() bool {
+	switch s {
+	case KnowledgeSourceObservation, KnowledgeCorrelation, KnowledgeInference,
+		KnowledgeRecommendation, KnowledgeAction:
+		return true
+	default:
+		return false
+	}
+}
+
+// AssertionMode states how a claim was established. VERIFIED is reserved for
+// a claim carrying a defined verification procedure and supporting evidence.
+type AssertionMode string
+
+const (
+	AssertionObserved AssertionMode = "OBSERVED"
+	AssertionDeclared AssertionMode = "DECLARED"
+	AssertionVerified AssertionMode = "VERIFIED"
+	AssertionInferred AssertionMode = "INFERRED"
+)
+
+func (m AssertionMode) valid() bool {
+	return m == AssertionObserved || m == AssertionDeclared || m == AssertionVerified || m == AssertionInferred
+}
+
+// ProducerType identifies the class of producer, independently of the claim's
+// knowledge state and assertion mode.
+type ProducerType string
+
+const (
+	ProducerDeterministic  ProducerType = "DETERMINISTIC"
+	ProducerCorrelation    ProducerType = "CORRELATION"
+	ProducerInference      ProducerType = "INFERENCE"
+	ProducerModelGenerated ProducerType = "MODEL_GENERATED"
+	ProducerOperator       ProducerType = "OPERATOR"
+)
+
+func (p ProducerType) valid() bool {
+	switch p {
+	case ProducerDeterministic, ProducerCorrelation, ProducerInference,
+		ProducerModelGenerated, ProducerOperator:
+		return true
+	default:
+		return false
+	}
+}
+
+// ConfidenceLevel is ordinal and deliberately non-numeric until a calibrated
+// confidence model exists.
+type ConfidenceLevel string
+
+const (
+	ConfidenceLow    ConfidenceLevel = "LOW"
+	ConfidenceMedium ConfidenceLevel = "MEDIUM"
+	ConfidenceHigh   ConfidenceLevel = "HIGH"
+)
+
+func (l ConfidenceLevel) valid() bool {
+	return l == ConfidenceLow || l == ConfidenceMedium || l == ConfidenceHigh
+}
+
+// ConfidenceMethod names the evidence-combination method without claiming a
+// numeric probability.
+type ConfidenceMethod string
+
+const (
+	ConfidenceDirectSource           ConfidenceMethod = "DIRECT_SOURCE"
+	ConfidenceExactIdentifier        ConfidenceMethod = "EXACT_IDENTIFIER"
+	ConfidenceVerifiedIdentity       ConfidenceMethod = "VERIFIED_IDENTITY"
+	ConfidenceDeclaredMapping        ConfidenceMethod = "DECLARED_MAPPING"
+	ConfidenceTupleTimeWindow        ConfidenceMethod = "TUPLE_TIME_WINDOW"
+	ConfidenceProbabilisticInference ConfidenceMethod = "PROBABILISTIC_INFERENCE"
+	ConfidenceModelInterpretation    ConfidenceMethod = "MODEL_INTERPRETATION"
+)
+
+func (m ConfidenceMethod) valid() bool {
+	switch m {
+	case ConfidenceDirectSource, ConfidenceExactIdentifier,
+		ConfidenceVerifiedIdentity, ConfidenceDeclaredMapping,
+		ConfidenceTupleTimeWindow, ConfidenceProbabilisticInference,
+		ConfidenceModelInterpretation:
+		return true
+	default:
+		return false
+	}
+}
+
+type AssuranceLevel string
+
+const (
+	AssuranceUnverified AssuranceLevel = "UNVERIFIED"
+	AssuranceDeclared   AssuranceLevel = "DECLARED"
+	AssuranceVerified   AssuranceLevel = "VERIFIED"
+)
+
+func (a AssuranceLevel) valid() bool {
+	return a == AssuranceUnverified || a == AssuranceDeclared || a == AssuranceVerified
+}
+
+type EvidenceCompleteness string
+
+const (
+	EvidencePartial  EvidenceCompleteness = "PARTIAL"
+	EvidenceComplete EvidenceCompleteness = "COMPLETE"
+)
+
+func (c EvidenceCompleteness) valid() bool { return c == EvidencePartial || c == EvidenceComplete }
+
+type TimeUncertainty string
+
+const (
+	TimeExact   TimeUncertainty = "EXACT"
+	TimeBounded TimeUncertainty = "BOUNDED"
+	TimeUnknown TimeUncertainty = "UNKNOWN"
+)
+
+func (u TimeUncertainty) valid() bool { return u == TimeExact || u == TimeBounded || u == TimeUnknown }
+
+type CalibrationState string
+
+const (
+	CalibrationNotApplicable CalibrationState = "NOT_APPLICABLE"
+	CalibrationUncalibrated  CalibrationState = "UNCALIBRATED"
+	CalibrationCalibrated    CalibrationState = "CALIBRATED"
+)
+
+func (s CalibrationState) valid() bool {
+	return s == CalibrationNotApplicable || s == CalibrationUncalibrated || s == CalibrationCalibrated
+}
+
+type HumanReviewState string
+
+const (
+	HumanUnreviewed HumanReviewState = "UNREVIEWED"
+	HumanConfirmed  HumanReviewState = "CONFIRMED"
+	HumanRejected   HumanReviewState = "REJECTED"
+)
+
+func (s HumanReviewState) valid() bool {
+	return s == HumanUnreviewed || s == HumanConfirmed || s == HumanRejected
+}
+
+// MissingEvidenceKind is a typed diagnostic. Free-form parser or model text is
+// intentionally excluded from the canonical record.
+type MissingEvidenceKind string
+
+const (
+	MissingSourceTimestamp      MissingEvidenceKind = "SOURCE_TIMESTAMP"
+	MissingControlIdentity      MissingEvidenceKind = "CONTROL_IDENTITY"
+	MissingSubjectIdentity      MissingEvidenceKind = "SUBJECT_IDENTITY"
+	MissingObjectIdentity       MissingEvidenceKind = "OBJECT_IDENTITY"
+	MissingRawEvent             MissingEvidenceKind = "RAW_EVENT"
+	MissingSupportingEvidence   MissingEvidenceKind = "SUPPORTING_EVIDENCE"
+	MissingVerificationEvidence MissingEvidenceKind = "VERIFICATION_EVIDENCE"
+)
+
+func (k MissingEvidenceKind) valid() bool {
+	switch k {
+	case MissingSourceTimestamp, MissingControlIdentity, MissingSubjectIdentity,
+		MissingObjectIdentity, MissingRawEvent, MissingSupportingEvidence,
+		MissingVerificationEvidence:
+		return true
+	default:
+		return false
+	}
+}
 
 // LifecycleState distinguishes expiry, hold, deletion, and invalidation. These
 // states are never interchangeable.
