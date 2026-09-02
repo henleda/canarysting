@@ -92,6 +92,10 @@ An Evidence Collector streams, polls, receives webhooks, reads files, or backfil
 
 The collector contract must accommodate stream, poll, webhook, file, backfill, and customer-owned-bus acquisition without making any one transport canonical.
 
+The M2B.1 minimum seam is implemented in `internal/canaryview/collector`. Its `Source` contract exposes only an immutable descriptor and one bounded read; it has no credential, mutation, or action method. A read returns lifecycle-bearing canonical `Observation` values plus a scope/source/collector-bound checkpoint represented by a platform-generated digest rather than a raw vendor cursor. CanaryView-owned checkpoint repositories and observation sinks are separate interfaces. The runner performs one read without a silent retry, rejects cross-scope or cross-producer output, rejects synthetic records on the production collector path, treats identical records as duplicates and conflicting content under one record ID as an error, and advances a non-regressing checkpoint only after delivery completes. A failed delivery can therefore restart from the prior checkpoint and rely on an idempotent sink without losing or silently duplicating evidence.
+
+Replay expiry and source-retention loss are explicit states with a bounded reason code and unavailable-before boundary; neither may masquerade as an empty successful read. The current run report contains only typed health state, bounded counts, timing, replay state, continuation state, and latest source/observation times. It intentionally excludes source errors, credentials, raw payloads, and cursors. This seam does not select a persistent checkpoint or health backend, implement a Site Gateway spool, claim coverage or support, adapt a live source, or introduce an Action Adapter. Those remain later, separately reviewed work.
+
 ### ConnectorCapabilityManifest
 
 The capability manifest is versioned product data available to the operator interface and agent interface. It is the only safe basis for advertising visibility or planning an action. Conceptual fields include:
