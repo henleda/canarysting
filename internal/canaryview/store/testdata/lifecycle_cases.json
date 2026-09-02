@@ -1,0 +1,11 @@
+[
+  {"name":"active-production","record_id":"fixture-active","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"ACTIVE","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":true,"synthetic":false,"expected_put":"accepted"},
+  {"name":"held-after-expiry","record_id":"fixture-held","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"HELD","expires_at":"2026-09-02T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"accepted"},
+  {"name":"active-after-expiry","record_id":"fixture-expired","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"ACTIVE","expires_at":"2026-09-02T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"expiry-due","record_id":"fixture-expiry-due","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"EXPIRY_DUE","expires_at":"2026-09-02T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"deletion-pending","record_id":"fixture-deleting","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"DELETION_PENDING","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"deletion-failed","record_id":"fixture-deletion-failed","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"DELETION_FAILED","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"deleted","record_id":"fixture-deleted","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"DELETED","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"invalidated","record_id":"fixture-invalidated","tenant_id":"tenant-fixture","scope_id":"scope-blue","state":"INVALIDATED","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":false,"synthetic":false,"expected_put":"lifecycle-unavailable"},
+  {"name":"synthetic-lab","record_id":"fixture-synthetic","tenant_id":"internal-lab","scope_id":"scenario-scope","state":"ACTIVE","expires_at":"2026-09-04T00:00:00Z","model_use_allowed":true,"synthetic":true,"expected_put":"synthetic-rejected"}
+]
