@@ -1,6 +1,6 @@
 # CanaryView Canonical Data Model
 
-Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary, schema-v3 canonical model, and M2A.4 bounded store proof seam recorded. Persistence technology and runtime integration remain deferred.
+Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary, schema-v3 canonical model, M2A.4 bounded observation-store proof seam, and M2B.4 lifecycle-bearing trace-projection proof seam recorded. Persistence technology and runtime integration remain deferred.
 
 ## Purpose
 
@@ -297,7 +297,7 @@ These are ordinal evidence classes, not numeric probabilities. Exact identifier 
 
 Every qualifying record remains in the candidate set and every non-qualifying considered record retains a typed rejection plus its missing-key set. A chosen relationship exists only when the strongest record is unique. If the strongest relationship depends on multiple eligible translation paths, the result remains ambiguous and unchosen. Independent exact evidence may resolve weaker translation-path ambiguity, but the alternative translation evidence remains attached to the candidate. Each translation hop retains the declared before tuple, after tuple, translating control, source reference, observed time, and whether traversal followed or reversed the declared direction.
 
-The socket-cookie key type accepts only CanarySting L7, kernel, or engine vantages and must agree with the record's vantage. Comparing two distinct CanarySting vantages disables every fallback method: a missing or unequal cookie produces a typed rejection even if a request ID, identity, or tuple also matches. It therefore preserves the socket cookie as the sole CanarySting L7/kernel join and cannot be repurposed as a general vendor identifier. Correlation never changes a verdict, tier, canary trigger, or enforcement decision. M2B.4 owns evidence-linked trace construction, conflicts, lifecycle/invalidation, and any durable `CORRELATED_TRACE` record.
+The socket-cookie key type accepts only CanarySting L7, kernel, or engine vantages and must agree with the record's vantage. Comparing two distinct CanarySting vantages disables every fallback method: a missing or unequal cookie produces a typed rejection even if a request ID, identity, or tuple also matches. It therefore preserves the socket cookie as the sole CanarySting L7/kernel join and cannot be repurposed as a general vendor identifier. Correlation never changes a verdict, tier, canary trigger, or enforcement decision. M2B.4 composes these results into evidence-linked trace projections without changing the candidate semantics.
 
 ### Trace
 
@@ -314,6 +314,16 @@ A `Trace` contains:
 - aggregate completeness/confidence with its method.
 
 OpenTelemetry IDs are strong correlation evidence when present but do not define the CanaryView trace boundary by themselves.
+
+#### M2B.4 implemented trace semantics
+
+`internal/canaryview/trace` implements an immutable, bounded `CORRELATED_TRACE` projection over the M2B.3 candidate seam. A builder validates one exact tenant/scope/deployment/residency boundary, orders observation and policy-decision hops by uncertainty-aware event time plus record reference, retains every candidate, rejection, missing key, join method, citation, and translation hop, and derives a stable `trace:sha256:` identifier from canonical semantics and the versioned builder algorithm. Input ordering and build time cannot change that trace ID; build time and lifecycle metadata remain covered by a separate integrity digest.
+
+Coverage is explicitly declared with typed expectations for observations, policy decisions, source time, raw evidence, and correlation. Unsatisfied expectations remain `MissingTelemetry`; a non-available raw reference automatically becomes a visible gap while preserving its opaque reference, availability reason, and optional hash. Equal strongest candidates create an `AMBIGUOUS_CORRELATION` conflict and remain unchosen. Explicit contradictory-evidence and ordering-uncertainty conflicts are also typed, record-cited, and lineage-bearing. Status is `CONFLICTED` when any conflict exists, otherwise `PARTIAL` when any declared expectation is missing, and otherwise `COMPLETE_UNDER_DECLARED_COVERAGE`; “complete” never means universal telemetry coverage.
+
+The envelope directly cites the input high-water mark, every hop, supporting/contradicting evidence reference, and every translation assertion. Correlation knowledge remains inferred and carries named composite-correlation confidence rather than a fabricated probability. `CORRELATED_TRACE` is Confidential, uses an exact trace-close retention clock, requires a concrete storage estimate and policy/key/residency references, and keeps operational retention independent from both model-use grants. Lean expiry is exactly 90 days from close and Standard expiry is 13 calendar months; Regulated and approved-override periods remain concrete policy inputs.
+
+The in-memory production trace store is a proof seam, not a selected backend. It rejects synthetic or initially non-queryable traces, enforces finite per-scope/query/invalidation bounds, hides expired/deleted/invalidated projections from ordinary reads, keeps held projections queryable past nominal expiry, and applies parent-expiry/deletion/invalidation only to direct-lineage projections in the requested exact scope. Invalidation does not delete or mutate independently governed source observations. Physical deletion, recursive dependency execution, cache/index/backup cleanup, lifecycle-event persistence, open-trace mutation, external serialization, and the operator projection remain later tasks. Passive traces require no CanarySting canary interaction and this seam has no verdict, action, or enforcement authority.
 
 ## Policy decisions
 

@@ -132,6 +132,7 @@ dgx-harness-check:
 	scripts/dgx/enforcespike_test.sh
 	scripts/dgx/dgxstackspike_test.sh
 	scripts/dgx/correlationspike_test.sh
+	scripts/dgx/tracespike_test.sh
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh
 	scripts/dgx/pr_test.sh

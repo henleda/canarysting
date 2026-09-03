@@ -1,0 +1,18 @@
+[
+  {
+    "name": "passive-partial-broken-reference",
+    "candidate_count": 0,
+    "raw_availability": "INTEGRITY_MISMATCH",
+    "expected_status": "PARTIAL",
+    "expected_missing": 1,
+    "expected_conflicts": 0
+  },
+  {
+    "name": "ambiguous-policy-candidates",
+    "candidate_count": 2,
+    "raw_availability": "AVAILABLE",
+    "expected_status": "CONFLICTED",
+    "expected_missing": 1,
+    "expected_conflicts": 1
+  }
+]

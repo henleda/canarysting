@@ -37,6 +37,7 @@ target_list="$(${build_script} --list)"
 [[ "${target_list}" == *$'test\tcookiespike\t./cmd/cookiespike'* ]] || fail 'test target catalog is incomplete'
 [[ "${target_list}" == *$'test\tdgxstackspike\t./cmd/dgxstackspike'* ]] || fail 'DGX-stack proof target is missing'
 [[ "${target_list}" == *$'test\tcorrelationspike\t./cmd/correlationspike'* ]] || fail 'correlation proof target is missing'
+[[ "${target_list}" == *$'test\ttracespike\t./cmd/tracespike'* ]] || fail 'trace proof target is missing'
 
 if "${build_script}" --target cookiespike >"${tmp_root}/missing-output.log" 2>&1; then
   fail 'build unexpectedly accepted a missing --output-dir'
@@ -60,10 +61,10 @@ fi
 
 first="${tmp_root}/first"
 second="${tmp_root}/second"
-"${build_script}" --output-dir "${first}" --target engine --target cookiespike --target dgxstackspike --target correlationspike
-"${build_script}" --output-dir "${second}" --target engine --target cookiespike --target dgxstackspike --target correlationspike
+"${build_script}" --output-dir "${first}" --target engine --target cookiespike --target dgxstackspike --target correlationspike --target tracespike
+"${build_script}" --output-dir "${second}" --target engine --target cookiespike --target dgxstackspike --target correlationspike --target tracespike
 
-for relative_path in product/engine test/cookiespike test/dgxstackspike test/correlationspike manifest.tsv SHA256SUMS; do
+for relative_path in product/engine test/cookiespike test/dgxstackspike test/correlationspike test/tracespike manifest.tsv SHA256SUMS; do
   [[ -f "${first}/${relative_path}" ]] || fail "missing output: ${relative_path}"
   [[ -f "${second}/${relative_path}" ]] || fail "missing repeated output: ${relative_path}"
   cmp "${first}/${relative_path}" "${second}/${relative_path}" >/dev/null ||
@@ -82,6 +83,8 @@ grep -F $'artifact\ttest\tdgxstackspike\ttest/dgxstackspike\t' "${first}/manifes
   fail 'manifest does not classify the DGX-stack proof artifact'
 grep -F $'artifact\ttest\tcorrelationspike\ttest/correlationspike\t' "${first}/manifest.tsv" >/dev/null ||
   fail 'manifest does not classify the correlation proof artifact'
+grep -F $'artifact\ttest\ttracespike\ttest/tracespike\t' "${first}/manifest.tsv" >/dev/null ||
+  fail 'manifest does not classify the trace proof artifact'
 
 while read -r expected relative_path; do
   [[ -n "${expected}" && -n "${relative_path}" ]] || fail 'malformed SHA256SUMS entry'
@@ -97,6 +100,8 @@ file -b "${first}/test/dgxstackspike" | grep -E 'ELF 64-bit.*ARM aarch64' >/dev/
   fail 'dgxstackspike is not a Linux ARM64 ELF executable'
 file -b "${first}/test/correlationspike" | grep -E 'ELF 64-bit.*ARM aarch64' >/dev/null ||
   fail 'correlationspike is not a Linux ARM64 ELF executable'
+file -b "${first}/test/tracespike" | grep -E 'ELF 64-bit.*ARM aarch64' >/dev/null ||
+  fail 'tracespike is not a Linux ARM64 ELF executable'
 
 before_manifest="$(sha256_file "${first}/manifest.tsv")"
 if "${build_script}" --output-dir "${first}" --target engine >"${tmp_root}/overwrite.log" 2>&1; then

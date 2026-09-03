@@ -26,8 +26,12 @@ expect_failure() {
 [[ -x "${cleanup_script}" ]] || fail "cleanup script is missing or not executable: ${cleanup_script}"
 grep -F 'f:test/correlationspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits correlationspike'
-grep -F 'test/correlationspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/correlationspike|test/tracespike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits correlationspike'
+grep -F 'f:test/tracespike' "${cleanup_script}" >/dev/null ||
+  fail 'cleanup artifact inventory omits tracespike'
+grep -F 'test/correlationspike|test/tracespike)' "${cleanup_script}" >/dev/null ||
+  fail 'cleanup checksum inventory omits tracespike'
 
 awk '
   /^ssh .*<<.REMOTE./ { capture = 1; next }
