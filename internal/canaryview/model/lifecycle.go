@@ -136,6 +136,9 @@ func NewLifecycle(in LifecycleInput) (Lifecycle, error) {
 	if !in.ExpiresAt.After(in.RetentionStart) {
 		return Lifecycle{}, fmt.Errorf("expiry must be after retention start")
 	}
+	if in.RetentionClock == RetentionFromTraceClose && in.DataClass != DataClassCorrelatedTrace {
+		return Lifecycle{}, fmt.Errorf("trace-close retention clock requires data class %s", DataClassCorrelatedTrace)
+	}
 	if in.DataClass == DataClassNormalizedObservation {
 		var expected time.Time
 		switch in.RetentionProfile {
@@ -146,6 +149,21 @@ func NewLifecycle(in LifecycleInput) (Lifecycle, error) {
 		}
 		if !expected.IsZero() && !in.ExpiresAt.Equal(expected) {
 			return Lifecycle{}, fmt.Errorf("%s normalized-observation expiry must be %s", in.RetentionProfile, expected.UTC().Format(time.RFC3339Nano))
+		}
+	}
+	if in.DataClass == DataClassCorrelatedTrace {
+		if in.RetentionClock != RetentionFromTraceClose {
+			return Lifecycle{}, fmt.Errorf("correlated trace requires %s retention clock", RetentionFromTraceClose)
+		}
+		var expected time.Time
+		switch in.RetentionProfile {
+		case RetentionLean:
+			expected = in.RetentionStart.Add(90 * 24 * time.Hour)
+		case RetentionStandard:
+			expected = in.RetentionStart.AddDate(0, 13, 0)
+		}
+		if !expected.IsZero() && !in.ExpiresAt.Equal(expected) {
+			return Lifecycle{}, fmt.Errorf("%s correlated-trace expiry must be %s", in.RetentionProfile, expected.UTC().Format(time.RFC3339Nano))
 		}
 	}
 	if !in.State.valid() {

@@ -39,14 +39,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 valid="${tmp_root}/valid"
-"${build_script}" --output-dir "${valid}" --target engine --target cookiespike --target correlationspike
+"${build_script}" --output-dir "${valid}" --target engine --target cookiespike --target correlationspike --target tracespike
 
 dry_output="$(${copy_script} --artifact-dir "${valid}" --run-id copy-test-01 --dry-run)"
 [[ "${dry_output}" == *'DRY RUN: local artifact inventory passed; DGX was not accessed'* ]] ||
   fail 'valid dry run did not report local-only success'
 [[ "${dry_output}" == *'remote_stage=/var/tmp/canarysting/copy-test-01'* ]] ||
   fail 'valid dry run did not report the exact stage'
-[[ "${dry_output}" == *'artifacts=3'* ]] || fail 'valid dry run reported the wrong artifact count'
+[[ "${dry_output}" == *'artifacts=4'* ]] || fail 'valid dry run reported the wrong artifact count'
 
 expect_failure missing_run_id '--run-id is required' \
   "${copy_script}" --artifact-dir "${valid}" --dry-run

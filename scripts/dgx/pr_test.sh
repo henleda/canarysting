@@ -35,6 +35,11 @@ grep -Fqx 'profile=correlation' <<<"${correlation_output}"
 grep -Fqx 'artifact_build_count=1' <<<"${correlation_output}"
 grep -Fq 'correlation proof contract passed; DGX was not accessed' <<<"${correlation_output}"
 
+trace_output="$("${script_dir}/pr.sh" --profile trace --run-id ci-trace-dry-run --dry-run)"
+grep -Fqx 'profile=trace' <<<"${trace_output}"
+grep -Fqx 'artifact_build_count=1' <<<"${trace_output}"
+grep -Fq 'trace proof contract passed; DGX was not accessed' <<<"${trace_output}"
+
 if "${script_dir}/pr.sh" --profile dgx-kubernetes --run-id ci-risk-dry-run --dry-run >/dev/null 2>&1; then
   echo 'FAIL: unsupported Kubernetes profile did not fail closed' >&2
   exit 1

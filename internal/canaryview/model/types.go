@@ -81,12 +81,13 @@ func (r RetentionProfile) valid() bool {
 type RetentionClock string
 
 const (
-	RetentionFromObserved RetentionClock = "OBSERVED_TIME"
-	RetentionFromIngest   RetentionClock = "INGEST_TIME_FALLBACK"
+	RetentionFromObserved   RetentionClock = "OBSERVED_TIME"
+	RetentionFromIngest     RetentionClock = "INGEST_TIME_FALLBACK"
+	RetentionFromTraceClose RetentionClock = "TRACE_CLOSE"
 )
 
 func (c RetentionClock) valid() bool {
-	return c == RetentionFromObserved || c == RetentionFromIngest
+	return c == RetentionFromObserved || c == RetentionFromIngest || c == RetentionFromTraceClose
 }
 
 // ObservationBasis makes schema-v3 Observation records source reports only.
@@ -182,6 +183,7 @@ const (
 	ConfidenceVerifiedIdentity       ConfidenceMethod = "VERIFIED_IDENTITY"
 	ConfidenceDeclaredMapping        ConfidenceMethod = "DECLARED_MAPPING"
 	ConfidenceTupleTimeWindow        ConfidenceMethod = "TUPLE_TIME_WINDOW"
+	ConfidenceCompositeCorrelation   ConfidenceMethod = "COMPOSITE_CORRELATION"
 	ConfidenceProbabilisticInference ConfidenceMethod = "PROBABILISTIC_INFERENCE"
 	ConfidenceModelInterpretation    ConfidenceMethod = "MODEL_INTERPRETATION"
 )
@@ -190,7 +192,7 @@ func (m ConfidenceMethod) valid() bool {
 	switch m {
 	case ConfidenceDirectSource, ConfidenceExactIdentifier,
 		ConfidenceVerifiedIdentity, ConfidenceDeclaredMapping,
-		ConfidenceTupleTimeWindow, ConfidenceProbabilisticInference,
+		ConfidenceTupleTimeWindow, ConfidenceCompositeCorrelation, ConfidenceProbabilisticInference,
 		ConfidenceModelInterpretation:
 		return true
 	default:

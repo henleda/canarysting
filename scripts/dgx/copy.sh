@@ -49,7 +49,7 @@ metadata_value() {
 
 is_allowed_artifact() {
   case "$1/$2" in
-    product/engine | product/canaryctl | product/operator | product/envoy-adapter | product/dashboard-backend | test/cookiespike | test/enforcespike | test/dgxstackspike | test/correlationspike)
+    product/engine | product/canaryctl | product/operator | product/envoy-adapter | product/dashboard-backend | test/cookiespike | test/enforcespike | test/dgxstackspike | test/correlationspike | test/tracespike)
       return 0
       ;;
     *)
@@ -258,7 +258,7 @@ artifact_count=0
 while IFS=$'\t' read -r record artifact_kind artifact_name relative_path artifact_size artifact_sha256; do
   [[ "${record}" == 'artifact' ]] || continue
   case "${artifact_kind}/${artifact_name}" in
-    product/engine | product/canaryctl | product/operator | product/envoy-adapter | product/dashboard-backend | test/cookiespike | test/enforcespike | test/dgxstackspike | test/correlationspike) ;;
+    product/engine | product/canaryctl | product/operator | product/envoy-adapter | product/dashboard-backend | test/cookiespike | test/enforcespike | test/dgxstackspike | test/correlationspike | test/tracespike) ;;
     *) echo "FAIL: unapproved remote artifact: ${artifact_kind}/${artifact_name}" >&2; exit 1 ;;
   esac
   [[ "${relative_path}" == "${artifact_kind}/${artifact_name}" ]] || {

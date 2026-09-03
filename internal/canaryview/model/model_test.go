@@ -148,6 +148,46 @@ func TestNormalizedObservationDefaultRetentionPeriods(t *testing.T) {
 	}
 }
 
+func TestCorrelatedTraceRetentionStartsAtClose(t *testing.T) {
+	lean := lifecycleInputFixture(t)
+	lean.DataClass = DataClassCorrelatedTrace
+	lean.RetentionProfile = RetentionLean
+	lean.PolicyVersion = "trace-lean-v1"
+	lean.RetentionDecisionRef = "retention/trace-lean-1"
+	lean.RetentionClock = RetentionFromTraceClose
+	lean.ExpiresAt = lean.RetentionStart.Add(90 * 24 * time.Hour)
+	if _, err := NewLifecycle(lean); err != nil {
+		t.Fatalf("Lean correlated-trace lifecycle was rejected: %v", err)
+	}
+
+	standard := lean
+	standard.RetentionProfile = RetentionStandard
+	standard.PolicyVersion = "trace-standard-v1"
+	standard.RetentionDecisionRef = "retention/trace-standard-1"
+	standard.ExpiresAt = standard.RetentionStart.AddDate(0, 13, 0)
+	if _, err := NewLifecycle(standard); err != nil {
+		t.Fatalf("Standard correlated-trace lifecycle was rejected: %v", err)
+	}
+
+	wrongClock := standard
+	wrongClock.RetentionClock = RetentionFromObserved
+	if _, err := NewLifecycle(wrongClock); err == nil {
+		t.Fatal("correlated trace accepted a non-close retention clock")
+	}
+
+	wrongDuration := lean
+	wrongDuration.ExpiresAt = wrongDuration.RetentionStart.Add(89 * 24 * time.Hour)
+	if _, err := NewLifecycle(wrongDuration); err == nil {
+		t.Fatal("Lean correlated trace accepted a non-default expiry")
+	}
+
+	observation := lifecycleInputFixture(t)
+	observation.RetentionClock = RetentionFromTraceClose
+	if _, err := NewLifecycle(observation); err == nil {
+		t.Fatal("normalized observation accepted the trace-close clock")
+	}
+}
+
 func TestRequiredScopeSourceAndLifecycleFailClosed(t *testing.T) {
 	if _, err := NewScope("", "scope-a", "saas", "us-central-1"); err == nil {
 		t.Fatal("empty tenant was accepted")

@@ -442,17 +442,17 @@ func TestMinimizedInputConstructorsRejectRawOrMalformedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := correlation.NewRecord(correlation.RecordInput{Reference: reference, Scope: scope}); err == nil {
+	if _, err := correlation.NewRecord(correlation.RecordInput{Reference: reference, Scope: scope, Synthetic: model.ProductionContext()}); err == nil {
 		t.Fatal("record without an explicit source vantage was accepted")
 	}
 	l7Cookie := socketKey(t, "cookie", correlation.SocketVantageL7)
 	if _, err := correlation.NewRecord(correlation.RecordInput{
-		Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, SocketCookie: &l7Cookie,
+		Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, SocketCookie: &l7Cookie, Synthetic: model.ProductionContext(),
 	}); err == nil {
 		t.Fatal("general source carrying a CanarySting socket cookie was accepted")
 	}
 	if _, err := correlation.NewRecord(correlation.RecordInput{
-		Reference: reference, Scope: scope, Vantage: correlation.SourceVantageStingKernel, SocketCookie: &l7Cookie,
+		Reference: reference, Scope: scope, Vantage: correlation.SourceVantageStingKernel, SocketCookie: &l7Cookie, Synthetic: model.ProductionContext(),
 	}); err == nil {
 		t.Fatal("record/socket-cookie vantage mismatch was accepted")
 	}
@@ -486,6 +486,23 @@ func TestEngineIsSafeForConcurrentReadOnlyUse(t *testing.T) {
 	close(errorsFound)
 	for err := range errorsFound {
 		t.Error(err)
+	}
+}
+
+func TestCorrelationRejectsMixedSyntheticContexts(t *testing.T) {
+	t.Parallel()
+	scope := testScope(t, "scope-synthetic")
+	requestID := opaqueID(t, "edge.request", "synthetic-mismatch")
+	anchor := testRecord(t, "anchor", scope, recordOptions{requestIDs: []correlation.OpaqueID{requestID}})
+	synthetic, err := model.NewSyntheticContext("correlation-scenario-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := testRecord(t, "candidate", scope, recordOptions{
+		requestIDs: []correlation.OpaqueID{requestID}, synthetic: synthetic,
+	})
+	if _, err := testEngine(t, correlation.DefaultConfig()).Correlate(anchor, []correlation.Record{candidate}, nil); err == nil {
+		t.Fatal("correlation accepted mixed production and synthetic inputs")
 	}
 }
 
@@ -566,6 +583,7 @@ type recordOptions struct {
 	vendorIDs    []correlation.OpaqueID
 	socketCookie *correlation.SocketCookieKey
 	otel         *correlation.OTelKey
+	synthetic    model.SyntheticContext
 }
 
 func testRecord(t *testing.T, id string, scope model.Scope, options recordOptions) correlation.Record {
@@ -578,10 +596,14 @@ func testRecord(t *testing.T, id string, scope model.Scope, options recordOption
 	if vantage == "" {
 		vantage = correlation.SourceVantageGeneral
 	}
+	synthetic := options.synthetic
+	if !synthetic.Synthetic() && synthetic.ScenarioID() == "" {
+		synthetic = model.ProductionContext()
+	}
 	record, err := correlation.NewRecord(correlation.RecordInput{
 		Reference: reference, Scope: scope, Vantage: vantage, Time: options.time, Tuple: options.tuple,
 		Identities: options.identities, RequestIDs: options.requestIDs, VendorIDs: options.vendorIDs,
-		SocketCookie: options.socketCookie, OTel: options.otel,
+		SocketCookie: options.socketCookie, OTel: options.otel, Synthetic: synthetic,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -597,7 +619,7 @@ func testTranslation(t *testing.T, id string, scope model.Scope, before, after c
 	}
 	translation, err := correlation.NewTranslation(correlation.TranslationInput{
 		Reference: reference, Scope: scope, Before: before, After: after,
-		Control: control, ObservedAt: *eventTime(t, observedAt, 0),
+		Control: control, ObservedAt: *eventTime(t, observedAt, 0), Synthetic: model.ProductionContext(),
 	})
 	if err != nil {
 		t.Fatal(err)
