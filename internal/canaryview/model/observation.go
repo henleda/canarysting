@@ -53,6 +53,10 @@ func NewSyntheticContext(scenarioID string) (SyntheticContext, error) {
 func (s SyntheticContext) Synthetic() bool    { return s.synthetic }
 func (s SyntheticContext) ScenarioID() string { return s.scenarioID }
 
+// Validate lets outer canonical services reject an omitted classification
+// without exposing the internal representation.
+func (s SyntheticContext) Validate() error { return s.validate() }
+
 func (s SyntheticContext) validate() error {
 	if !s.classified {
 		return fmt.Errorf("production or synthetic classification is required")

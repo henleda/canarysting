@@ -314,6 +314,10 @@ func sameScope(left, right model.Scope) bool {
 		left.DeploymentBoundary() == right.DeploymentBoundary() && left.ResidencyCellID() == right.ResidencyCellID()
 }
 
+func sameSyntheticContext(left, right model.SyntheticContext) bool {
+	return left.Synthetic() == right.Synthetic() && left.ScenarioID() == right.ScenarioID()
+}
+
 func referenceKey(ref model.RecordReference) string {
 	return fmt.Sprintf("%s\x00%010d", ref.ID(), ref.SchemaVersion())
 }

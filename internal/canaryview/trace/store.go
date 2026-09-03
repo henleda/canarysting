@@ -18,6 +18,7 @@ var (
 	ErrBound                = errors.New("requested operation exceeds configured bound")
 	ErrLifecycleUnavailable = errors.New("trace is unavailable to ordinary queries")
 	ErrSynthetic            = errors.New("synthetic trace rejected from production store")
+	ErrProduction           = errors.New("production trace rejected from synthetic store")
 	ErrInvalidationReason   = errors.New("unsupported trace invalidation reason")
 )
 
@@ -154,6 +155,43 @@ func (s *ProductionStore) Put(value Trace) error {
 	if value.envelope.Synthetic().Synthetic() {
 		return ErrSynthetic
 	}
+	return s.putValidated(value)
+}
+
+// SyntheticStore is a separate in-memory laboratory namespace. It accepts
+// exactly one scenario and cannot be substituted for the production store.
+type SyntheticStore struct {
+	*ProductionStore
+	scenarioID string
+}
+
+func NewSyntheticStore(limits StoreLimits, scenarioID string, now func() time.Time) (*SyntheticStore, error) {
+	synthetic, err := model.NewSyntheticContext(scenarioID)
+	if err != nil {
+		return nil, err
+	}
+	store, err := NewProductionStore(limits, now)
+	if err != nil {
+		return nil, err
+	}
+	return &SyntheticStore{ProductionStore: store, scenarioID: synthetic.ScenarioID()}, nil
+}
+
+func (s *SyntheticStore) Put(value Trace) error {
+	if s == nil || s.ProductionStore == nil {
+		return fmt.Errorf("synthetic trace store is required")
+	}
+	if err := value.validate(); err != nil {
+		return fmt.Errorf("validate trace: %w", err)
+	}
+	context := value.envelope.Synthetic()
+	if !context.Synthetic() || context.ScenarioID() != s.scenarioID {
+		return ErrProduction
+	}
+	return s.putValidated(value)
+}
+
+func (s *ProductionStore) putValidated(value Trace) error {
 	disposition, err := EvaluateLifecycle(value, s.now())
 	if err != nil {
 		return err

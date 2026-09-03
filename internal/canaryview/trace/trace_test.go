@@ -231,7 +231,7 @@ func TestTranslationAndIdentityVerificationRemainEvidenceLinked(t *testing.T) {
 	translationRef := mustReference(t, "translation-a")
 	translation, err := correlation.NewTranslation(correlation.TranslationInput{
 		Reference: translationRef, Scope: scope, Before: before, After: after,
-		Control: control, ObservedAt: eventTime,
+		Control: control, ObservedAt: eventTime, Synthetic: model.ProductionContext(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestTranslationAndIdentityVerificationRemainEvidenceLinked(t *testing.T) {
 	anchor, err := correlation.NewRecord(correlation.RecordInput{
 		Reference: mustReference(t, "translated-anchor"), Scope: scope,
 		Vantage: correlation.SourceVantageGeneral, Time: &eventTime, Tuple: &before,
-		Identities: []model.EntityReference{identity},
+		Identities: []model.EntityReference{identity}, Synthetic: model.ProductionContext(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +251,7 @@ func TestTranslationAndIdentityVerificationRemainEvidenceLinked(t *testing.T) {
 	candidate, err := correlation.NewRecord(correlation.RecordInput{
 		Reference: mustReference(t, "translated-candidate"), Scope: scope,
 		Vantage: correlation.SourceVantageGeneral, Time: &candidateTime, Tuple: &after,
-		Identities: []model.EntityReference{identity},
+		Identities: []model.EntityReference{identity}, Synthetic: model.ProductionContext(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +348,9 @@ func TestExplicitContradictoryEvidenceIsRetained(t *testing.T) {
 	if got := value.Knowledge().ConflictingEvidence(); len(got) != 1 || got[0].ID() != evidence.ID() {
 		t.Fatalf("knowledge conflict evidence=%v", got)
 	}
+	if got := value.Knowledge().Confidence().Completeness(); got != model.EvidenceComplete {
+		t.Fatalf("fully covered conflicted trace completeness=%s want=%s", got, model.EvidenceComplete)
+	}
 	if !containsID(value.Envelope().DerivationLineage(), evidence.ID()) {
 		t.Fatal("conflicting evidence is missing from trace lineage")
 	}
@@ -379,6 +382,236 @@ func TestBuilderRejectsBoundsAndCrossScopeHops(t *testing.T) {
 	base.Hops = []trace.HopInput{{Record: mustRecord(t, scopeB, "outside", fixtureTime, ""), Kind: trace.HopObservation}}
 	if _, err := builder.Build(base); err == nil {
 		t.Fatal("builder accepted a cross-scope hop")
+	}
+}
+
+func TestBuilderRejectsAggregateCorrelationWorkAndConflictEvidenceBounds(t *testing.T) {
+	t.Parallel()
+	scope := mustScope(t, "tenant-work", "scope-work")
+	shared := opaqueDigest(94)
+	anchor := mustRecord(t, scope, "work-anchor", fixtureTime, shared)
+	left := mustRecord(t, scope, "work-left", fixtureTime.Add(time.Second), shared)
+	right := mustRecord(t, scope, "work-right", fixtureTime.Add(2*time.Second), shared)
+	result := mustCorrelate(t, anchor, []correlation.Record{left, right})
+	closedAt := fixtureTime.Add(time.Minute)
+	input := trace.BuildInput{
+		Scope: scope,
+		Hops: []trace.HopInput{
+			{Record: anchor, Kind: trace.HopObservation},
+			{Record: left, Kind: trace.HopPolicyDecision},
+			{Record: right, Kind: trace.HopPolicyDecision},
+		},
+		Correlations:  []correlation.Result{result},
+		Expectations:  []trace.ExpectationInput{{Kind: trace.ExpectObservation}},
+		ClosedAt:      closedAt,
+		BuiltAt:       closedAt.Add(time.Minute),
+		HighWaterMark: mustReference(t, "high-water-work"),
+		Lifecycle:     mustLifecycle(t, closedAt, model.RetentionLean, model.LifecycleActive),
+		Synthetic:     model.ProductionContext(),
+	}
+
+	config := trace.DefaultBuilderConfig()
+	config.MaxCorrelationWork = 4
+	builder, err := trace.NewBuilder(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Build(input); err == nil {
+		t.Fatal("builder accepted aggregate correlation work beyond the configured budget")
+	}
+
+	firstEvidence, err := model.NewEvidenceReference("conflict-evidence-one", model.CurrentSchemaVersion, model.EvidenceContradicting, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEvidence, err := model.NewEvidenceReference("conflict-evidence-two", model.CurrentSchemaVersion, model.EvidenceContradicting, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Correlations = nil
+	input.Conflicts = []trace.ConflictInput{{
+		Kind:     trace.ConflictContradictoryEvidence,
+		Records:  []model.RecordReference{anchor.Reference(), left.Reference()},
+		Evidence: []model.EvidenceReference{firstEvidence, secondEvidence},
+	}}
+	config = trace.DefaultBuilderConfig()
+	config.MaxEvidencePerConflict = 1
+	builder, err = trace.NewBuilder(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Build(input); err == nil {
+		t.Fatal("builder accepted conflict evidence beyond the configured per-conflict bound")
+	}
+
+	input.Correlations = []correlation.Result{result}
+	input.Conflicts = []trace.ConflictInput{{
+		Kind:     trace.ConflictContradictoryEvidence,
+		Records:  []model.RecordReference{anchor.Reference(), left.Reference()},
+		Evidence: []model.EvidenceReference{firstEvidence},
+	}}
+	config = trace.DefaultBuilderConfig()
+	config.MaxConflicts = 1
+	builder, err = trace.NewBuilder(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Build(input); err == nil {
+		t.Fatal("builder accepted combined explicit and inferred conflicts beyond the configured bound")
+	}
+}
+
+func TestBuilderRejectsCorrelationResultFromCollidingForeignScope(t *testing.T) {
+	t.Parallel()
+	scopeA := mustScope(t, "tenant-a", "scope-a")
+	scopeB := mustScope(t, "tenant-b", "scope-b")
+	shared := opaqueDigest(91)
+	anchorA := mustRecord(t, scopeA, "shared-anchor", fixtureTime, shared)
+	candidateA := mustRecord(t, scopeA, "shared-candidate", fixtureTime.Add(time.Second), shared)
+	anchorB := mustRecord(t, scopeB, "shared-anchor", fixtureTime, shared)
+	candidateB := mustRecord(t, scopeB, "shared-candidate", fixtureTime.Add(time.Second), shared)
+	foreignResult := mustCorrelate(t, anchorB, []correlation.Record{candidateB})
+	closedAt := fixtureTime.Add(time.Minute)
+
+	builder, err := trace.NewBuilder(trace.DefaultBuilderConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = builder.Build(trace.BuildInput{
+		Scope: scopeA,
+		Hops: []trace.HopInput{
+			{Record: anchorA, Kind: trace.HopObservation},
+			{Record: candidateA, Kind: trace.HopPolicyDecision},
+		},
+		Correlations:  []correlation.Result{foreignResult},
+		Expectations:  []trace.ExpectationInput{{Kind: trace.ExpectObservation}, {Kind: trace.ExpectPolicyDecision}, {Kind: trace.ExpectCorrelation}},
+		ClosedAt:      closedAt,
+		BuiltAt:       closedAt.Add(time.Minute),
+		HighWaterMark: mustReference(t, "high-water-foreign-result"),
+		Lifecycle:     mustLifecycle(t, closedAt, model.RetentionLean, model.LifecycleActive),
+		Synthetic:     model.ProductionContext(),
+	})
+	if err == nil {
+		t.Fatal("builder accepted a foreign-scope correlation result through colliding record references")
+	}
+}
+
+func TestBuilderRejectsGeneralResultReplayedAcrossCanaryStingVantages(t *testing.T) {
+	t.Parallel()
+	scope := mustScope(t, "tenant-vantage", "scope-vantage")
+	sharedRequest := opaqueDigest(92)
+	generalAnchor := mustRecord(t, scope, "shared-anchor", fixtureTime, sharedRequest)
+	generalCandidate := mustRecord(t, scope, "shared-candidate", fixtureTime.Add(time.Second), sharedRequest)
+	generalResult := mustCorrelate(t, generalAnchor, []correlation.Record{generalCandidate})
+	anchorTime, err := correlation.NewEventTime(fixtureTime, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateTime, err := correlation.NewEventTime(fixtureTime.Add(time.Second), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l7Cookie, err := correlation.NewSocketCookieKey(opaqueDigest(93), correlation.SocketVantageL7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernelCookie, err := correlation.NewSocketCookieKey(opaqueDigest(93), correlation.SocketVantageKernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stingAnchor, err := correlation.NewRecord(correlation.RecordInput{
+		Reference: generalAnchor.Reference(), Scope: scope, Vantage: correlation.SourceVantageStingL7,
+		Time: &anchorTime, SocketCookie: &l7Cookie, Synthetic: model.ProductionContext(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stingCandidate, err := correlation.NewRecord(correlation.RecordInput{
+		Reference: generalCandidate.Reference(), Scope: scope, Vantage: correlation.SourceVantageStingKernel,
+		Time: &candidateTime, SocketCookie: &kernelCookie, Synthetic: model.ProductionContext(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAt := fixtureTime.Add(time.Minute)
+	builder, err := trace.NewBuilder(trace.DefaultBuilderConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = builder.Build(trace.BuildInput{
+		Scope: scope,
+		Hops: []trace.HopInput{
+			{Record: stingAnchor, Kind: trace.HopObservation},
+			{Record: stingCandidate, Kind: trace.HopPolicyDecision},
+		},
+		Correlations:  []correlation.Result{generalResult},
+		Expectations:  []trace.ExpectationInput{{Kind: trace.ExpectObservation}, {Kind: trace.ExpectPolicyDecision}, {Kind: trace.ExpectCorrelation}},
+		ClosedAt:      closedAt,
+		BuiltAt:       closedAt.Add(time.Minute),
+		HighWaterMark: mustReference(t, "high-water-vantage-replay"),
+		Lifecycle:     mustLifecycle(t, closedAt, model.RetentionLean, model.LifecycleActive),
+		Synthetic:     model.ProductionContext(),
+	})
+	if err == nil {
+		t.Fatal("builder replayed a general-source result across CanarySting L7/kernel vantages")
+	}
+}
+
+func TestSyntheticClassificationChangesTraceIdentity(t *testing.T) {
+	t.Parallel()
+	scope := mustScope(t, "tenant-synthetic", "scope-synthetic")
+	productionRecord := mustRecord(t, scope, "synthetic-source", fixtureTime, "")
+	closedAt := fixtureTime.Add(time.Minute)
+	input := trace.BuildInput{
+		Scope:         scope,
+		Hops:          []trace.HopInput{{Record: productionRecord, Kind: trace.HopObservation}},
+		Expectations:  []trace.ExpectationInput{{Kind: trace.ExpectObservation}},
+		ClosedAt:      closedAt,
+		BuiltAt:       closedAt.Add(time.Minute),
+		HighWaterMark: mustReference(t, "high-water-synthetic-identity"),
+		Lifecycle:     mustLifecycle(t, closedAt, model.RetentionLean, model.LifecycleActive),
+		Synthetic:     model.ProductionContext(),
+	}
+	production := mustBuild(t, input)
+	synthetic, err := model.NewSyntheticContext("trace-scenario-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Synthetic = synthetic
+	input.Hops[0].Record = mustRecordWithSynthetic(t, scope, "synthetic-source", fixtureTime, "", synthetic)
+	syntheticTrace := mustBuild(t, input)
+	if production.Envelope().RecordID() == syntheticTrace.Envelope().RecordID() {
+		t.Fatal("production and synthetic traces shared a deterministic record ID")
+	}
+	if production.IntegrityDigest() == syntheticTrace.IntegrityDigest() {
+		t.Fatal("production and synthetic traces shared an integrity digest")
+	}
+}
+
+func TestBuilderRejectsSyntheticClassificationThatDisagreesWithHops(t *testing.T) {
+	t.Parallel()
+	scope := mustScope(t, "tenant-synthetic", "scope-mismatch")
+	synthetic, err := model.NewSyntheticContext("trace-scenario-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAt := fixtureTime.Add(time.Minute)
+	builder, err := trace.NewBuilder(trace.DefaultBuilderConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = builder.Build(trace.BuildInput{
+		Scope:         scope,
+		Hops:          []trace.HopInput{{Record: mustRecordWithSynthetic(t, scope, "synthetic-source", fixtureTime, "", synthetic), Kind: trace.HopObservation}},
+		Expectations:  []trace.ExpectationInput{{Kind: trace.ExpectObservation}},
+		ClosedAt:      closedAt,
+		BuiltAt:       closedAt.Add(time.Minute),
+		HighWaterMark: mustReference(t, "high-water-synthetic-mismatch"),
+		Lifecycle:     mustLifecycle(t, closedAt, model.RetentionLean, model.LifecycleActive),
+		Synthetic:     model.ProductionContext(),
+	})
+	if err == nil {
+		t.Fatal("builder accepted synthetic-derived hops as a production trace")
 	}
 }
 
@@ -503,12 +736,45 @@ func TestStoreBoundsAndConcurrentScopeIsolation(t *testing.T) {
 	}
 }
 
+func TestSyntheticStoreIsolatedToOneScenario(t *testing.T) {
+	now := fixtureTime.Add(3 * time.Minute)
+	limits := trace.StoreLimits{TracesPerScope: 4, QueryResults: 4, InvalidationResults: 4}
+	lab, err := trace.NewSyntheticStore(limits, "trace-lab-a", func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := mustScope(t, "tenant-lab", "scope-lab")
+	contextA, err := model.NewSyntheticContext("trace-lab-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextB, err := model.NewSyntheticContext("trace-lab-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	synthetic := simpleTrace(t, scope, "synthetic-a", mustReference(t, "synthetic-parent-a"), model.LifecycleActive, contextA)
+	if err := lab.Put(synthetic); err != nil {
+		t.Fatalf("matching synthetic trace rejected: %v", err)
+	}
+	if _, err := lab.Get(scope, synthetic.Envelope().RecordID()); err != nil {
+		t.Fatalf("matching synthetic trace unavailable: %v", err)
+	}
+	wrongScenario := simpleTrace(t, scope, "synthetic-b", mustReference(t, "synthetic-parent-b"), model.LifecycleActive, contextB)
+	if err := lab.Put(wrongScenario); !errors.Is(err, trace.ErrProduction) {
+		t.Fatalf("different synthetic scenario entered lab store: %v", err)
+	}
+	production := simpleTrace(t, scope, "production", mustReference(t, "production-parent"), model.LifecycleActive, model.ProductionContext())
+	if err := lab.Put(production); !errors.Is(err, trace.ErrProduction) {
+		t.Fatalf("production trace entered lab store: %v", err)
+	}
+}
+
 func simpleTrace(t *testing.T, scope model.Scope, suffix string, parent model.RecordReference, state model.LifecycleState, synthetic model.SyntheticContext) trace.Trace {
 	t.Helper()
 	seed := len(suffix) + int(suffix[0])
 	eventAt := fixtureTime.Add(time.Duration(seed) * time.Second)
 	closedAt := eventAt.Add(time.Minute)
-	record := mustRecord(t, scope, "observation-"+suffix, eventAt, "")
+	record := mustRecordWithSynthetic(t, scope, "observation-"+suffix, eventAt, "", synthetic)
 	return mustBuild(t, trace.BuildInput{
 		Scope: scope, Hops: []trace.HopInput{{Record: record, Kind: trace.HopObservation}},
 		Expectations: []trace.ExpectationInput{{Kind: trace.ExpectObservation}},
@@ -556,6 +822,11 @@ func mustCorrelate(t *testing.T, anchor correlation.Record, candidates []correla
 
 func mustRecord(t *testing.T, scope model.Scope, id string, at time.Time, requestDigest string) correlation.Record {
 	t.Helper()
+	return mustRecordWithSynthetic(t, scope, id, at, requestDigest, model.ProductionContext())
+}
+
+func mustRecordWithSynthetic(t *testing.T, scope model.Scope, id string, at time.Time, requestDigest string, synthetic model.SyntheticContext) correlation.Record {
+	t.Helper()
 	reference := mustReference(t, id)
 	eventTime, err := correlation.NewEventTime(at, 0)
 	if err != nil {
@@ -563,6 +834,7 @@ func mustRecord(t *testing.T, scope model.Scope, id string, at time.Time, reques
 	}
 	input := correlation.RecordInput{
 		Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, Time: &eventTime,
+		Synthetic: synthetic,
 	}
 	if requestDigest != "" {
 		requestID, requestErr := correlation.NewOpaqueID("fixture-request", requestDigest)

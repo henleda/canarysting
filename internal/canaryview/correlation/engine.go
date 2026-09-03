@@ -99,6 +99,9 @@ func (e *Engine) Correlate(anchor Record, records []Record, translations []Trans
 		if !sameScope(anchor.scope, records[index].scope) {
 			return Result{}, fmt.Errorf("candidate %q is outside anchor scope", records[index].reference.ID())
 		}
+		if !sameSyntheticContext(anchor.synthetic, records[index].synthetic) {
+			return Result{}, fmt.Errorf("candidate %q synthetic context differs from anchor", records[index].reference.ID())
+		}
 		if err := e.validateTime(records[index].eventTime, "candidate "+records[index].reference.ID()); err != nil {
 			return Result{}, err
 		}
@@ -117,6 +120,9 @@ func (e *Engine) Correlate(anchor Record, records []Record, translations []Trans
 		if !sameScope(anchor.scope, translations[index].scope) {
 			return Result{}, fmt.Errorf("translation %q is outside anchor scope", translations[index].reference.ID())
 		}
+		if !sameSyntheticContext(anchor.synthetic, translations[index].synthetic) {
+			return Result{}, fmt.Errorf("translation %q synthetic context differs from anchor", translations[index].reference.ID())
+		}
 		if err := e.validateTime(&translations[index].observedAt, "translation "+translations[index].reference.ID()); err != nil {
 			return Result{}, err
 		}
@@ -128,7 +134,7 @@ func (e *Engine) Correlate(anchor Record, records []Record, translations []Trans
 	}
 
 	result := Result{
-		anchor: anchor.reference, algorithmID: e.config.AlgorithmID,
+		anchorRecord: anchor, anchor: anchor.reference, algorithmID: e.config.AlgorithmID,
 		algorithmVersion: e.config.AlgorithmVersion, anchorMissing: missingKeys(anchor),
 	}
 	for _, record := range records {
@@ -138,7 +144,7 @@ func (e *Engine) Correlate(anchor Record, records []Record, translations []Trans
 		}
 		if len(evaluation.matches) == 0 {
 			result.rejected = append(result.rejected, Rejection{
-				reference: record.reference, reasons: evaluation.reasons, missing: missingKeys(record),
+				record: record, reference: record.reference, reasons: evaluation.reasons, missing: missingKeys(record),
 			})
 			continue
 		}
@@ -150,7 +156,7 @@ func (e *Engine) Correlate(anchor Record, records []Record, translations []Trans
 			}
 		}
 		result.candidates = append(result.candidates, Candidate{
-			reference: record.reference, strength: evaluation.matches[0].strength,
+			record: record, reference: record.reference, strength: evaluation.matches[0].strength,
 			matches: evaluation.matches, missing: missingKeys(record),
 			pathAmbiguous: evaluation.matches[0].method == JoinTranslatedTuple && translatedPaths > 1,
 		})

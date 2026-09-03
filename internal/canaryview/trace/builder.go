@@ -28,7 +28,9 @@ type BuilderConfig struct {
 	MaxCandidatesPerCorrelation int
 	MaxMatchesPerCandidate      int
 	MaxTranslationHopsPerMatch  int
+	MaxCorrelationWork          int
 	MaxConflicts                int
+	MaxEvidencePerConflict      int
 	MaxExpectations             int
 	MaxEvidencePerHop           int
 	MaxLineage                  int
@@ -39,7 +41,8 @@ func DefaultBuilderConfig() BuilderConfig {
 		AlgorithmID: DefaultAlgorithmID, AlgorithmVersion: DefaultAlgorithmVersion,
 		MaxHops: 256, MaxCorrelations: 256, MaxCandidatesPerCorrelation: 256,
 		MaxMatchesPerCandidate: 32, MaxTranslationHopsPerMatch: 8,
-		MaxConflicts: 128, MaxExpectations: 256, MaxEvidencePerHop: 32,
+		MaxCorrelationWork: 65536, MaxConflicts: 128, MaxEvidencePerConflict: 32,
+		MaxExpectations: 256, MaxEvidencePerHop: 32,
 		MaxLineage: 4096,
 	}
 }
@@ -71,6 +74,9 @@ func (b *Builder) Build(in BuildInput) (Trace, error) {
 	if err := validateScope(in.Scope); err != nil {
 		return Trace{}, fmt.Errorf("scope: %w", err)
 	}
+	if err := in.Synthetic.Validate(); err != nil {
+		return Trace{}, fmt.Errorf("trace synthetic context: %w", err)
+	}
 	if len(in.Hops) == 0 || len(in.Hops) > b.config.MaxHops {
 		return Trace{}, fmt.Errorf("trace hops must be between 1 and %d", b.config.MaxHops)
 	}
@@ -83,6 +89,9 @@ func (b *Builder) Build(in BuildInput) (Trace, error) {
 	if len(in.Conflicts) > b.config.MaxConflicts {
 		return Trace{}, fmt.Errorf("trace conflicts exceed configured limit %d", b.config.MaxConflicts)
 	}
+	if err := b.validateCorrelationWork(in.Correlations); err != nil {
+		return Trace{}, err
+	}
 	if in.ClosedAt.IsZero() || in.BuiltAt.IsZero() {
 		return Trace{}, fmt.Errorf("trace close and build times are required")
 	}
@@ -94,7 +103,7 @@ func (b *Builder) Build(in BuildInput) (Trace, error) {
 		return Trace{}, fmt.Errorf("input high-water mark: %w", err)
 	}
 
-	hops, records, validFrom, validTo, err := b.normalizeHops(in.Scope, in.Hops)
+	hops, records, validFrom, validTo, err := b.normalizeHops(in.Scope, in.Synthetic, in.Hops)
 	if err != nil {
 		return Trace{}, err
 	}
@@ -134,7 +143,7 @@ func (b *Builder) Build(in BuildInput) (Trace, error) {
 	if err != nil {
 		return Trace{}, err
 	}
-	semantic := semanticParts(in.Scope, status, validFrom, validTo, closedAt, in.HighWaterMark, hops, correlations, expectations, missing, conflicts)
+	semantic := semanticParts(in.Scope, in.Synthetic, status, validFrom, validTo, closedAt, in.HighWaterMark, hops, correlations, expectations, missing, conflicts)
 	traceID := "trace:sha256:" + digest(append([]string{b.config.AlgorithmID, b.config.AlgorithmVersion}, semantic...)...)
 	root, err := model.NewRecordReference(traceID, model.CurrentSchemaVersion)
 	if err != nil {
@@ -167,9 +176,9 @@ func (b *Builder) Build(in BuildInput) (Trace, error) {
 	}, nil
 }
 
-func (b *Builder) normalizeHops(scope model.Scope, inputs []HopInput) ([]Hop, map[string]Hop, time.Time, time.Time, error) {
+func (b *Builder) normalizeHops(scope model.Scope, synthetic model.SyntheticContext, inputs []HopInput) ([]Hop, map[string]correlation.Record, time.Time, time.Time, error) {
 	hops := make([]Hop, 0, len(inputs))
-	records := make(map[string]Hop, len(inputs))
+	records := make(map[string]correlation.Record, len(inputs))
 	var validFrom, validTo time.Time
 	for index, input := range inputs {
 		if !input.Kind.valid() {
@@ -177,6 +186,9 @@ func (b *Builder) normalizeHops(scope model.Scope, inputs []HopInput) ([]Hop, ma
 		}
 		if !sameScope(scope, input.Record.Scope()) {
 			return nil, nil, time.Time{}, time.Time{}, fmt.Errorf("hop %q is outside trace scope", input.Record.Reference().ID())
+		}
+		if !sameSyntheticContext(synthetic, input.Record.Synthetic()) {
+			return nil, nil, time.Time{}, time.Time{}, fmt.Errorf("hop %q synthetic context differs from trace", input.Record.Reference().ID())
 		}
 		if err := validateReference(input.Record.Reference()); err != nil {
 			return nil, nil, time.Time{}, time.Time{}, fmt.Errorf("hop %d reference: %w", index, err)
@@ -220,7 +232,7 @@ func (b *Builder) normalizeHops(scope model.Scope, inputs []HopInput) ([]Hop, ma
 			identities: input.Record.Identities(), rawEvent: raw, evidence: evidence,
 		}
 		hops = append(hops, hop)
-		records[key] = hop
+		records[key] = input.Record
 	}
 	if validFrom.IsZero() {
 		return nil, nil, time.Time{}, time.Time{}, fmt.Errorf("at least one trace hop requires event time")
@@ -242,7 +254,7 @@ func (b *Builder) normalizeHops(scope model.Scope, inputs []HopInput) ([]Hop, ma
 	return hops, records, validFrom.UTC(), validTo.UTC(), nil
 }
 
-func (b *Builder) normalizeCorrelations(results []correlation.Result, records map[string]Hop) ([]CorrelationSet, error) {
+func (b *Builder) normalizeCorrelations(results []correlation.Result, records map[string]correlation.Record) ([]CorrelationSet, error) {
 	sets := make([]CorrelationSet, 0, len(results))
 	seen := make(map[string]bool, len(results))
 	for index, result := range results {
@@ -253,8 +265,12 @@ func (b *Builder) normalizeCorrelations(results []correlation.Result, records ma
 			return nil, fmt.Errorf("correlation %d: %w", index, err)
 		}
 		anchorKey := referenceKey(result.Anchor())
-		if _, exists := records[anchorKey]; !exists {
+		anchorRecord, exists := records[anchorKey]
+		if !exists {
 			return nil, fmt.Errorf("correlation anchor %q is not a trace hop", result.Anchor().ID())
+		}
+		if !result.MatchesAnchor(anchorRecord) {
+			return nil, fmt.Errorf("correlation anchor %q does not match the exact trace-hop input", result.Anchor().ID())
 		}
 		if seen[anchorKey] {
 			return nil, fmt.Errorf("duplicate correlation anchor %q", result.Anchor().ID())
@@ -268,8 +284,12 @@ func (b *Builder) normalizeCorrelations(results []correlation.Result, records ma
 			anchorMissing: append([]correlation.MissingKey(nil), result.AnchorMissingKeys()...), ambiguous: result.Ambiguous(),
 		}
 		for _, sourceCandidate := range result.Candidates() {
-			if _, exists := records[referenceKey(sourceCandidate.Reference())]; !exists {
+			candidateRecord, exists := records[referenceKey(sourceCandidate.Reference())]
+			if !exists {
 				return nil, fmt.Errorf("correlation candidate %q is not a trace hop", sourceCandidate.Reference().ID())
+			}
+			if !sourceCandidate.MatchesRecord(candidateRecord) {
+				return nil, fmt.Errorf("correlation candidate %q does not match the exact trace-hop input", sourceCandidate.Reference().ID())
 			}
 			matches := sourceCandidate.Matches()
 			if len(matches) == 0 || len(matches) > b.config.MaxMatchesPerCandidate {
@@ -294,6 +314,12 @@ func (b *Builder) normalizeCorrelations(results []correlation.Result, records ma
 				}
 				for _, hop := range path {
 					translation := hop.Translation()
+					if !sameScope(translation.Scope(), anchorRecord.Scope()) {
+						return nil, fmt.Errorf("candidate %q translation %q is outside trace scope", sourceCandidate.Reference().ID(), translation.Reference().ID())
+					}
+					if !sameSyntheticContext(translation.Synthetic(), anchorRecord.Synthetic()) {
+						return nil, fmt.Errorf("candidate %q translation %q synthetic context differs from trace", sourceCandidate.Reference().ID(), translation.Reference().ID())
+					}
 					citations = append(citations, translation.Reference())
 					explanation.translations = append(explanation.translations, TranslationStep{
 						reference: translation.Reference(), before: translation.Before(), after: translation.After(),
@@ -310,8 +336,12 @@ func (b *Builder) normalizeCorrelations(results []correlation.Result, records ma
 			set.candidates = append(set.candidates, candidate)
 		}
 		for _, sourceRejection := range result.Rejected() {
-			if _, exists := records[referenceKey(sourceRejection.Reference())]; !exists {
+			rejectionRecord, exists := records[referenceKey(sourceRejection.Reference())]
+			if !exists {
 				return nil, fmt.Errorf("correlation rejection %q is not a trace hop", sourceRejection.Reference().ID())
+			}
+			if !sourceRejection.MatchesRecord(rejectionRecord) {
+				return nil, fmt.Errorf("correlation rejection %q does not match the exact trace-hop input", sourceRejection.Reference().ID())
 			}
 			set.rejections = append(set.rejections, Rejection{
 				reference: sourceRejection.Reference(), reasons: append([]correlation.RejectionReason(nil), sourceRejection.Reasons()...),
@@ -328,7 +358,37 @@ func (b *Builder) normalizeCorrelations(results []correlation.Result, records ma
 	return sets, nil
 }
 
-func (b *Builder) normalizeExpectations(inputs []ExpectationInput, records map[string]Hop) ([]Expectation, error) {
+func (b *Builder) validateCorrelationWork(results []correlation.Result) error {
+	work := 0
+	consume := func(amount int) error {
+		if amount < 0 || amount > b.config.MaxCorrelationWork-work {
+			return fmt.Errorf("aggregate correlation work exceeds configured limit %d", b.config.MaxCorrelationWork)
+		}
+		work += amount
+		return nil
+	}
+	for _, result := range results {
+		candidates := result.Candidates()
+		rejections := result.Rejected()
+		if err := consume(1 + len(candidates) + len(rejections)); err != nil {
+			return err
+		}
+		for _, candidate := range candidates {
+			matches := candidate.Matches()
+			if err := consume(len(matches)); err != nil {
+				return err
+			}
+			for _, match := range matches {
+				if err := consume(len(match.TranslationPath())); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Builder) normalizeExpectations(inputs []ExpectationInput, records map[string]correlation.Record) ([]Expectation, error) {
 	result := make([]Expectation, 0, len(inputs))
 	seen := make(map[string]bool, len(inputs))
 	for index, input := range inputs {
@@ -366,7 +426,7 @@ func (b *Builder) normalizeExpectations(inputs []ExpectationInput, records map[s
 	return result, nil
 }
 
-func (b *Builder) normalizeConflicts(inputs []ConflictInput, correlations []CorrelationSet, records map[string]Hop) ([]Conflict, error) {
+func (b *Builder) normalizeConflicts(inputs []ConflictInput, correlations []CorrelationSet, records map[string]correlation.Record) ([]Conflict, error) {
 	result := make([]Conflict, 0, len(inputs)+len(correlations))
 	for index, input := range inputs {
 		if !input.Kind.valid() {
@@ -380,6 +440,9 @@ func (b *Builder) normalizeConflicts(inputs []ConflictInput, correlations []Corr
 			if _, exists := records[referenceKey(ref)]; !exists {
 				return nil, fmt.Errorf("conflict record %q is not a trace hop", ref.ID())
 			}
+		}
+		if len(input.Evidence) > b.config.MaxEvidencePerConflict {
+			return nil, fmt.Errorf("conflict %d evidence exceeds configured limit %d", index, b.config.MaxEvidencePerConflict)
 		}
 		evidence, err := canonicalEvidence(input.Evidence)
 		if err != nil {
@@ -398,6 +461,9 @@ func (b *Builder) normalizeConflicts(inputs []ConflictInput, correlations []Corr
 	for _, set := range correlations {
 		if !set.ambiguous {
 			continue
+		}
+		if len(result) >= b.config.MaxConflicts {
+			return nil, fmt.Errorf("combined explicit and correlation conflicts exceed configured limit %d", b.config.MaxConflicts)
 		}
 		references := []model.RecordReference{set.anchor}
 		for _, candidate := range set.candidates {
@@ -541,7 +607,7 @@ func (b *Builder) knowledge(root model.RecordReference, lineage []model.RecordRe
 	confidence, err := model.NewConfidence(model.ConfidenceInput{
 		Level: level, Method: model.ConfidenceCompositeCorrelation,
 		SourceQuality: model.AssuranceDeclared, IdentityAssurance: model.AssuranceUnverified,
-		Completeness:   map[bool]model.EvidenceCompleteness{true: model.EvidenceComplete, false: model.EvidencePartial}[status == StatusComplete],
+		Completeness:   map[bool]model.EvidenceCompleteness{true: model.EvidenceComplete, false: model.EvidencePartial}[len(missing) == 0],
 		CandidateCount: candidateCount, TimeUncertainty: timeUncertainty, TimeWindow: window,
 		AlgorithmID: b.config.AlgorithmID, AlgorithmVersion: b.config.AlgorithmVersion,
 		Calibration: model.CalibrationNotApplicable, HumanReview: model.HumanUnreviewed,
@@ -651,9 +717,10 @@ func evidenceReference(value model.EvidenceReference) model.RecordReference {
 	return ref
 }
 
-func semanticParts(scope model.Scope, status Status, validFrom, validTo, closedAt time.Time, highWater model.RecordReference, hops []Hop, correlations []CorrelationSet, expectations []Expectation, missing []MissingTelemetry, conflicts []Conflict) []string {
+func semanticParts(scope model.Scope, synthetic model.SyntheticContext, status Status, validFrom, validTo, closedAt time.Time, highWater model.RecordReference, hops []Hop, correlations []CorrelationSet, expectations []Expectation, missing []MissingTelemetry, conflicts []Conflict) []string {
 	parts := []string{
 		scope.TenantID(), scope.ScopeID(), scope.DeploymentBoundary(), scope.ResidencyCellID(), string(status),
+		fmt.Sprint(synthetic.Synthetic()), synthetic.ScenarioID(),
 		validFrom.Format(time.RFC3339Nano), validTo.Format(time.RFC3339Nano), closedAt.Format(time.RFC3339Nano), referenceKey(highWater),
 	}
 	for _, hop := range hops {
@@ -834,7 +901,8 @@ func validateBuilderConfig(config BuilderConfig) error {
 	values := map[string]int{
 		"hop limit": config.MaxHops, "correlation limit": config.MaxCorrelations,
 		"candidate limit": config.MaxCandidatesPerCorrelation, "match limit": config.MaxMatchesPerCandidate,
-		"translation-hop limit": config.MaxTranslationHopsPerMatch, "conflict limit": config.MaxConflicts,
+		"translation-hop limit": config.MaxTranslationHopsPerMatch, "aggregate correlation-work limit": config.MaxCorrelationWork,
+		"conflict limit": config.MaxConflicts, "evidence-per-conflict limit": config.MaxEvidencePerConflict,
 		"expectation limit": config.MaxExpectations, "evidence-per-hop limit": config.MaxEvidencePerHop,
 		"lineage limit": config.MaxLineage,
 	}

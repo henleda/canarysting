@@ -83,16 +83,20 @@ func executeProof(runID, scenarioID string) error {
 	if err != nil {
 		return err
 	}
+	synthetic, err := model.NewSyntheticContext(scenarioID)
+	if err != nil {
+		return err
+	}
 	shared := digest("request", scenarioID)
-	anchor, err := proofRecord("trace-anchor", scope, now, shared)
+	anchor, err := proofRecord("trace-anchor", scope, synthetic, now, shared)
 	if err != nil {
 		return err
 	}
-	left, err := proofRecord("trace-left", scope, now.Add(time.Second), shared)
+	left, err := proofRecord("trace-left", scope, synthetic, now.Add(time.Second), shared)
 	if err != nil {
 		return err
 	}
-	right, err := proofRecord("trace-right", scope, now.Add(2*time.Second), shared)
+	right, err := proofRecord("trace-right", scope, synthetic, now.Add(2*time.Second), shared)
 	if err != nil {
 		return err
 	}
@@ -136,7 +140,7 @@ func executeProof(runID, scenarioID string) error {
 			{Kind: trace.ExpectObservation}, {Kind: trace.ExpectPolicyDecision}, {Kind: trace.ExpectCorrelation},
 		},
 		ClosedAt: closedAt, BuiltAt: closedAt.Add(time.Minute), HighWaterMark: parent,
-		Lifecycle: activeLifecycle, Synthetic: model.ProductionContext(),
+		Lifecycle: activeLifecycle, Synthetic: synthetic,
 	}
 	first, err := build(input)
 	if err != nil {
@@ -161,7 +165,7 @@ func executeProof(runID, scenarioID string) error {
 		}
 	}
 
-	passive, err := proofRecord("passive-observation", scope, now, "")
+	passive, err := proofRecord("passive-observation", scope, synthetic, now, "")
 	if err != nil {
 		return err
 	}
@@ -178,7 +182,7 @@ func executeProof(runID, scenarioID string) error {
 		Scope: scope, Hops: []trace.HopInput{{Record: passive, Kind: trace.HopObservation, RawEvent: &broken}},
 		Expectations: []trace.ExpectationInput{{Kind: trace.ExpectObservation}, {Kind: trace.ExpectRawEvidence, Record: &passiveRef}},
 		ClosedAt:     closedAt, BuiltAt: closedAt.Add(time.Minute), HighWaterMark: passiveParent,
-		Lifecycle: activeLifecycle, Synthetic: model.ProductionContext(),
+		Lifecycle: activeLifecycle, Synthetic: synthetic,
 	})
 	if err != nil {
 		return err
@@ -192,7 +196,7 @@ func executeProof(runID, scenarioID string) error {
 	}
 
 	trustedNow := closedAt.Add(time.Minute)
-	store, err := trace.NewProductionStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, func() time.Time { return trustedNow })
+	store, err := trace.NewSyntheticStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, scenarioID, func() time.Time { return trustedNow })
 	if err != nil {
 		return err
 	}
@@ -220,7 +224,7 @@ func executeProof(runID, scenarioID string) error {
 		return fmt.Errorf("held trace was hidden after nominal expiry: %w", err)
 	}
 
-	expiryStore, err := trace.NewProductionStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, func() time.Time { return trustedNow })
+	expiryStore, err := trace.NewSyntheticStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, scenarioID, func() time.Time { return trustedNow })
 	if err != nil {
 		return err
 	}
@@ -234,11 +238,11 @@ func executeProof(runID, scenarioID string) error {
 	}
 
 	trustedNow = closedAt.Add(time.Minute)
-	invalidationStore, err := trace.NewProductionStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, func() time.Time { return trustedNow })
+	invalidationStore, err := trace.NewSyntheticStore(trace.StoreLimits{TracesPerScope: 8, QueryResults: 8, InvalidationResults: 8}, scenarioID, func() time.Time { return trustedNow })
 	if err != nil {
 		return err
 	}
-	otherRecord, err := proofRecord("other-observation", otherScope, now, "")
+	otherRecord, err := proofRecord("other-observation", otherScope, synthetic, now, "")
 	if err != nil {
 		return err
 	}
@@ -246,7 +250,7 @@ func executeProof(runID, scenarioID string) error {
 		Scope: otherScope, Hops: []trace.HopInput{{Record: otherRecord, Kind: trace.HopObservation}},
 		Expectations: []trace.ExpectationInput{{Kind: trace.ExpectObservation}}, ClosedAt: closedAt,
 		BuiltAt: closedAt.Add(time.Minute), HighWaterMark: parent,
-		Lifecycle: activeLifecycle, Synthetic: model.ProductionContext(),
+		Lifecycle: activeLifecycle, Synthetic: synthetic,
 	})
 	if err != nil {
 		return err
@@ -280,7 +284,7 @@ func executeProof(runID, scenarioID string) error {
 	return nil
 }
 
-func proofRecord(id string, scope model.Scope, at time.Time, requestDigest string) (correlation.Record, error) {
+func proofRecord(id string, scope model.Scope, synthetic model.SyntheticContext, at time.Time, requestDigest string) (correlation.Record, error) {
 	reference, err := recordReference(id)
 	if err != nil {
 		return correlation.Record{}, err
@@ -289,7 +293,7 @@ func proofRecord(id string, scope model.Scope, at time.Time, requestDigest strin
 	if err != nil {
 		return correlation.Record{}, err
 	}
-	input := correlation.RecordInput{Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, Time: &eventTime}
+	input := correlation.RecordInput{Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, Time: &eventTime, Synthetic: synthetic}
 	if requestDigest != "" {
 		requestID, requestErr := correlation.NewOpaqueID("dgx.trace.request", requestDigest)
 		if requestErr != nil {

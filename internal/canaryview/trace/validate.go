@@ -64,6 +64,13 @@ func (t Trace) validate() error {
 	if confidence.AlgorithmID() != provenance.TransformationID() || confidence.AlgorithmVersion() != provenance.TransformationVersion() {
 		return fmt.Errorf("trace confidence and provenance algorithms must match")
 	}
+	wantCompleteness := model.EvidenceComplete
+	if len(t.missingTelemetry) > 0 {
+		wantCompleteness = model.EvidencePartial
+	}
+	if confidence.Completeness() != wantCompleteness {
+		return fmt.Errorf("trace confidence completeness %s does not match missing evidence state %s", confidence.Completeness(), wantCompleteness)
+	}
 
 	lineage, err := traceLineage(t.highWaterMark, t.hops, t.correlations, t.conflicts)
 	if err != nil {
@@ -73,7 +80,7 @@ func (t Trace) validate() error {
 		return fmt.Errorf("trace envelope lineage does not match retained evidence")
 	}
 	semantic := semanticParts(
-		canonicalEnvelope.Scope(), t.status, t.validFrom, t.validTo, t.closedAt,
+		canonicalEnvelope.Scope(), canonicalEnvelope.Synthetic(), t.status, t.validFrom, t.validTo, t.closedAt,
 		t.highWaterMark, t.hops, t.correlations, t.expectations, t.missingTelemetry, t.conflicts,
 	)
 	wantID := "trace:sha256:" + digest(append([]string{provenance.TransformationID(), provenance.TransformationVersion()}, semantic...)...)

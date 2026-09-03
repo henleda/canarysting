@@ -129,6 +129,105 @@ IFS=$'\t' read -r expected_size expected_sha256 <<<"${artifact_metadata}"
 [[ "$(stat -c %s "${artifact}")" == "${expected_size}" ]] || fail 'proof artifact size changed'
 [[ "$(sha256sum "${artifact}" | awk '{print $1}')" == "${expected_sha256}" ]] || fail 'proof artifact checksum changed'
 
+manifest_value() {
+  awk -F '\t' -v wanted="$1" '
+    $1 == "metadata" && $2 == wanted { count++; value=$3 }
+    END { if (count != 1) exit 1; print value }
+  ' "${stage}/manifest.tsv"
+}
+source_revision="$(manifest_value source_revision)" || fail 'manifest source revision is missing or duplicated'
+source_state="$(manifest_value source_state)" || fail 'manifest source state is missing or duplicated'
+source_tree_sha256="$(manifest_value source_tree_sha256)" || fail 'manifest source-tree checksum is missing or duplicated'
+[[ "${source_revision}" =~ ^[0-9a-f]{40}$ ]] || fail 'manifest source revision is malformed'
+[[ "${source_state}" == 'clean' || "${source_state}" == 'dirty' ]] || fail 'manifest source state is malformed'
+[[ "${source_tree_sha256}" =~ ^[0-9a-f]{64}$ ]] || fail 'manifest source-tree checksum is malformed'
+scenario_id="m2b4-trace-construction-${run_id}"
+readonly source_revision source_state source_tree_sha256 scenario_id
+
+validate_trace_result_schema() {
+  local result_file="$1"
+  local wanted_run="$2"
+  local wanted_scenario="$3"
+  local wanted_revision="$4"
+  local wanted_state="$5"
+  local wanted_tree="$6"
+  local wanted_artifact="$7"
+  awk -F '\t' \
+    -v run="${wanted_run}" \
+    -v scenario="${wanted_scenario}" \
+    -v revision="${wanted_revision}" \
+    -v source_state="${wanted_state}" \
+    -v source_tree="${wanted_tree}" \
+    -v artifact="${wanted_artifact}" '
+    BEGIN { good=1 }
+    NR == 1 { good=good && ($0 == "key\tvalue"); next }
+    {
+      if (NF != 2 || seen[$1]++) { good=0; next }
+      if (NR == 2) good=good && ($1 == "format_version" && $2 == "1")
+      else if (NR == 3) good=good && ($1 == "run_id" && $2 == run)
+      else if (NR == 4) good=good && ($1 == "scenario_id" && $2 == scenario)
+      else if (NR == 5) good=good && ($1 == "profile" && $2 == "trace-construction")
+      else if (NR == 6) good=good && ($1 == "source_revision" && $2 == revision && length($2) == 40 && $2 !~ /[^0-9a-f]/)
+      else if (NR == 7) good=good && ($1 == "source_state" && $2 == source_state && ($2 == "clean" || $2 == "dirty"))
+      else if (NR == 8) good=good && ($1 == "source_tree_sha256" && $2 == source_tree && length($2) == 64 && $2 !~ /[^0-9a-f]/)
+      else if (NR == 9) good=good && ($1 == "artifact_sha256" && $2 == artifact && length($2) == 64 && $2 !~ /[^0-9a-f]/)
+      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "8")
+      else if (NR == 11) good=good && ($1 == "raw_identifiers_emitted" && $2 == "false")
+      else if (NR == 12) good=good && ($1 == "privilege" && $2 == "unprivileged")
+      else if (NR == 13) good=good && ($1 == "started_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
+      else if (NR == 14) good=good && ($1 == "finished_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
+      else if (NR == 15) good=good && ($1 == "expires_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
+      else if (NR == 16) good=good && ($1 == "stdout_sha256" && length($2) == 64 && $2 !~ /[^0-9a-f]/)
+      else if (NR == 17) good=good && ($1 == "stderr_sha256" && length($2) == 64 && $2 !~ /[^0-9a-f]/)
+      else if (NR == 18) good=good && ($1 == "exit_code" && $2 == "0")
+      else if (NR == 19) good=good && ($1 == "status" && $2 == "PASS")
+      else good=0
+    }
+    END { exit !(good && NR == 19) }
+  ' "${result_file}"
+}
+
+validate_fixed_trace_output() {
+  awk '
+    NR == 1 { good=($0 == "PROOF passive_partial=PASS canary_touch_required=false") }
+    NR == 2 { good=good && ($0 == "PROOF deterministic_id=PASS input_order_independent=true") }
+    NR == 3 { good=good && ($0 == "PROOF ambiguity=PASS candidates=2 chosen=false") }
+    NR == 4 { good=good && ($0 == "PROOF join_citations=PASS all_links_evidence_backed=true") }
+    NR == 5 { good=good && ($0 == "PROOF broken_raw=PASS availability=INTEGRITY_MISMATCH") }
+    NR == 6 { good=good && ($0 == "PROOF lifecycle=PASS held_visible=true expired_hidden=true") }
+    NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
+    NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
+    NR > 8 { good=0 }
+    END { exit !(good && NR == 8) }
+  ' "$1"
+}
+
+result_value() {
+  local result_file="$1"
+  local wanted="$2"
+  awk -F '\t' -v wanted="${wanted}" '
+    $1 == wanted { count++; value=$2 }
+    END { if (count != 1) exit 1; print value }
+  ' "${result_file}"
+}
+
+validate_trace_result_timestamps() {
+  local result_file="$1"
+  local started_utc finished_utc expires_utc
+  local started_epoch finished_epoch expires_epoch now_epoch
+  started_utc="$(result_value "${result_file}" started_utc)" || return 1
+  finished_utc="$(result_value "${result_file}" finished_utc)" || return 1
+  expires_utc="$(result_value "${result_file}" expires_utc)" || return 1
+  started_epoch="$(date -u -d "${started_utc}" +%s)" || return 1
+  finished_epoch="$(date -u -d "${finished_utc}" +%s)" || return 1
+  expires_epoch="$(date -u -d "${expires_utc}" +%s)" || return 1
+  now_epoch="$(date -u +%s)" || return 1
+  ((started_epoch <= finished_epoch)) || return 1
+  ((finished_epoch - started_epoch <= 30)) || return 1
+  ((expires_epoch - finished_epoch == 86400)) || return 1
+  ((now_epoch < expires_epoch)) || return 1
+}
+
 validate_published_evidence() {
   [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" ]] || fail 'published evidence is unsafe'
   [[ "$(stat -c %a "${evidence}")" == '700' ]] || fail 'published evidence mode must be 0700'
@@ -140,36 +239,21 @@ validate_published_evidence() {
     [[ "$(stat -c %a "${evidence}/${file}")" == '600' ]] || fail "evidence file mode must be 0600: ${file}"
     [[ "$(stat -c %s "${evidence}/${file}")" -le 1048576 ]] || fail "evidence file exceeds 1 MiB: ${file}"
   done
-  awk -F '\t' -v run="${run_id}" '
-    NR == 1 { good=($0 == "key\tvalue"); next }
-    NF != 2 || seen[$1]++ { exit 1 }
-    $1 == "run_id" { good=good && ($2 == run) }
-    $1 == "profile" { good=good && ($2 == "trace-construction") }
-    $1 == "proof_line_count" { good=good && ($2 == "8") }
-    $1 == "raw_identifiers_emitted" { good=good && ($2 == "false") }
-    $1 == "privilege" { good=good && ($2 == "unprivileged") }
-    $1 == "status" { good=good && ($2 == "PASS") }
-    END { exit !good }
-  ' "${evidence}/result.tsv" || fail 'result schema or proof fields are invalid'
-  awk '
-    NR == 1 { good=($0 == "PROOF passive_partial=PASS canary_touch_required=false") }
-    NR == 2 { good=good && ($0 == "PROOF deterministic_id=PASS input_order_independent=true") }
-    NR == 3 { good=good && ($0 == "PROOF ambiguity=PASS candidates=2 chosen=false") }
-    NR == 4 { good=good && ($0 == "PROOF join_citations=PASS all_links_evidence_backed=true") }
-    NR == 5 { good=good && ($0 == "PROOF broken_raw=PASS availability=INTEGRITY_MISMATCH") }
-    NR == 6 { good=good && ($0 == "PROOF lifecycle=PASS held_visible=true expired_hidden=true") }
-    NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
-    NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
-    NR > 8 { exit 1 }
-    END { exit !(good && NR == 8) }
-  ' "${evidence}/stdout.log" || fail 'fixed proof output is incomplete or contains extra data'
-  stdout_sha256="$(awk -F '\t' '$1 == "stdout_sha256" {print $2}' "${evidence}/result.tsv")"
-  stderr_sha256="$(awk -F '\t' '$1 == "stderr_sha256" {print $2}' "${evidence}/result.tsv")"
+  validate_trace_result_schema \
+    "${evidence}/result.tsv" "${run_id}" "${scenario_id}" "${source_revision}" \
+    "${source_state}" "${source_tree_sha256}" "${expected_sha256}" ||
+    fail 'result schema, lineage, or proof fields are invalid'
+  validate_trace_result_timestamps "${evidence}/result.tsv" ||
+    fail 'result timestamps or 24-hour expiry are invalid'
+  validate_fixed_trace_output "${evidence}/stdout.log" || fail 'fixed proof output is incomplete or contains extra data'
+  stdout_sha256="$(result_value "${evidence}/result.tsv" stdout_sha256)" || fail 'stdout checksum is missing or duplicated'
+  stderr_sha256="$(result_value "${evidence}/result.tsv" stderr_sha256)" || fail 'stderr checksum is missing or duplicated'
   [[ "${stdout_sha256}" =~ ^[0-9a-f]{64}$ && "${stderr_sha256}" =~ ^[0-9a-f]{64}$ ]] || fail 'evidence checksums are malformed'
   [[ "$(sha256sum "${evidence}/stdout.log" | awk '{print $1}')" == "${stdout_sha256}" ]] || fail 'stdout checksum mismatch'
   [[ "$(sha256sum "${evidence}/stderr.log" | awk '{print $1}')" == "${stderr_sha256}" ]] || fail 'stderr checksum mismatch'
   [[ ! -s "${evidence}/stderr.log" ]] || fail 'proof emitted unexpected stderr'
-  grep -F 'PROOF passive_partial=PASS' "${evidence}/stdout.log"
+  grep -Fqx 'PROOF passive_partial=PASS canary_touch_required=false' "${evidence}/stdout.log" ||
+    fail 'passive partial-trace proof marker is missing'
 }
 
 if [[ "${mode}" == 'inspect' ]]; then
@@ -183,7 +267,8 @@ umask 077
 mkdir -m 0700 "${evidence}"
 stdout_log="${evidence}/stdout.log"
 stderr_log="${evidence}/stderr.log"
-started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+started_epoch="$(date -u +%s)"
+started_utc="$(date -u -d "@${started_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 set +e
 (
   cd "${evidence}"
@@ -193,25 +278,32 @@ set +e
     env -i LANG=C PATH=/usr/bin:/bin TZ=UTC \
     "${artifact}" \
       -run-id "${run_id}" \
-      -scenario-id "m2b4-trace-construction-${run_id}" \
+      -scenario-id "${scenario_id}" \
       -selfcheck
 ) >"${stdout_log}" 2>"${stderr_log}"
 exit_code=$?
 set -e
 
-finished_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-expires_epoch="$(( $(date -u +%s) + 86400 ))"
+finished_epoch="$(date -u +%s)"
+finished_utc="$(date -u -d "@${finished_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+expires_epoch="$((finished_epoch + 86400))"
 expires_utc="$(date -u -d "@${expires_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 stdout_sha256="$(sha256sum "${stdout_log}" | awk '{print $1}')"
 stderr_sha256="$(sha256sum "${stderr_log}" | awk '{print $1}')"
 proof_line_count="$(wc -l <"${stdout_log}" | tr -d '[:space:]')"
 status='FAIL'
-[[ "${exit_code}" -eq 0 && "${proof_line_count}" == '8' ]] && status='PASS'
+if [[ "${exit_code}" -eq 0 && ! -s "${stderr_log}" ]] && validate_fixed_trace_output "${stdout_log}"; then
+  status='PASS'
+fi
 {
   printf 'key\tvalue\n'
   printf 'format_version\t1\n'
   printf 'run_id\t%s\n' "${run_id}"
+  printf 'scenario_id\t%s\n' "${scenario_id}"
   printf 'profile\ttrace-construction\n'
+  printf 'source_revision\t%s\n' "${source_revision}"
+  printf 'source_state\t%s\n' "${source_state}"
+  printf 'source_tree_sha256\t%s\n' "${source_tree_sha256}"
   printf 'artifact_sha256\t%s\n' "${expected_sha256}"
   printf 'proof_line_count\t%s\n' "${proof_line_count}"
   printf 'raw_identifiers_emitted\tfalse\n'

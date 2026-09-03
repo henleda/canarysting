@@ -162,6 +162,10 @@ func executeProof(output io.Writer, config proofConfig, flows knownFlows, now ti
 	if err != nil {
 		return err
 	}
+	synthetic, err := model.NewSyntheticContext(config.scenarioID)
+	if err != nil {
+		return err
+	}
 	requestID, err := correlation.NewOpaqueID("dgx.loopback.request", pseudonym(config.key, "request-id", config.scenarioID))
 	if err != nil {
 		return err
@@ -190,27 +194,27 @@ func executeProof(output io.Writer, config proofConfig, flows knownFlows, now ti
 		return err
 	}
 
-	anchor, err := proofRecord("anchor-l7", scope, correlation.SourceVantageStingL7, &eventTime, &flows.downstream, []correlation.OpaqueID{requestID}, &l7Cookie, &anchorOTel)
+	anchor, err := proofRecord("anchor-l7", scope, synthetic, correlation.SourceVantageStingL7, &eventTime, &flows.downstream, []correlation.OpaqueID{requestID}, &l7Cookie, &anchorOTel)
 	if err != nil {
 		return err
 	}
-	kernel, err := proofRecord("kernel-flow", scope, correlation.SourceVantageStingKernel, &eventTime, nil, nil, &kernelCookie, nil)
+	kernel, err := proofRecord("kernel-flow", scope, synthetic, correlation.SourceVantageStingKernel, &eventTime, nil, nil, &kernelCookie, nil)
 	if err != nil {
 		return err
 	}
-	translated, err := proofRecord("origin-flow", scope, correlation.SourceVantageGeneral, &eventTime, &flows.upstream, nil, nil, nil)
+	translated, err := proofRecord("origin-flow", scope, synthetic, correlation.SourceVantageGeneral, &eventTime, &flows.upstream, nil, nil, nil)
 	if err != nil {
 		return err
 	}
-	weak, err := proofRecord("same-tuple", scope, correlation.SourceVantageGeneral, &eventTime, &flows.downstream, nil, nil, nil)
+	weak, err := proofRecord("same-tuple", scope, synthetic, correlation.SourceVantageGeneral, &eventTime, &flows.downstream, nil, nil, nil)
 	if err != nil {
 		return err
 	}
-	otelStrong, err := proofRecord("otel-trace", scope, correlation.SourceVantageGeneral, nil, nil, nil, nil, &candidateOTel)
+	otelStrong, err := proofRecord("otel-trace", scope, synthetic, correlation.SourceVantageGeneral, nil, nil, nil, nil, &candidateOTel)
 	if err != nil {
 		return err
 	}
-	missingTime, err := proofRecord("missing-time", scope, correlation.SourceVantageGeneral, nil, &flows.downstream, nil, nil, nil)
+	missingTime, err := proofRecord("missing-time", scope, synthetic, correlation.SourceVantageGeneral, nil, &flows.downstream, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -224,7 +228,7 @@ func executeProof(output io.Writer, config proofConfig, flows knownFlows, now ti
 	}
 	translation, err := correlation.NewTranslation(correlation.TranslationInput{
 		Reference: translationRef, Scope: scope, Before: flows.downstream,
-		After: flows.upstream, Control: control, ObservedAt: eventTime,
+		After: flows.upstream, Control: control, ObservedAt: eventTime, Synthetic: synthetic,
 	})
 	if err != nil {
 		return err
@@ -245,11 +249,11 @@ func executeProof(output io.Writer, config proofConfig, flows knownFlows, now ti
 		return err
 	}
 
-	ambiguousOne, err := proofRecord("ambiguous-one", scope, correlation.SourceVantageGeneral, nil, nil, []correlation.OpaqueID{requestID}, nil, nil)
+	ambiguousOne, err := proofRecord("ambiguous-one", scope, synthetic, correlation.SourceVantageGeneral, nil, nil, []correlation.OpaqueID{requestID}, nil, nil)
 	if err != nil {
 		return err
 	}
-	ambiguousTwo, err := proofRecord("ambiguous-two", scope, correlation.SourceVantageGeneral, nil, nil, []correlation.OpaqueID{requestID}, nil, nil)
+	ambiguousTwo, err := proofRecord("ambiguous-two", scope, synthetic, correlation.SourceVantageGeneral, nil, nil, []correlation.OpaqueID{requestID}, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -314,14 +318,14 @@ func (flows knownFlows) upstreamTupleValidation() error {
 	return err
 }
 
-func proofRecord(id string, scope model.Scope, vantage correlation.SourceVantage, eventTime *correlation.EventTime, tuple *correlation.NetworkTuple, requestIDs []correlation.OpaqueID, socketCookie *correlation.SocketCookieKey, otel *correlation.OTelKey) (correlation.Record, error) {
+func proofRecord(id string, scope model.Scope, synthetic model.SyntheticContext, vantage correlation.SourceVantage, eventTime *correlation.EventTime, tuple *correlation.NetworkTuple, requestIDs []correlation.OpaqueID, socketCookie *correlation.SocketCookieKey, otel *correlation.OTelKey) (correlation.Record, error) {
 	reference, err := model.NewRecordReference(id, model.CurrentSchemaVersion)
 	if err != nil {
 		return correlation.Record{}, err
 	}
 	return correlation.NewRecord(correlation.RecordInput{
 		Reference: reference, Scope: scope, Vantage: vantage, Time: eventTime, Tuple: tuple,
-		RequestIDs: requestIDs, SocketCookie: socketCookie, OTel: otel,
+		RequestIDs: requestIDs, SocketCookie: socketCookie, OTel: otel, Synthetic: synthetic,
 	})
 }
 

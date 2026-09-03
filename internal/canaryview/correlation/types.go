@@ -3,6 +3,7 @@ package correlation
 import (
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -273,6 +274,7 @@ type RecordInput struct {
 	VendorIDs    []OpaqueID
 	SocketCookie *SocketCookieKey
 	OTel         *OTelKey
+	Synthetic    model.SyntheticContext
 }
 
 // Record is an immutable candidate input assembled by source-specific code.
@@ -288,6 +290,7 @@ type Record struct {
 	vendorIDs    []OpaqueID
 	socketCookie *SocketCookieKey
 	otel         *OTelKey
+	synthetic    model.SyntheticContext
 }
 
 func NewRecord(in RecordInput) (Record, error) {
@@ -299,6 +302,9 @@ func NewRecord(in RecordInput) (Record, error) {
 	}
 	if !in.Vantage.valid() {
 		return Record{}, fmt.Errorf("unsupported source vantage %q", in.Vantage)
+	}
+	if err := in.Synthetic.Validate(); err != nil {
+		return Record{}, fmt.Errorf("record synthetic context: %w", err)
 	}
 	eventTime, err := copyOptional(in.Time, func(value EventTime) error { return value.validate() })
 	if err != nil {
@@ -340,7 +346,7 @@ func NewRecord(in RecordInput) (Record, error) {
 	return Record{
 		reference: in.Reference, scope: in.Scope, vantage: in.Vantage, eventTime: eventTime, tuple: tuple,
 		identities: identities, requestIDs: requestIDs, vendorIDs: vendorIDs,
-		socketCookie: socketCookie, otel: otel,
+		socketCookie: socketCookie, otel: otel, synthetic: in.Synthetic,
 	}, nil
 }
 
@@ -356,12 +362,13 @@ func (r Record) RequestIDs() []OpaqueID                { return append([]OpaqueI
 func (r Record) VendorIDs() []OpaqueID                 { return append([]OpaqueID(nil), r.vendorIDs...) }
 func (r Record) SocketCookie() (SocketCookieKey, bool) { return valueOptional(r.socketCookie) }
 func (r Record) OTel() (OTelKey, bool)                 { return valueOptional(r.otel) }
+func (r Record) Synthetic() model.SyntheticContext     { return r.synthetic }
 
 func (r Record) validate() error {
 	_, err := NewRecord(RecordInput{
 		Reference: r.reference, Scope: r.scope, Vantage: r.vantage, Time: r.eventTime, Tuple: r.tuple,
 		Identities: r.identities, RequestIDs: r.requestIDs, VendorIDs: r.vendorIDs,
-		SocketCookie: r.socketCookie, OTel: r.otel,
+		SocketCookie: r.socketCookie, OTel: r.otel, Synthetic: r.synthetic,
 	})
 	return err
 }
@@ -386,6 +393,7 @@ type TranslationInput struct {
 	After      NetworkTuple
 	Control    model.ControlIdentity
 	ObservedAt EventTime
+	Synthetic  model.SyntheticContext
 }
 
 // Translation is an immutable, directed assertion by one translating control.
@@ -398,6 +406,7 @@ type Translation struct {
 	after      NetworkTuple
 	control    model.ControlIdentity
 	observedAt EventTime
+	synthetic  model.SyntheticContext
 }
 
 func NewTranslation(in TranslationInput) (Translation, error) {
@@ -422,23 +431,27 @@ func NewTranslation(in TranslationInput) (Translation, error) {
 	if err := in.ObservedAt.validate(); err != nil {
 		return Translation{}, fmt.Errorf("translation observed time: %w", err)
 	}
+	if err := in.Synthetic.Validate(); err != nil {
+		return Translation{}, fmt.Errorf("translation synthetic context: %w", err)
+	}
 	return Translation{
 		reference: in.Reference, scope: in.Scope, before: in.Before,
-		after: in.After, control: in.Control, observedAt: in.ObservedAt,
+		after: in.After, control: in.Control, observedAt: in.ObservedAt, synthetic: in.Synthetic,
 	}, nil
 }
 
-func (t Translation) Reference() model.RecordReference { return t.reference }
-func (t Translation) Scope() model.Scope               { return t.scope }
-func (t Translation) Before() NetworkTuple             { return t.before }
-func (t Translation) After() NetworkTuple              { return t.after }
-func (t Translation) Control() model.ControlIdentity   { return t.control }
-func (t Translation) ObservedAt() EventTime            { return t.observedAt }
+func (t Translation) Reference() model.RecordReference  { return t.reference }
+func (t Translation) Scope() model.Scope                { return t.scope }
+func (t Translation) Before() NetworkTuple              { return t.before }
+func (t Translation) After() NetworkTuple               { return t.after }
+func (t Translation) Control() model.ControlIdentity    { return t.control }
+func (t Translation) ObservedAt() EventTime             { return t.observedAt }
+func (t Translation) Synthetic() model.SyntheticContext { return t.synthetic }
 
 func (t Translation) validate() error {
 	_, err := NewTranslation(TranslationInput{
 		Reference: t.reference, Scope: t.scope, Before: t.before, After: t.after,
-		Control: t.control, ObservedAt: t.observedAt,
+		Control: t.control, ObservedAt: t.observedAt, Synthetic: t.synthetic,
 	})
 	return err
 }
@@ -479,6 +492,7 @@ func (m Match) TranslationPath() []TranslationHop {
 }
 
 type Candidate struct {
+	record        Record
 	reference     model.RecordReference
 	strength      Strength
 	matches       []Match
@@ -488,6 +502,11 @@ type Candidate struct {
 }
 
 func (c Candidate) Reference() model.RecordReference { return c.reference }
+
+// MatchesRecord binds a retained candidate to the exact immutable correlation
+// input, not merely to a reference that may collide in another scope or
+// source-vantage domain.
+func (c Candidate) MatchesRecord(record Record) bool { return reflect.DeepEqual(c.record, record) }
 func (c Candidate) Strength() Strength               { return c.strength }
 func (c Candidate) Matches() []Match                 { return append([]Match(nil), c.matches...) }
 func (c Candidate) MissingKeys() []MissingKey        { return append([]MissingKey(nil), c.missing...) }
@@ -495,16 +514,21 @@ func (c Candidate) Confidence() model.Confidence     { return c.confidence }
 func (c Candidate) TranslationPathAmbiguous() bool   { return c.pathAmbiguous }
 
 type Rejection struct {
+	record    Record
 	reference model.RecordReference
 	reasons   []RejectionReason
 	missing   []MissingKey
 }
 
 func (r Rejection) Reference() model.RecordReference { return r.reference }
+
+// MatchesRecord binds a retained rejection to its exact immutable input.
+func (r Rejection) MatchesRecord(record Record) bool { return reflect.DeepEqual(r.record, record) }
 func (r Rejection) Reasons() []RejectionReason       { return append([]RejectionReason(nil), r.reasons...) }
 func (r Rejection) MissingKeys() []MissingKey        { return append([]MissingKey(nil), r.missing...) }
 
 type Result struct {
+	anchorRecord     Record
 	anchor           model.RecordReference
 	algorithmID      string
 	algorithmVersion string
@@ -516,8 +540,13 @@ type Result struct {
 }
 
 func (r Result) Anchor() model.RecordReference { return r.anchor }
-func (r Result) AlgorithmID() string           { return r.algorithmID }
-func (r Result) AlgorithmVersion() string      { return r.algorithmVersion }
+
+// MatchesAnchor binds the result to the exact immutable anchor input. Trace
+// construction must use this rather than trusting a potentially colliding
+// record reference.
+func (r Result) MatchesAnchor(record Record) bool { return reflect.DeepEqual(r.anchorRecord, record) }
+func (r Result) AlgorithmID() string              { return r.algorithmID }
+func (r Result) AlgorithmVersion() string         { return r.algorithmVersion }
 func (r Result) AnchorMissingKeys() []MissingKey {
 	return append([]MissingKey(nil), r.anchorMissing...)
 }
@@ -569,6 +598,10 @@ func sameScope(left, right model.Scope) bool {
 		left.ScopeID() == right.ScopeID() &&
 		left.DeploymentBoundary() == right.DeploymentBoundary() &&
 		left.ResidencyCellID() == right.ResidencyCellID()
+}
+
+func sameSyntheticContext(left, right model.SyntheticContext) bool {
+	return left.Synthetic() == right.Synthetic() && left.ScenarioID() == right.ScenarioID()
 }
 
 func validateControl(control model.ControlIdentity) error {
