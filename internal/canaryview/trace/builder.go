@@ -30,6 +30,7 @@ type BuilderConfig struct {
 	MaxTranslationHopsPerMatch  int
 	MaxCorrelationWork          int
 	MaxConflicts                int
+	MaxRecordsPerConflict       int
 	MaxEvidencePerConflict      int
 	MaxExpectations             int
 	MaxEvidencePerHop           int
@@ -41,8 +42,9 @@ func DefaultBuilderConfig() BuilderConfig {
 		AlgorithmID: DefaultAlgorithmID, AlgorithmVersion: DefaultAlgorithmVersion,
 		MaxHops: 256, MaxCorrelations: 256, MaxCandidatesPerCorrelation: 256,
 		MaxMatchesPerCandidate: 32, MaxTranslationHopsPerMatch: 8,
-		MaxCorrelationWork: 65536, MaxConflicts: 128, MaxEvidencePerConflict: 32,
-		MaxExpectations: 256, MaxEvidencePerHop: 32,
+		MaxCorrelationWork: 65536, MaxConflicts: 128, MaxRecordsPerConflict: 256,
+		MaxEvidencePerConflict: 32,
+		MaxExpectations:        256, MaxEvidencePerHop: 32,
 		MaxLineage: 4096,
 	}
 }
@@ -431,6 +433,9 @@ func (b *Builder) normalizeConflicts(inputs []ConflictInput, correlations []Corr
 	for index, input := range inputs {
 		if !input.Kind.valid() {
 			return nil, fmt.Errorf("conflict %d has unsupported kind %q", index, input.Kind)
+		}
+		if len(input.Records) > b.config.MaxRecordsPerConflict {
+			return nil, fmt.Errorf("conflict %d record references exceed configured limit %d", index, b.config.MaxRecordsPerConflict)
 		}
 		references, err := sortedReferences(input.Records)
 		if err != nil || len(references) < 2 {
@@ -902,8 +907,9 @@ func validateBuilderConfig(config BuilderConfig) error {
 		"hop limit": config.MaxHops, "correlation limit": config.MaxCorrelations,
 		"candidate limit": config.MaxCandidatesPerCorrelation, "match limit": config.MaxMatchesPerCandidate,
 		"translation-hop limit": config.MaxTranslationHopsPerMatch, "aggregate correlation-work limit": config.MaxCorrelationWork,
-		"conflict limit": config.MaxConflicts, "evidence-per-conflict limit": config.MaxEvidencePerConflict,
-		"expectation limit": config.MaxExpectations, "evidence-per-hop limit": config.MaxEvidencePerHop,
+		"conflict limit": config.MaxConflicts, "records-per-conflict limit": config.MaxRecordsPerConflict,
+		"evidence-per-conflict limit": config.MaxEvidencePerConflict,
+		"expectation limit":           config.MaxExpectations, "evidence-per-hop limit": config.MaxEvidencePerHop,
 		"lineage limit": config.MaxLineage,
 	}
 	for label, value := range values {

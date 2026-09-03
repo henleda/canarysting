@@ -444,6 +444,21 @@ func TestBuilderRejectsAggregateCorrelationWorkAndConflictEvidenceBounds(t *test
 		t.Fatal("builder accepted conflict evidence beyond the configured per-conflict bound")
 	}
 
+	input.Conflicts = []trace.ConflictInput{{
+		Kind:     trace.ConflictContradictoryEvidence,
+		Records:  []model.RecordReference{anchor.Reference(), left.Reference(), right.Reference()},
+		Evidence: []model.EvidenceReference{firstEvidence},
+	}}
+	config = trace.DefaultBuilderConfig()
+	config.MaxRecordsPerConflict = 2
+	builder, err = trace.NewBuilder(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Build(input); err == nil {
+		t.Fatal("builder accepted record references beyond the configured per-conflict bound")
+	}
+
 	input.Correlations = []correlation.Result{result}
 	input.Conflicts = []trace.ConflictInput{{
 		Kind:     trace.ConflictContradictoryEvidence,
