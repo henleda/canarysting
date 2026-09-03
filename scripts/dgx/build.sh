@@ -34,6 +34,7 @@ target_record() {
     cookiespike) printf 'test\tcookiespike\t./cmd/cookiespike\n' ;;
     enforcespike) printf 'test\tenforcespike\t./cmd/enforcespike\n' ;;
     dgxstackspike) printf 'test\tdgxstackspike\t./cmd/dgxstackspike\n' ;;
+    correlationspike) printf 'test\tcorrelationspike\t./cmd/correlationspike\n' ;;
     *) return 1 ;;
   esac
 }
@@ -86,6 +87,7 @@ readonly -a all_targets=(
   cookiespike
   enforcespike
   dgxstackspike
+  correlationspike
 )
 
 output_dir=""

@@ -281,7 +281,23 @@ No identifier is universally required. The socket cookie remains the sole Canary
 
 A `Correlation` contains the candidate records, chosen relationship, join method, join keys, time window, confidence, rejected candidates, missing fields, conflicts, and algorithm/operator provenance. It never overwrites source records.
 
-NAT and proxy translation must preserve both sides of a translation and the translating control. An eventual representation must support chained translations without pretending the original and translated tuple are identical.
+NAT and proxy translation must preserve both sides of a translation and the translating control. The representation supports chained translations without pretending the original and translated tuple are identical.
+
+#### M2B.3 implemented candidate semantics
+
+`internal/canaryview/correlation` implements an ephemeral, immutable candidate-construction seam over the schema-v3 model; it does not add a durable record type, widen `Observation`, build a trace, or select a persistence backend. Source-specific code supplies a scoped record reference, a mandatory general/CanarySting-L7/kernel/engine vantage, and any available minimized keys. Network addresses, request IDs, vendor IDs, and socket-cookie values enter this seam only as SHA-256/HMAC-SHA-256 digests; request/vendor IDs are also bound to an explicit source namespace. OpenTelemetry trace/span IDs retain their standard typed hexadecimal forms. These candidate inputs and results remain deployment/tenant scoped and are not a new CanarySting egress path.
+
+Version 1 uses the following evidence classes:
+
+- **exact:** an equal namespaced request ID, namespaced vendor ID, CanarySting socket-cookie digest, or OpenTelemetry trace-and-span pair;
+- **strong:** an equal OpenTelemetry trace ID, an equal identity for which both references carry verification evidence, or tuples connected by an explicit time-relevant NAT/proxy translation path; and
+- **weak:** an equal declared/observed identity within the correlation window, or an equal tuple within the correlation window.
+
+These are ordinal evidence classes, not numeric probabilities. Exact identifier evidence may remain useful when timestamps are missing; identity and tuple evidence requires time. Time comparisons operate on source uncertainty intervals and retain the effective gap and configured window without rewriting either source timestamp. The uncalibrated version-1 defaults are a two-minute contextual window, a five-minute translation-observation window, and at most ten minutes of accepted source-clock uncertainty. Algorithm ID/version, windows, candidate count, translation count, hop count, and path count are mandatory finite configuration. Over-bound or cross-scope input fails closed; it is never silently truncated.
+
+Every qualifying record remains in the candidate set and every non-qualifying considered record retains a typed rejection plus its missing-key set. A chosen relationship exists only when the strongest record is unique. If the strongest relationship depends on multiple eligible translation paths, the result remains ambiguous and unchosen. Independent exact evidence may resolve weaker translation-path ambiguity, but the alternative translation evidence remains attached to the candidate. Each translation hop retains the declared before tuple, after tuple, translating control, source reference, observed time, and whether traversal followed or reversed the declared direction.
+
+The socket-cookie key type accepts only CanarySting L7, kernel, or engine vantages and must agree with the record's vantage. Comparing two distinct CanarySting vantages disables every fallback method: a missing or unequal cookie produces a typed rejection even if a request ID, identity, or tuple also matches. It therefore preserves the socket cookie as the sole CanarySting L7/kernel join and cannot be repurposed as a general vendor identifier. Correlation never changes a verdict, tier, canary trigger, or enforcement decision. M2B.4 owns evidence-linked trace construction, conflicts, lifecycle/invalidation, and any durable `CORRELATED_TRACE` record.
 
 ### Trace
 
@@ -522,4 +538,4 @@ The code-grounded reuse boundary is:
 
 Approved placement crosses the product boundary through an outer integration/composition adapter: it receives the exact immutable `CanaryOpportunity` and approved `ActionPlan` version, invokes the existing CanarySting control plane, and maps placement/outcome evidence back into CanaryView observations. Neither core package imports the other, and CanarySting retains materialization and safety authority.
 
-Production storage engines, physical graph implementation, detailed correlation windows, calibrated identity confidence, translation/OpenTelemetry mapping, and vendor-action authorization remain separately reviewed implementation choices in `docs/CANARY_PLATFORM_ARCHITECTURE.md`.
+Production storage engines, physical graph implementation, calibrated identity confidence, durable trace lifecycle, and vendor-action authorization remain separately reviewed implementation choices in `docs/CANARY_PLATFORM_ARCHITECTURE.md`. M2B.3 fixes the version-1 ephemeral candidate windows and translation/OpenTelemetry mapping above; changing those semantics requires a new algorithm version rather than an in-place reinterpretation.
