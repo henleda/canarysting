@@ -14,7 +14,7 @@ usage() {
 Usage:
   scripts/dgx/pr.sh --profile PROFILE --run-id ID [--dry-run]
 
-Profiles: preflight, cookie, enforcement, kernel-full, stack.
+Profiles: preflight, cookie, enforcement, kernel-full, stack, correlation.
 
 The coordinator performs one read-only DGX preflight, one compatible local
 artifact build, and one transfer. Mutable state remains isolated by run ID.
@@ -57,10 +57,11 @@ case "${profile}" in
   enforcement) targets=(enforcespike); scenarios=(enforcespike) ;;
   kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike) ;;
   stack) targets=(dgxstackspike); scenarios=(dgxstackspike) ;;
+  correlation) targets=(correlationspike); scenarios=(correlationspike) ;;
   dgx-kubernetes|dgx-attacker-smoke|campaign)
     fail "profile ${profile} is not implemented by the bounded DGX harness; refusing to substitute weaker coverage"
     ;;
-  *) fail 'profile must be preflight, cookie, enforcement, kernel-full, or stack' ;;
+  *) fail 'profile must be preflight, cookie, enforcement, kernel-full, stack, or correlation' ;;
 esac
 
 printf 'profile=%s\nrun_id=%s\npreflight_count=1\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \
