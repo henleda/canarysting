@@ -25,6 +25,11 @@ grep -Fqx 'artifact_transfer_count=1' <<<"${output}"
 grep -Fq 'socket-cookie proof contract passed; DGX was not accessed' <<<"${output}"
 grep -Fq 'precise-enforcement proof contract passed; DGX was not accessed' <<<"${output}"
 
+stack_output="$("${script_dir}/pr.sh" --profile stack --run-id ci-stack-dry-run --dry-run)"
+grep -Fqx 'profile=stack' <<<"${stack_output}"
+grep -Fqx 'artifact_build_count=1' <<<"${stack_output}"
+grep -Fq 'DGX-stack proof contract passed; DGX was not accessed' <<<"${stack_output}"
+
 if "${script_dir}/pr.sh" --profile dgx-kubernetes --run-id ci-risk-dry-run --dry-run >/dev/null 2>&1; then
   echo 'FAIL: unsupported Kubernetes profile did not fail closed' >&2
   exit 1

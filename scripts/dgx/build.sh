@@ -33,6 +33,7 @@ target_record() {
     dashboard-backend) printf 'product\tdashboard-backend\t./cmd/dashboard-backend\n' ;;
     cookiespike) printf 'test\tcookiespike\t./cmd/cookiespike\n' ;;
     enforcespike) printf 'test\tenforcespike\t./cmd/enforcespike\n' ;;
+    dgxstackspike) printf 'test\tdgxstackspike\t./cmd/dgxstackspike\n' ;;
     *) return 1 ;;
   esac
 }
@@ -84,6 +85,7 @@ readonly -a all_targets=(
   dashboard-backend
   cookiespike
   enforcespike
+  dgxstackspike
 )
 
 output_dir=""

@@ -144,7 +144,7 @@ validate_artifact_tree() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike)
+      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike)
         ;;
       *)
         fail "artifact candidate contains an undeclared entry: ${path}/${entry#*:}"
@@ -159,7 +159,7 @@ validate_artifact_tree() {
       [[ "${digest}" =~ ^[0-9a-f]{64}$ && -n "${relative_path}" && -z "${extra:-}" ]] ||
         fail "stage has a malformed checksum entry: ${path}"
       case "${relative_path}" in
-        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike)
+        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike)
           ;;
         *) fail "stage checksum inventory contains an undeclared path: ${relative_path}" ;;
       esac
@@ -183,7 +183,7 @@ validate_evidence() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      f:stdout.log|f:stderr.log|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp) ;;
       *) fail "evidence candidate contains an undeclared entry: ${path}/${entry#*:}" ;;
     esac
   done < <(cd "${path}" && find . -mindepth 1 -printf '%y:%P\n' | LC_ALL=C sort)

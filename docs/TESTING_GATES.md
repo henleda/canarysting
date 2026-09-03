@@ -135,7 +135,7 @@ Before this refactor, `make check` was the serial dependency line `generated-che
 |---|---|---|---|
 | `scripts/generated.sh check all` | Protobuf and operator/CRD drift; about 1s | Pinned Go/protoc tools; local, no network when installed | Temp dir removed; proto failure prevented operator check; component replay existed but was not printed |
 | `make frontend-check` | npm presence, lint, Next build; about 8s | Existing `node_modules`; local, no install/network | `.next`; lint stopped build; no ledger/replay |
-| `make dgx-harness-check` | shell syntax plus seven local harness contract suites; about 20s warm | Bash/Go/file tools; no DGX/network; temp fixtures | Each script cleans exact temp state, but target stopped at first script; build/copy suites rebuilt ARM64 fixtures repeatedly |
+| `make dgx-harness-check` | shell syntax plus nine local harness contract suites (including the M2B.2 read-only DGX-stack proof); about 20s warm before the additional ARM64 proof build | Bash/Go/file tools; no DGX/network; temp fixtures | Each script cleans exact temp state, but target stopped at first script; build/copy suites rebuilt ARM64 fixtures repeatedly |
 | `make fmt-check` | Go formatting; under 1s | gofmt; local | None; direct target replay only |
 | `make vet` / `make build` | Static/compile checks; roughly 1–3s warm each | Go toolchain/cache; local | Repeated package loading/compilation; no ledger |
 | `make test` | All Go tests with race; roughly 4s warm | Go toolchain/cache; root-gated eBPF cases skip off Linux/root | Go package output only; no durable logs/direct check ID |
