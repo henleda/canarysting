@@ -183,23 +183,30 @@ function traceReference(value: unknown): boolean {
     Number.isInteger(value.schema_version) && value.schema_version > 0;
 }
 
+function traceReferenceIdentity(value: unknown): string {
+  return record(value) ? JSON.stringify([String(value.id), String(value.schema_version)]) : '';
+}
+
+function distinctTraceReferences(value: unknown, minimum = 0): boolean {
+  if (!Array.isArray(value) || value.length < minimum || !value.every(traceReference)) return false;
+  return new Set(value.map(traceReferenceIdentity)).size === value.length;
+}
+
 function joinIdentity(value: unknown): string {
   if (!record(value)) return '';
-  const referenceIdentity = (candidate: unknown) => record(candidate) ? `${String(candidate.id)}:v${String(candidate.schema_version)}` : '';
   const path = Array.isArray(value.translation_path)
-    ? value.translation_path.map((step) => record(step) ? [referenceIdentity(step.record), String(step.direction)] : [])
+    ? value.translation_path.map((step) => record(step) ? [traceReferenceIdentity(step.record), String(step.direction)] : [])
     : [];
   return JSON.stringify([
-    referenceIdentity(value.anchor), referenceIdentity(value.candidate), value.method, value.strength,
+    traceReferenceIdentity(value.anchor), traceReferenceIdentity(value.candidate), value.method, value.strength,
     value.key_fingerprint, value.time_gap ?? 'not-used', value.window ?? 'not-used', path,
   ]);
 }
 
 function conflictIdentity(value: unknown): string {
   if (!record(value)) return '';
-  const referenceIdentity = (candidate: unknown) => record(candidate) ? [String(candidate.id), String(candidate.schema_version)] : [];
-  const records = Array.isArray(value.records) ? value.records.map(referenceIdentity) : [];
-  const evidence = Array.isArray(value.evidence) ? value.evidence.map(referenceIdentity) : [];
+  const records = Array.isArray(value.records) ? value.records.map(traceReferenceIdentity).sort() : [];
+  const evidence = Array.isArray(value.evidence) ? value.evidence.map(traceReferenceIdentity).sort() : [];
   return JSON.stringify([value.kind, records, evidence]);
 }
 
@@ -270,8 +277,8 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
       optionalAbsentOr(gap.record, traceReference) && optionalAbsentOr(gap.availability, (candidate) => oneOf(candidate, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch'])) && nonEmptyString(gap.next_step)) &&
     Array.isArray(value.conflicts) && value.conflicts.every((conflict) => record(conflict) &&
       oneOf(conflict.kind, ['AMBIGUOUS_CORRELATION', 'CONTRADICTORY_EVIDENCE', 'ORDERING_UNCERTAINTY']) &&
-      nonEmptyString(conflict.label) && Array.isArray(conflict.records) && conflict.records.length >= 2 && conflict.records.every(traceReference) &&
-      Array.isArray(conflict.evidence) && conflict.evidence.every(traceReference)) &&
+      nonEmptyString(conflict.label) && distinctTraceReferences(conflict.records, 2) && Array.isArray(conflict.evidence) && distinctTraceReferences(conflict.evidence) &&
+      (conflict.kind !== 'CONTRADICTORY_EVIDENCE' || conflict.evidence.length > 0)) &&
     new Set(value.conflicts.map(conflictIdentity)).size === value.conflicts.length &&
     Array.isArray(value.evidence) && value.evidence.every(evidenceReference) &&
     lifecycle.data_class === 'Correlated trace' && lifecycle.sensitivity === 'Confidential' &&

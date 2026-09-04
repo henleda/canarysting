@@ -24,7 +24,11 @@ import (
 
 var safeID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,94}[a-z0-9])?$`)
 
-const operatorScenarioID = "m2b5-operator-conflict"
+const (
+	operatorScenarioID    = "m2b5-operator-conflict"
+	operatorMissingCount  = 2
+	operatorConflictCount = 3
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -72,7 +76,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF lifecycle=PASS held_visible=true expired_hidden=true",
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
-		"PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=2",
+		fmt.Sprintf("PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=%d conflicts=%d", operatorMissingCount, operatorConflictCount),
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -298,7 +302,7 @@ func executeProof(runID, scenarioID string) error {
 	if workspace.TraceID != operatorTrace.Envelope().RecordID() || workspace.WhatHappened == "" || workspace.Explanation.Claim == "" || workspace.Explanation.Reason == "" {
 		return fmt.Errorf("operator trace explanation is incomplete")
 	}
-	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 3 {
+	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != operatorMissingCount || len(workspace.Conflicts) != operatorConflictCount {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
 	joinIdentities := make(map[string]bool)

@@ -49,7 +49,7 @@ for marker in \
   'join_citations=PASS all_links_evidence_backed=true' \
   'broken_raw=PASS availability=INTEGRITY_MISMATCH' \
   'ambiguity=PASS candidates=2 chosen=false' \
-  'operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=2' \
+  'operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3' \
   'fixed proof output is incomplete or contains extra data' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"

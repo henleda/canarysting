@@ -27,7 +27,7 @@ func TestRunEmitsOnlyFixedProof(t *testing.T) {
 		"PROOF lifecycle=PASS held_visible=true expired_hidden=true",
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
-		"PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=2",
+		"PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3",
 	}
 	for index, line := range lines {
 		if !strings.HasPrefix(line, "PROOF ") || !strings.Contains(line, "=PASS") {

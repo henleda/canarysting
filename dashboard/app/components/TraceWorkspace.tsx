@@ -35,8 +35,8 @@ function joinKey(join: TraceWorkspaceView['explanation']['joins'][number]): stri
 function conflictKey(conflict: TraceWorkspaceView['conflicts'][number]): string {
   return JSON.stringify([
     conflict.kind,
-    conflict.records.map(referenceKey),
-    conflict.evidence.map(referenceKey),
+    [...conflict.records.map(referenceKey)].sort(),
+    [...conflict.evidence.map(referenceKey)].sort(),
   ]);
 }
 

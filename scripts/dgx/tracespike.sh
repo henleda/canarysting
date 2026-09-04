@@ -195,7 +195,7 @@ validate_fixed_trace_output() {
     NR == 6 { good=good && ($0 == "PROOF lifecycle=PASS held_visible=true expired_hidden=true") }
     NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
     NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
-    NR == 9 { good=good && ($0 == "PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=2") }
+    NR == 9 { good=good && ($0 == "PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3") }
     NR > 9 { good=0 }
     END { exit !(good && NR == 9) }
   ' "$1"

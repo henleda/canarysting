@@ -15,6 +15,9 @@ type FixtureIDs = {
   invalid_join_time_id: string;
   duplicate_join_id: string;
   duplicate_conflict_id: string;
+  invalid_conflict_records_id: string;
+  invalid_conflict_evidence_id: string;
+  empty_conflict_evidence_id: string;
 };
 
 async function fixtureIDs(request: APIRequestContext): Promise<FixtureIDs> {
@@ -213,6 +216,21 @@ for (const terminal of [
   },
   {
     id: 'duplicate_conflict_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'invalid_conflict_records_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'invalid_conflict_evidence_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'empty_conflict_evidence_id' as const,
     heading: 'Security trace could not be read',
     nextStep: 'check the dashboard-backend trace route and projection logs',
   },
