@@ -7,7 +7,9 @@
     "dev": "next dev --port 3001",
     "build": "next build",
     "start": "next start --port 3001",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:e2e": "playwright test",
+    "test:e2e:serve": "next dev --hostname 127.0.0.1 --port 3101"
   },
   "dependencies": {
     "next": "14.2.35",

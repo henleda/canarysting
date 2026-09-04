@@ -1,6 +1,6 @@
-// tracespike is the bounded M2B.4 DGX proof. It uses only minimized synthetic
-// records and emits fixed assertions; no customer payload or raw identifier is
-// accepted or written.
+// tracespike is the bounded M2B.4/M2B.5 DGX proof. It uses only minimized
+// synthetic records and emits fixed assertions; no customer payload or raw
+// identifier is accepted or written.
 package main
 
 import (
@@ -18,6 +18,8 @@ import (
 	"github.com/canarysting/canarysting/internal/canaryview/correlation"
 	"github.com/canarysting/canarysting/internal/canaryview/model"
 	"github.com/canarysting/canarysting/internal/canaryview/trace"
+	"github.com/canarysting/canarysting/internal/canaryview/tracefixture"
+	"github.com/canarysting/canarysting/internal/dashboard/backend/views"
 )
 
 var safeID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,94}[a-z0-9])?$`)
@@ -65,6 +67,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF lifecycle=PASS held_visible=true expired_hidden=true",
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
+		"PROOF operator_workspace=PASS explanation_zero_click=true raw_reference_available=true partial_conflict_explicit=true",
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -280,6 +283,31 @@ func executeProof(runID, scenarioID string) error {
 	overBound.Expectations = []trace.ExpectationInput{{Kind: trace.ExpectObservation}}
 	if _, err := boundedBuilder.Build(overBound); err == nil {
 		return fmt.Errorf("over-bound trace input was truncated or accepted")
+	}
+
+	operatorTrace, err := tracefixture.OperatorConflict()
+	if err != nil {
+		return fmt.Errorf("build operator trace fixture: %w", err)
+	}
+	workspace := views.ProjectTrace(operatorTrace)
+	if workspace.TraceID != operatorTrace.Envelope().RecordID() || workspace.WhatHappened == "" || workspace.Explanation.Claim == "" || workspace.Explanation.Reason == "" {
+		return fmt.Errorf("operator trace explanation is incomplete")
+	}
+	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 2 {
+		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
+	}
+	rawReferenceAvailable := false
+	for _, evidence := range workspace.Evidence {
+		if evidence.Raw && evidence.SourceOwned && evidence.Reference != "" {
+			rawReferenceAvailable = true
+			break
+		}
+	}
+	if !rawReferenceAvailable {
+		return fmt.Errorf("operator trace omitted its source-owned raw reference")
+	}
+	if !workspace.Synthetic || workspace.ScenarioID != tracefixture.ScenarioID || workspace.SafetyNote != "This workspace is read-only and cannot trigger or change a response." {
+		return fmt.Errorf("operator trace safety or synthetic provenance is incomplete")
 	}
 	return nil
 }

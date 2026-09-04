@@ -15,8 +15,8 @@ func TestRunEmitsOnlyFixedProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 8 {
-		t.Fatalf("proof lines=%d want=8: %s", len(lines), output.String())
+	if len(lines) != 9 {
+		t.Fatalf("proof lines=%d want=9: %s", len(lines), output.String())
 	}
 	for _, line := range lines {
 		if !strings.HasPrefix(line, "PROOF ") || !strings.Contains(line, "=PASS") {

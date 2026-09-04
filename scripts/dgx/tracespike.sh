@@ -24,11 +24,11 @@ usage() {
 Usage:
   scripts/dgx/tracespike.sh --run-id ID [--dry-run | --inspect | --cleanup]
 
-Run the fixed M2B.4 unprivileged DGX trace-construction proof. The artifact
-uses only minimized synthetic records to prove passive partial traces,
-ambiguity, evidence citations, lifecycle, exact-scope invalidation, and hard
-bounds. It emits only eight fixed proof statements and changes no Kubernetes,
-Cilium, BPF, service, firewall, socket, or system state.
+Run the fixed M2B.4/M2B.5 unprivileged DGX trace proof. The artifact uses only
+minimized synthetic records to prove passive partial traces, ambiguity,
+evidence citations, lifecycle, exact-scope invalidation, hard bounds, and the
+read-only operator projection. It emits only nine fixed proof statements and
+changes no Kubernetes, Cilium, BPF, service, firewall, socket, or system state.
 USAGE
 }
 
@@ -171,7 +171,7 @@ validate_trace_result_schema() {
       else if (NR == 7) good=good && ($1 == "source_state" && $2 == source_state && ($2 == "clean" || $2 == "dirty"))
       else if (NR == 8) good=good && ($1 == "source_tree_sha256" && $2 == source_tree && length($2) == 64 && $2 !~ /[^0-9a-f]/)
       else if (NR == 9) good=good && ($1 == "artifact_sha256" && $2 == artifact && length($2) == 64 && $2 !~ /[^0-9a-f]/)
-      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "8")
+      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "9")
       else if (NR == 11) good=good && ($1 == "raw_identifiers_emitted" && $2 == "false")
       else if (NR == 12) good=good && ($1 == "privilege" && $2 == "unprivileged")
       else if (NR == 13) good=good && ($1 == "started_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
@@ -197,8 +197,9 @@ validate_fixed_trace_output() {
     NR == 6 { good=good && ($0 == "PROOF lifecycle=PASS held_visible=true expired_hidden=true") }
     NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
     NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
-    NR > 8 { good=0 }
-    END { exit !(good && NR == 8) }
+    NR == 9 { good=good && ($0 == "PROOF operator_workspace=PASS explanation_zero_click=true raw_reference_available=true partial_conflict_explicit=true") }
+    NR > 9 { good=0 }
+    END { exit !(good && NR == 9) }
   ' "$1"
 }
 

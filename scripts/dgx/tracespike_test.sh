@@ -49,6 +49,7 @@ for marker in \
   'join_citations=PASS all_links_evidence_backed=true' \
   'broken_raw=PASS availability=INTEGRITY_MISMATCH' \
   'ambiguity=PASS candidates=2 chosen=false' \
+  'operator_workspace=PASS explanation_zero_click=true raw_reference_available=true partial_conflict_explicit=true' \
   'fixed proof output is incomplete or contains extra data' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
@@ -91,7 +92,7 @@ source_revision	1111111111111111111111111111111111111111
 source_state	clean
 source_tree_sha256	2222222222222222222222222222222222222222222222222222222222222222
 artifact_sha256	3333333333333333333333333333333333333333333333333333333333333333
-proof_line_count	8
+proof_line_count	9
 raw_identifiers_emitted	false
 privilege	unprivileged
 started_utc	2026-09-03T12:00:00Z

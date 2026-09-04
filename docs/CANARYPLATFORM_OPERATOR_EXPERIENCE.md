@@ -94,6 +94,12 @@ One workspace shows the complete correlated journey:
 
 The operator can ask visually: why allowed, which controls observed it, what disagreed, what else this identity touched, what was permitted, and what containment is possible. Core paths do not require a query or prompt.
 
+### M2B.5 initial trace slice
+
+The first implemented slice projects one immutable correlated trace into a read-only workspace under **Flows**. It leads with a plain-language summary, separately labeled status and confidence, affected application/service identities, and an ordered observation/policy-decision timeline. The deterministic explanation is visible with zero clicks. Missing declared coverage and conflicting evidence have their own named sections, and every candidate join retains its cited records rather than selecting an unsupported path.
+
+An evidence control adjacent to the explanation opens the opaque source-owned raw reference in one click and shows availability, integrity, expiry, hold, residency, and separate model-use state without embedding the source payload. The fixture explicitly identifies itself as synthetic, the page identifies itself as read-only, and keyboard activation plus focus restoration are covered by Playwright. This is the M2B vertical slice, not the complete M4 incident/flow console: production scoped-query/authentication wiring, full source/control labels, cases, impact, recommendations, actions, graph alternatives, and broader navigation remain later tasks.
+
 ## Canary recommendation workflow
 
 CanaryView creates a `CanaryOpportunity` from dark reachability, asset sensitivity, fan-out, trust-boundary crossing, unused permitted paths, visibility gaps, workload-identity confidence, and historical evidence. CanarySting remains responsible for safe materialization.

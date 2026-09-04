@@ -19,7 +19,7 @@ export async function fetchOverview(): Promise<Overview> {
 }
 
 // ---- Interactive console drill-down endpoints ----
-import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline, TopologyView, DeviantsView } from './types';
+import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline, TopologyView, DeviantsView, TraceWorkspace } from './types';
 
 // `since` is the Go-duration string the time pills produce ("1h","6h","24h").
 // `session` (optional, Unix seconds of the session start) disambiguates a reused
@@ -57,9 +57,12 @@ export function topologyURL(): string {
 export function deviantsURL(): string {
   return `/api/deviants`;
 }
+export function traceWorkspaceURL(traceID: string): string {
+  return `/api/traces/${encodeURIComponent(traceID)}`;
+}
 
-async function fetchJSON<T>(url: string, label: string): Promise<T> {
-  const res = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' } });
+async function fetchJSON<T>(url: string, label: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' }, signal });
   if (!res.ok) throw new Error(`${label}: HTTP ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -71,3 +74,5 @@ export const fetchCost = (since: string) => fetchJSON<CostBreakdown>(costURL(sin
 export const fetchRecon = (since: string) => fetchJSON<ReconTimeline>(reconURL(since), 'recon');
 export const fetchTopology = () => fetchJSON<TopologyView>(topologyURL(), 'topology');
 export const fetchDeviants = () => fetchJSON<DeviantsView>(deviantsURL(), 'deviants');
+export const fetchTraceWorkspace = (traceID: string, signal?: AbortSignal) =>
+  fetchJSON<TraceWorkspace>(traceWorkspaceURL(traceID), 'trace', signal);

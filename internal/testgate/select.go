@@ -88,7 +88,7 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 				selectAdversarial(selected, all, files)
 			}
 		case strings.HasPrefix(file, "dashboard/app/"):
-			addAvailable(selected, all, "frontend-lint")
+			addAvailable(selected, all, "frontend-lint", "frontend-playwright")
 		case strings.HasPrefix(file, "bpf/"):
 			addAvailable(selected, all, "bpf-compile", "bpf-object-assert", "affected-go-build", "affected-go-test", "security-invariants")
 			selectAdversarial(selected, all, files)
@@ -126,7 +126,7 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 	for _, file := range files {
 		switch {
 		case strings.HasPrefix(file, "dashboard/app/"):
-			addAvailable(selected, all, "frontend-lint", "frontend-build")
+			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")
 		case strings.HasPrefix(file, "bpf/"):
 			addAvailable(selected, all, "bpf-compile", "bpf-object-assert")
 			selectAdversarial(selected, all, files)

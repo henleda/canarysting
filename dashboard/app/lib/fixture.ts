@@ -1,10 +1,165 @@
-// DEV / VISUAL-VERIFICATION ONLY. This is the static, prototype-matching Overview
-// used to verify pixel fidelity against dashboard/design/prototype.html. It is
-// rendered ONLY when process.env.NEXT_PUBLIC_FIXTURE === '1' (see page.tsx).
-// It is NEVER the production render path — production always uses useOverview().
-// Do not import this from any component or the live data layer.
+// DEV / VISUAL-VERIFICATION ONLY. These static views exercise deterministic
+// operator journeys and prototype fidelity. Route modules may select them only
+// when process.env.NEXT_PUBLIC_FIXTURE === '1'; production uses the live read
+// APIs. Never import this module from the live data layer.
 
-import type { Overview } from './types';
+import type { Overview, TraceWorkspace } from './types';
+
+export const fixtureTraceWorkspace: TraceWorkspace = {
+  trace_id: `trace:sha256:${'1'.repeat(64)}`,
+  title: 'Conflicting evidence across Checkout API and Payments',
+  summary:
+    'CanaryView correlated 3 source records. Coverage remains explicit: 2 expected items missing and 2 conflicts unresolved.',
+  what_happened:
+    'CanaryView ordered 3 source records—1 observation and 2 policy decisions—within Operator Workspace.',
+  status: {
+    code: 'CONFLICTED',
+    label: 'Conflicted',
+    detail: '2 expected items missing; 2 conflicts unresolved.',
+  },
+  confidence: {
+    level: 'Low',
+    method: 'Composite Correlation',
+    completeness: 'Partial',
+    source_quality: 'Declared',
+    identity_assurance: 'Unverified',
+    candidate_count: 2,
+    human_review: 'Unreviewed',
+  },
+  scope: {
+    tenant_id: 'internal-lab',
+    scope_id: 'operator-workspace',
+    display_name: 'Operator Workspace',
+    deployment_boundary: 'fixture',
+    residency_cell_id: 'lab-local',
+  },
+  affected: [
+    { id: 'checkout-api', kind: 'Application', name: 'Checkout API', assertion_mode: 'Declared', verified: false },
+    { id: 'payments', kind: 'Service', name: 'Payments', assertion_mode: 'Declared', verified: false },
+  ],
+  hops: [
+    {
+      record_id: 'gateway-request',
+      kind: 'Observation',
+      label: 'Gateway request',
+      at: '2026-09-03T12:00:00Z',
+      time_status: 'Source time present',
+      identities: [{ id: 'checkout-api', kind: 'Application', name: 'Checkout API', assertion_mode: 'Declared', verified: false }],
+      evidence_count: 2,
+    },
+    {
+      record_id: 'cilium-policy-allow',
+      kind: 'Policy Decision',
+      label: 'Cilium policy allow',
+      at: '2026-09-03T12:00:01Z',
+      time_status: 'Source time present',
+      identities: [{ id: 'payments', kind: 'Service', name: 'Payments', assertion_mode: 'Declared', verified: false }],
+      evidence_count: 1,
+    },
+    {
+      record_id: 'mesh-policy-deny',
+      kind: 'Policy Decision',
+      label: 'Mesh policy deny',
+      at: '2026-09-03T12:00:02Z',
+      time_status: 'Source time present',
+      identities: [{ id: 'payments', kind: 'Service', name: 'Payments', assertion_mode: 'Declared', verified: false }],
+      evidence_count: 1,
+    },
+  ],
+  explanation: {
+    claim: 'The available records may describe one security journey, but the outcome is not resolved.',
+    reason: 'CanaryView retained 2 candidate joins and 2 conflicts rather than selecting an unsupported path.',
+    methods: ['Request ID'],
+    joins: [
+      {
+        anchor_id: 'gateway-request',
+        candidate_id: 'cilium-policy-allow',
+        method: 'Request ID',
+        strength: 'Exact',
+        citations: ['gateway-request', 'cilium-policy-allow'],
+        selected: false,
+        ambiguous: true,
+      },
+      {
+        anchor_id: 'gateway-request',
+        candidate_id: 'mesh-policy-deny',
+        method: 'Request ID',
+        strength: 'Exact',
+        citations: ['gateway-request', 'mesh-policy-deny'],
+        selected: false,
+        ambiguous: true,
+      },
+    ],
+  },
+  missing: [
+    {
+      kind: 'CORRELATION',
+      label: 'Expected correlation is missing',
+      next_step: 'Acquire the named missing evidence from its source before raising confidence.',
+    },
+    {
+      kind: 'RAW_EVIDENCE',
+      label: 'Raw evidence could not be verified',
+      record_id: 'gateway-request',
+      availability: 'Integrity mismatch',
+      next_step: 'Verify the source-owned reference and integrity digest; do not infer the missing content.',
+    },
+  ],
+  conflicts: [
+    {
+      kind: 'AMBIGUOUS_CORRELATION',
+      label: 'Equally strong correlation candidates',
+      records: ['gateway-request', 'cilium-policy-allow', 'mesh-policy-deny'],
+      evidence_ids: [],
+    },
+    {
+      kind: 'CONTRADICTORY_EVIDENCE',
+      label: 'Contradictory policy evidence',
+      records: ['cilium-policy-allow', 'mesh-policy-deny'],
+      evidence_ids: ['evidence-policy-conflict'],
+    },
+  ],
+  evidence: [
+    {
+      id: `rawref:sha256:${'2'.repeat(64)}`,
+      label: 'Gateway request',
+      summary: 'Source-owned raw evidence reference for Gateway request.',
+      role: 'Supporting',
+      hop_record_id: 'gateway-request',
+      raw: true,
+      source_owned: true,
+      reference: `rawref:sha256:${'2'.repeat(64)}`,
+      availability: 'Integrity mismatch',
+      hash_algorithm: 'sha256',
+      hash_value: '3'.repeat(64),
+    },
+    {
+      id: 'evidence-policy-conflict',
+      label: 'Contradictory policy evidence',
+      summary: 'Evidence reference attached to contradictory policy evidence.',
+      role: 'Contradicting',
+      raw: false,
+      source_owned: false,
+      reference: 'evidence-policy-conflict',
+      availability: 'Reference only',
+    },
+  ],
+  lifecycle: {
+    data_class: 'Correlated Trace',
+    sensitivity: 'Confidential',
+    retention_profile: 'Lean',
+    state: 'Active',
+    expires_at: '2026-12-02T12:01:00Z',
+    legal_hold_ids: [],
+    residency_policy_ref: 'residency/lab-local-v1',
+    encryption_boundary: 'key://lab-local/operator-fixture',
+    per_tenant_model_use: false,
+    cross_tenant_model_use: false,
+  },
+  synthetic: true,
+  scenario_id: 'm2b5-operator-conflict',
+  safety_note: 'This workspace is read-only and cannot trigger or change a response.',
+};
 
 // Spark series modeled on the prototype's generated shape (48 bars, rising at
 // the end), normalized to 0..1 — matches FlowView.spark_series semantics.

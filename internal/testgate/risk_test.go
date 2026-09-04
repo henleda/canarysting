@@ -70,7 +70,7 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 	ids := []string{
 		"manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator",
 		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants",
-		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "bpf-compile", "bpf-object-assert",
+		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "frontend-playwright", "bpf-compile", "bpf-object-assert",
 		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce",
 	}
 	manifest := Manifest{Version: 1}
@@ -89,6 +89,12 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSelected(t, standard, "affected-go-race", "affected-go-integration")
+
+	frontend, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"dashboard/app/app/page.tsx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, frontend, "frontend-lint", "frontend-build", "frontend-playwright")
 
 	high, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"internal/engine/engine.go"})
 	if err != nil {

@@ -736,3 +736,93 @@ body { min-height: 100%; }
 .killswitch-banner .ksb-meta b { color: var(--ink); }
 .killswitch-banner .ksb-sub { font-family: var(--sans); font-size: 11.5px; line-height: 1.55; color: var(--ink-dim); }
 .killswitch-banner .ksb-sub code { font-family: var(--mono); font-size: 10.5px; color: var(--canary); }
+
+/* ========================================================================== *
+ * M2B.5 CORRELATED TRACE WORKSPACE — a read-only evidence/explanation slice. *
+ * State is always written in text; color is only a redundant visual cue.      *
+ * ========================================================================== */
+.trace-workspace { display: flex; flex-direction: column; gap: 18px; max-width: 1280px; width: 100%; margin: 0 auto; }
+.trace-summary-card, .trace-card, .trace-lifecycle { border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); padding: 20px 22px; }
+.trace-summary-card { border-left: 4px solid var(--sting); background: linear-gradient(135deg, rgba(255,77,96,0.07), var(--panel) 54%); }
+.trace-eyebrow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+.trace-badge { border: 1px solid var(--line-2); border-radius: 2px; padding: 2px 6px; }
+.trace-badge-fixture { color: var(--canary); border-color: rgba(255,206,58,0.4); }
+.trace-badge-readonly { color: var(--observe); border-color: rgba(95,129,153,0.5); }
+.trace-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; margin-top: 11px; }
+.trace-title-row h1 { margin: 0; max-width: 760px; font-family: var(--display); font-size: clamp(25px, 4vw, 42px);
+  line-height: 1.08; letter-spacing: -0.02em; }
+.trace-title-row p { max-width: 780px; margin: 12px 0 0; color: var(--ink-dim); line-height: 1.6; }
+.trace-state-stack { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.trace-status, .trace-confidence { font-family: var(--mono); border-radius: 100px; padding: 5px 10px; text-align: right; }
+.trace-status { color: var(--sting); border: 1px solid rgba(255,77,96,0.5); background: rgba(255,77,96,0.08);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+.trace-confidence { color: var(--ink-dim); border: 1px solid var(--line-2); font-size: 10px; }
+.trace-scope-line { display: flex; flex-wrap: wrap; gap: 9px 18px; margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 10px; color: var(--ink-faint); }
+.trace-scope-line span:first-child { color: var(--ink); }
+.trace-decision-grid, .trace-limit-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr); gap: 18px; }
+.trace-card h2, .trace-evidence-dialog h2 { margin: 0 0 13px; font-family: var(--display); font-size: 17px; letter-spacing: 0.01em; }
+.trace-card p { color: var(--ink-dim); line-height: 1.6; }
+.trace-card .trace-lead, .trace-card .trace-claim { color: var(--ink); font-size: 14px; }
+.trace-timeline { list-style: none; margin: 18px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; background: var(--line); }
+.trace-timeline > li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; padding: 14px; background: var(--bg-2); }
+.trace-hop-number { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-2);
+  font-family: var(--mono); font-size: 10px; color: var(--ink-dim); }
+.trace-hop-body { min-width: 0; }
+.trace-hop-top { display: flex; justify-content: space-between; gap: 14px; }
+.trace-hop-top strong { color: var(--ink); }
+.trace-hop-top span, .trace-hop-body time, .trace-hop-evidence { font-family: var(--mono); font-size: 9px; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: 0.08em; }
+.trace-hop-body time { display: block; margin-top: 5px; text-transform: none; letter-spacing: 0.02em; }
+.trace-hop-identities { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 7px; }
+.trace-hop-identities span { border: 1px solid var(--line-2); border-radius: 2px; padding: 3px 7px; color: var(--ink-dim); font-size: 10px; }
+.trace-facts { margin: 17px 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); }
+.trace-facts > div { min-width: 0; padding: 10px 12px; background: var(--bg-2); }
+.trace-facts dt { font-family: var(--mono); font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint); }
+.trace-facts dd { margin: 5px 0 0; color: var(--ink-dim); overflow-wrap: anywhere; }
+.trace-facts code, .trace-joins code, .trace-conflict-card code { font-family: var(--mono); font-size: 9.5px; color: var(--canary); overflow-wrap: anywhere; }
+.trace-joins, .trace-gap-card ul, .trace-conflict-card ul { list-style: none; margin: 14px 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.trace-joins li, .trace-gap-card li, .trace-conflict-card li { border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px;
+  background: var(--bg-2); display: flex; flex-direction: column; gap: 5px; }
+.trace-joins li > span, .trace-gap-card li > span, .trace-conflict-card li > span { font-family: var(--mono); font-size: 9px; color: var(--ink-faint); }
+.trace-joins li > strong { color: var(--canary); font-size: 11px; }
+.trace-joins summary, .trace-conflict-card summary { cursor: pointer; color: var(--ink-dim); font-size: 10px; }
+.trace-joins details[open] code, .trace-conflict-card details[open] code { display: block; margin-top: 7px; }
+.trace-evidence-button { appearance: none; border: 1px solid rgba(255,206,58,0.45); border-radius: 4px; background: rgba(255,206,58,0.07);
+  color: var(--canary); font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; padding: 9px 12px; cursor: pointer; }
+.trace-evidence-button:hover { background: rgba(255,206,58,0.12); }
+.trace-evidence-button:focus-visible, .trace-dialog-close:focus-visible, .trace-lifecycle summary:focus-visible,
+.trace-joins summary:focus-visible, .trace-conflict-card summary:focus-visible { outline: 2px solid var(--canary); outline-offset: 3px; }
+.trace-affected-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.trace-affected-item { border: 1px solid var(--line); border-left: 3px solid var(--observe); border-radius: 4px; padding: 12px; background: var(--bg-2);
+  display: flex; flex-direction: column; gap: 5px; }
+.trace-affected-item span { color: var(--ink-faint); font-size: 10px; }
+.trace-gap-card { border-left: 3px solid var(--canary); }
+.trace-conflict-card { border-left: 3px solid var(--sting); }
+.trace-gap-card li > strong, .trace-conflict-card li > strong { color: var(--ink); }
+.trace-gap-card li p { margin: 3px 0 0; }
+.trace-safety-note { border: 1px solid rgba(95,129,153,0.45); border-left: 3px solid var(--observe); border-radius: 5px; padding: 12px 15px;
+  background: rgba(95,129,153,0.06); color: var(--ink-dim); line-height: 1.55; }
+.trace-safety-note strong { color: var(--observe); }
+.trace-lifecycle { color: var(--ink-dim); }
+.trace-lifecycle > summary { cursor: pointer; font-family: var(--mono); color: var(--ink-dim); }
+.trace-evidence-dialog { width: min(720px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow: auto;
+  color: var(--ink); background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; padding: 22px; box-shadow: 0 20px 80px rgba(0,0,0,0.7); }
+.trace-evidence-dialog::backdrop { background: rgba(0,0,0,0.72); }
+.trace-dialog-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.trace-dialog-head h2 { margin-top: 7px; }
+.trace-dialog-close { appearance: none; width: 32px; height: 32px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--bg-2);
+  color: var(--ink); font-size: 20px; cursor: pointer; }
+.trace-payload-note { border-top: 1px solid var(--line); padding-top: 12px; color: var(--ink-dim); }
+
+@media (max-width: 880px) {
+  .trace-title-row { flex-direction: column; }
+  .trace-state-stack { align-items: flex-start; }
+  .trace-decision-grid, .trace-limit-grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-workspace *, .trace-evidence-dialog * { animation: none !important; transition: none !important; }
+}
