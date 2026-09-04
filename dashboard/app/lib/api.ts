@@ -161,9 +161,15 @@ function identity(value: unknown): boolean {
     value.verified === (value.assertion_mode === 'Verified');
 }
 
+function traceReference(value: unknown): boolean {
+  return record(value) && nonEmptyString(value.id) && number(value.schema_version) &&
+    Number.isInteger(value.schema_version) && value.schema_version > 0;
+}
+
 function evidenceReference(value: unknown): boolean {
   if (!record(value) || !nonEmptyString(value.id) || !nonEmptyString(value.label) || !nonEmptyString(value.summary) ||
-      !optionalAbsentOr(value.hop_record_id, nonEmptyString) || !boolean(value.raw) || !boolean(value.source_owned) ||
+      !optionalAbsentOr(value.schema_version, (candidate) => number(candidate) && Number.isInteger(candidate) && candidate > 0) ||
+      !optionalAbsentOr(value.hop_record, traceReference) || !boolean(value.raw) || !boolean(value.source_owned) ||
       !nonEmptyString(value.reference) || !nonEmptyString(value.availability) ||
       !optionalString(value.hash_algorithm) || !optionalString(value.hash_value)) return false;
 
@@ -171,13 +177,14 @@ function evidenceReference(value: unknown): boolean {
     const digest = value.reference.replace('rawref:sha256:', '');
     const hashesAbsent = value.hash_algorithm === undefined && value.hash_value === undefined;
     const hashesValid = value.hash_algorithm === 'sha256' && string(value.hash_value) && sha256Pattern.test(value.hash_value);
-    return value.source_owned && value.role === undefined && nonEmptyString(value.hop_record_id) &&
+    return value.source_owned && value.role === undefined && value.schema_version === undefined && traceReference(value.hop_record) &&
       value.id === value.reference && value.reference.startsWith('rawref:sha256:') && sha256Pattern.test(digest) &&
       oneOf(value.availability, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch']) &&
       (hashesAbsent || hashesValid);
   }
 
-  return !value.source_owned && oneOf(value.role, ['Supporting', 'Contradicting', 'Vendor extension']) &&
+  return !value.source_owned && number(value.schema_version) && Number.isInteger(value.schema_version) && value.schema_version > 0 &&
+    oneOf(value.role, ['Supporting', 'Contradicting', 'Vendor extension']) &&
     value.id === value.reference && value.availability === 'Reference only' &&
     value.hash_algorithm === undefined && value.hash_value === undefined;
 }
@@ -208,23 +215,23 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
     nonEmptyString(scope.tenant_id) && nonEmptyString(scope.scope_id) && nonEmptyString(scope.display_name) &&
     nonEmptyString(scope.deployment_boundary) && nonEmptyString(scope.residency_cell_id) &&
     Array.isArray(value.affected) && value.affected.every(identity) &&
-    Array.isArray(value.hops) && value.hops.every((hop) => record(hop) && nonEmptyString(hop.record_id) &&
+    Array.isArray(value.hops) && value.hops.every((hop) => record(hop) && traceReference(hop.record) &&
       oneOf(hop.kind, ['Observation', 'Policy decision']) && nonEmptyString(hop.label) &&
       timeFields(hop.at, hop.time_status, hop.time_uncertainty, hop.time_window) &&
       Array.isArray(hop.identities) && hop.identities.every(identity) &&
       number(hop.evidence_count) && Number.isInteger(hop.evidence_count) && hop.evidence_count >= 0) &&
     nonEmptyString(explanation.claim) && nonEmptyString(explanation.reason) && strings(explanation.methods) && explanation.methods.every(nonEmptyString) &&
-    Array.isArray(explanation.joins) && explanation.joins.every((join) => record(join) && nonEmptyString(join.anchor_id) &&
-      nonEmptyString(join.candidate_id) && oneOf(join.method, ['Request ID', 'Vendor transaction ID', 'Socket cookie', 'OpenTelemetry trace and span ID', 'OpenTelemetry trace ID', 'Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']) &&
-      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && strings(join.citations) && join.citations.length > 0 && join.citations.every(nonEmptyString) &&
+    Array.isArray(explanation.joins) && explanation.joins.every((join) => record(join) && traceReference(join.anchor) &&
+      traceReference(join.candidate) && oneOf(join.method, ['Request ID', 'Vendor transaction ID', 'Socket cookie', 'OpenTelemetry trace and span ID', 'OpenTelemetry trace ID', 'Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']) &&
+      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && Array.isArray(join.citations) && join.citations.length > 0 && join.citations.every(traceReference) &&
       boolean(join.selected) && boolean(join.ambiguous)) &&
     Array.isArray(value.missing) && value.missing.every((gap) => record(gap) &&
       oneOf(gap.kind, ['OBSERVATION', 'POLICY_DECISION', 'SOURCE_TIME', 'RAW_EVIDENCE', 'CORRELATION']) && nonEmptyString(gap.label) &&
-      optionalAbsentOr(gap.record_id, nonEmptyString) && optionalAbsentOr(gap.availability, (candidate) => oneOf(candidate, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch'])) && nonEmptyString(gap.next_step)) &&
+      optionalAbsentOr(gap.record, traceReference) && optionalAbsentOr(gap.availability, (candidate) => oneOf(candidate, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch'])) && nonEmptyString(gap.next_step)) &&
     Array.isArray(value.conflicts) && value.conflicts.every((conflict) => record(conflict) &&
       oneOf(conflict.kind, ['AMBIGUOUS_CORRELATION', 'CONTRADICTORY_EVIDENCE', 'ORDERING_UNCERTAINTY']) &&
-      nonEmptyString(conflict.label) && strings(conflict.records) && conflict.records.length >= 2 && conflict.records.every(nonEmptyString) &&
-      strings(conflict.evidence_ids) && conflict.evidence_ids.every(nonEmptyString)) &&
+      nonEmptyString(conflict.label) && Array.isArray(conflict.records) && conflict.records.length >= 2 && conflict.records.every(traceReference) &&
+      Array.isArray(conflict.evidence) && conflict.evidence.every(traceReference)) &&
     Array.isArray(value.evidence) && value.evidence.every(evidenceReference) &&
     lifecycle.data_class === 'Correlated trace' && lifecycle.sensitivity === 'Confidential' &&
     oneOf(lifecycle.retention_profile, ['Lean', 'Standard', 'Regulated', 'Approved override']) &&

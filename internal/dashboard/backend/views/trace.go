@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/canarysting/canarysting/internal/canaryview/correlation"
+	"github.com/canarysting/canarysting/internal/canaryview/model"
 	"github.com/canarysting/canarysting/internal/canaryview/trace"
 )
 
@@ -67,8 +68,13 @@ type TraceIdentityView struct {
 	Verified      bool   `json:"verified"`
 }
 
+type TraceReferenceView struct {
+	ID            string `json:"id"`
+	SchemaVersion uint32 `json:"schema_version"`
+}
+
 type TraceHopView struct {
-	RecordID        string              `json:"record_id"`
+	Record          TraceReferenceView  `json:"record"`
 	Kind            string              `json:"kind"`
 	Label           string              `json:"label"`
 	At              string              `json:"at,omitempty"`
@@ -87,42 +93,43 @@ type TraceExplanationView struct {
 }
 
 type TraceJoinView struct {
-	AnchorID    string   `json:"anchor_id"`
-	CandidateID string   `json:"candidate_id"`
-	Method      string   `json:"method"`
-	Strength    string   `json:"strength"`
-	Citations   []string `json:"citations"`
-	Selected    bool     `json:"selected"`
-	Ambiguous   bool     `json:"ambiguous"`
+	Anchor    TraceReferenceView   `json:"anchor"`
+	Candidate TraceReferenceView   `json:"candidate"`
+	Method    string               `json:"method"`
+	Strength  string               `json:"strength"`
+	Citations []TraceReferenceView `json:"citations"`
+	Selected  bool                 `json:"selected"`
+	Ambiguous bool                 `json:"ambiguous"`
 }
 
 type TraceGapView struct {
-	Kind         string `json:"kind"`
-	Label        string `json:"label"`
-	RecordID     string `json:"record_id,omitempty"`
-	Availability string `json:"availability,omitempty"`
-	NextStep     string `json:"next_step"`
+	Kind         string              `json:"kind"`
+	Label        string              `json:"label"`
+	Record       *TraceReferenceView `json:"record,omitempty"`
+	Availability string              `json:"availability,omitempty"`
+	NextStep     string              `json:"next_step"`
 }
 
 type TraceConflictView struct {
-	Kind        string   `json:"kind"`
-	Label       string   `json:"label"`
-	Records     []string `json:"records"`
-	EvidenceIDs []string `json:"evidence_ids"`
+	Kind     string               `json:"kind"`
+	Label    string               `json:"label"`
+	Records  []TraceReferenceView `json:"records"`
+	Evidence []TraceReferenceView `json:"evidence"`
 }
 
 type TraceEvidenceView struct {
-	ID            string `json:"id"`
-	Label         string `json:"label"`
-	Summary       string `json:"summary"`
-	Role          string `json:"role,omitempty"`
-	HopRecordID   string `json:"hop_record_id,omitempty"`
-	Raw           bool   `json:"raw"`
-	SourceOwned   bool   `json:"source_owned"`
-	Reference     string `json:"reference"`
-	Availability  string `json:"availability"`
-	HashAlgorithm string `json:"hash_algorithm,omitempty"`
-	HashValue     string `json:"hash_value,omitempty"`
+	ID            string              `json:"id"`
+	SchemaVersion uint32              `json:"schema_version,omitempty"`
+	Label         string              `json:"label"`
+	Summary       string              `json:"summary"`
+	Role          string              `json:"role,omitempty"`
+	HopRecord     *TraceReferenceView `json:"hop_record,omitempty"`
+	Raw           bool                `json:"raw"`
+	SourceOwned   bool                `json:"source_owned"`
+	Reference     string              `json:"reference"`
+	Availability  string              `json:"availability"`
+	HashAlgorithm string              `json:"hash_algorithm,omitempty"`
+	HashValue     string              `json:"hash_value,omitempty"`
 }
 
 type TraceLifecycleView struct {
@@ -208,6 +215,7 @@ func ProjectTrace(value trace.Trace) TraceWorkspace {
 func projectTraceHops(values []trace.Hop) []TraceHopView {
 	result := make([]TraceHopView, 0, len(values))
 	for _, value := range values {
+		record := traceReferenceView(value.Reference())
 		identities := make([]TraceIdentityView, 0, len(value.Identities()))
 		for _, identity := range value.Identities() {
 			_, verified := identity.Verification()
@@ -227,7 +235,7 @@ func projectTraceHops(values []trace.Hop) []TraceHopView {
 		}
 		_, hasRaw := value.RawEvent()
 		result = append(result, TraceHopView{
-			RecordID: value.Reference().ID(), Kind: displayEnum(string(value.Kind())), Label: humanizeIdentifier(value.Reference().ID()),
+			Record: record, Kind: displayEnum(string(value.Kind())), Label: humanizeIdentifier(value.Reference().ID()),
 			At: at, TimeStatus: timeStatus, TimeUncertainty: timeUncertainty, TimeWindow: timeWindow,
 			Identities: identities, EvidenceCount: len(value.Evidence()) + boolInt(hasRaw),
 		})
@@ -264,12 +272,12 @@ func projectTraceJoins(values []trace.CorrelationSet) ([]TraceJoinView, []string
 			for _, explanation := range candidate.Explanations() {
 				method := joinMethodLabel(explanation.Method())
 				methodSet[method] = true
-				citations := make([]string, 0, len(explanation.Citations()))
+				citations := make([]TraceReferenceView, 0, len(explanation.Citations()))
 				for _, citation := range explanation.Citations() {
-					citations = append(citations, citation.ID())
+					citations = append(citations, traceReferenceView(citation))
 				}
 				joins = append(joins, TraceJoinView{
-					AnchorID: set.Anchor().ID(), CandidateID: candidate.Reference().ID(), Method: method,
+					Anchor: traceReferenceView(set.Anchor()), Candidate: traceReferenceView(candidate.Reference()), Method: method,
 					Strength: displayEnum(string(explanation.Strength())), Citations: citations,
 					Selected: hasChosen && chosen == candidate.Reference(), Ambiguous: set.Ambiguous() || candidate.TranslationPathAmbiguous(),
 				})
@@ -288,16 +296,17 @@ func projectTraceMissing(values []trace.MissingTelemetry) []TraceGapView {
 	result := make([]TraceGapView, 0, len(values))
 	for _, value := range values {
 		expectation := value.Expectation()
-		recordID := ""
+		var recordView *TraceReferenceView
 		if record, ok := expectation.Record(); ok {
-			recordID = record.ID()
+			projected := traceReferenceView(record)
+			recordView = &projected
 		}
 		availability := ""
 		if rawAvailability, ok := value.RawAvailability(); ok {
 			availability = displayEnum(string(rawAvailability))
 		}
 		result = append(result, TraceGapView{
-			Kind: string(expectation.Kind()), Label: expectationLabel(expectation.Kind()), RecordID: recordID,
+			Kind: string(expectation.Kind()), Label: expectationLabel(expectation.Kind()), Record: recordView,
 			Availability: availability, NextStep: expectationNextStep(expectation.Kind()),
 		})
 	}
@@ -307,16 +316,16 @@ func projectTraceMissing(values []trace.MissingTelemetry) []TraceGapView {
 func projectTraceConflicts(values []trace.Conflict) []TraceConflictView {
 	result := make([]TraceConflictView, 0, len(values))
 	for _, value := range values {
-		records := make([]string, 0, len(value.Records()))
+		records := make([]TraceReferenceView, 0, len(value.Records()))
 		for _, record := range value.Records() {
-			records = append(records, record.ID())
+			records = append(records, traceReferenceView(record))
 		}
-		evidence := make([]string, 0, len(value.Evidence()))
+		evidence := make([]TraceReferenceView, 0, len(value.Evidence()))
 		for _, reference := range value.Evidence() {
-			evidence = append(evidence, reference.ID())
+			evidence = append(evidence, evidenceReferenceView(reference))
 		}
 		result = append(result, TraceConflictView{
-			Kind: string(value.Kind()), Label: conflictLabel(value.Kind()), Records: records, EvidenceIDs: evidence,
+			Kind: string(value.Kind()), Label: conflictLabel(value.Kind()), Records: records, Evidence: evidence,
 		})
 	}
 	return result
@@ -326,10 +335,11 @@ func projectTraceEvidence(hops []trace.Hop, conflicts []trace.Conflict) []TraceE
 	result := make([]TraceEvidenceView, 0)
 	for _, hop := range hops {
 		label := humanizeIdentifier(hop.Reference().ID())
+		hopRecord := traceReferenceView(hop.Reference())
 		if raw, ok := hop.RawEvent(); ok {
 			result = append(result, TraceEvidenceView{
 				ID: raw.Reference(), Label: label, Summary: "Source-owned raw evidence reference for " + label + ".",
-				HopRecordID: hop.Reference().ID(), Raw: true, SourceOwned: true,
+				HopRecord: &hopRecord, Raw: true, SourceOwned: true,
 				Reference: raw.Reference(), Availability: displayEnum(string(raw.Availability())),
 				HashAlgorithm: raw.HashAlgorithm(), HashValue: raw.HashValue(),
 			})
@@ -337,7 +347,7 @@ func projectTraceEvidence(hops []trace.Hop, conflicts []trace.Conflict) []TraceE
 		for _, evidence := range hop.Evidence() {
 			result = append(result, TraceEvidenceView{
 				ID: evidence.ID(), Label: label, Summary: "Evidence reference attached to " + label + ".",
-				Role: displayEnum(string(evidence.Role())), HopRecordID: hop.Reference().ID(),
+				SchemaVersion: evidence.SchemaVersion(), Role: displayEnum(string(evidence.Role())), HopRecord: &hopRecord,
 				Reference: evidence.ID(), Availability: "Reference only",
 			})
 		}
@@ -346,11 +356,19 @@ func projectTraceEvidence(hops []trace.Hop, conflicts []trace.Conflict) []TraceE
 		for _, evidence := range conflict.Evidence() {
 			result = append(result, TraceEvidenceView{
 				ID: evidence.ID(), Label: conflictLabel(conflict.Kind()), Summary: "Evidence reference attached to " + strings.ToLower(conflictLabel(conflict.Kind())) + ".",
-				Role: displayEnum(string(evidence.Role())), Reference: evidence.ID(), Availability: "Reference only",
+				SchemaVersion: evidence.SchemaVersion(), Role: displayEnum(string(evidence.Role())), Reference: evidence.ID(), Availability: "Reference only",
 			})
 		}
 	}
 	return result
+}
+
+func traceReferenceView(value model.RecordReference) TraceReferenceView {
+	return TraceReferenceView{ID: value.ID(), SchemaVersion: value.SchemaVersion()}
+}
+
+func evidenceReferenceView(value model.EvidenceReference) TraceReferenceView {
+	return TraceReferenceView{ID: value.ID(), SchemaVersion: value.SchemaVersion()}
 }
 
 func durationIfPositive(value time.Duration) string {

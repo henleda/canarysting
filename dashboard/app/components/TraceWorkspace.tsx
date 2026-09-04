@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { TraceEvidenceView, TraceWorkspace as TraceWorkspaceView } from '@/lib/types';
+import type { TraceEvidenceView, TraceReferenceView, TraceWorkspace as TraceWorkspaceView } from '@/lib/types';
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
@@ -14,6 +14,14 @@ function formatUTC(value?: string): string {
     timeStyle: 'medium',
     timeZone: 'UTC',
   }).format(new Date(value));
+}
+
+function referenceKey(value: TraceReferenceView): string {
+  return `${value.id}:v${value.schema_version}`;
+}
+
+function formatReference(value: TraceReferenceView): string {
+  return `${value.id} · schema v${value.schema_version}`;
 }
 
 export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
@@ -78,12 +86,12 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
           <p className="trace-lead">{view.what_happened}</p>
           <ol className="trace-timeline" aria-label="Ordered security trace">
             {view.hops.map((hop, index) => (
-              <li key={hop.record_id}>
+              <li key={referenceKey(hop.record)}>
                 <span className="trace-hop-number" aria-hidden="true">{index + 1}</span>
                 <div className="trace-hop-body">
                   <div className="trace-hop-top">
                     <strong>{hop.label}</strong>
-                    <span>{hop.kind}</span>
+                    <span>{hop.kind} · {formatReference(hop.record)}</span>
                   </div>
                   <span className="trace-hop-time">
                     {hop.at ? <time dateTime={hop.at}>{formatUTC(hop.at)} UTC</time> : hop.time_status}
@@ -116,19 +124,19 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
           </dl>
           <ul className="trace-joins" aria-label="Evidence-backed candidate joins">
             {view.explanation.joins.map((join) => (
-              <li key={`${join.anchor_id}:${join.candidate_id}:${join.method}`}>
+              <li key={`${referenceKey(join.anchor)}:${referenceKey(join.candidate)}:${join.method}`}>
                 <span>{join.method} · {join.strength}</span>
                 <strong>{join.ambiguous ? 'Candidate—not selected' : join.selected ? 'Selected' : 'Retained alternative'}</strong>
                 <details>
                   <summary>Technical citations</summary>
-                  <code>{join.citations.join(' → ')}</code>
+                  <code>{join.citations.map(formatReference).join(' → ')}</code>
                 </details>
               </li>
             ))}
           </ul>
           {rawEvidence.map((evidence, index) => (
             <button
-              key={`${evidence.id}:${evidence.hop_record_id ?? ''}:${index}`}
+              key={`${evidence.id}:v${evidence.schema_version ?? 'raw'}:${evidence.hop_record ? referenceKey(evidence.hop_record) : ''}:${index}`}
               type="button"
               className="trace-evidence-button"
               onClick={(event) => openEvidence(evidence, event.currentTarget)}
@@ -164,7 +172,7 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
           ) : (
             <ul>
               {view.missing.map((gap) => (
-                <li key={`${gap.kind}:${gap.record_id ?? ''}`}>
+                <li key={`${gap.kind}:${gap.record ? referenceKey(gap.record) : ''}`}>
                   <strong>{gap.label}</strong>
                   {gap.availability && <span>{gap.availability}</span>}
                   <p>{gap.next_step}</p>
@@ -181,15 +189,15 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
           ) : (
             <ul>
               {view.conflicts.map((conflict) => (
-                <li key={`${conflict.kind}:${conflict.records.join(':')}`}>
+                <li key={`${conflict.kind}:${conflict.records.map(referenceKey).join(':')}`}>
                   <strong>{conflict.label}</strong>
                   <span>{plural(conflict.records.length, 'cited record')}</span>
                   <details>
                     <summary>Technical references</summary>
                     <span>Records</span>
-                    <code>{conflict.records.join(', ')}</code>
+                    <code>{conflict.records.map(formatReference).join(', ')}</code>
                     <span>Evidence</span>
-                    <code>{conflict.evidence_ids.length ? conflict.evidence_ids.join(', ') : 'No separate evidence reference'}</code>
+                    <code>{conflict.evidence.length ? conflict.evidence.map(formatReference).join(', ') : 'No separate evidence reference'}</code>
                   </details>
                 </li>
               ))}
@@ -233,6 +241,7 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
               {selectedEvidence.role && <div><dt>Claim role</dt><dd>{selectedEvidence.role}</dd></div>}
               <div><dt>Record</dt><dd>{selectedEvidence.label}</dd></div>
               <div><dt>Reference</dt><dd><code>{selectedEvidence.reference}</code></dd></div>
+              {selectedEvidence.schema_version && <div><dt>Evidence identity</dt><dd><code>{selectedEvidence.id} · schema v{selectedEvidence.schema_version}</code></dd></div>}
               <div><dt>Integrity</dt><dd>{selectedEvidence.hash_algorithm ? `${selectedEvidence.hash_algorithm}: ${selectedEvidence.hash_value}` : 'No digest supplied'}</dd></div>
               <div><dt>Raw evidence lifecycle</dt><dd>Source-owned; not represented by this trace projection</dd></div>
             </dl>

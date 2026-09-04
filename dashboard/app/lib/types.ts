@@ -48,8 +48,13 @@ export interface TraceIdentityView {
   verified: boolean;
 }
 
+export interface TraceReferenceView {
+  id: string;
+  schema_version: number;
+}
+
 export interface TraceHopView {
-  record_id: string;
+  record: TraceReferenceView;
   kind: string;
   label: string;
   at?: string;
@@ -61,11 +66,11 @@ export interface TraceHopView {
 }
 
 export interface TraceJoinView {
-  anchor_id: string;
-  candidate_id: string;
+  anchor: TraceReferenceView;
+  candidate: TraceReferenceView;
   method: string;
   strength: string;
-  citations: string[];
+  citations: TraceReferenceView[];
   selected: boolean;
   ambiguous: boolean;
 }
@@ -80,7 +85,7 @@ export interface TraceExplanationView {
 export interface TraceGapView {
   kind: string;
   label: string;
-  record_id?: string;
+  record?: TraceReferenceView;
   availability?: string;
   next_step: string;
 }
@@ -88,16 +93,17 @@ export interface TraceGapView {
 export interface TraceConflictView {
   kind: string;
   label: string;
-  records: string[];
-  evidence_ids: string[];
+  records: TraceReferenceView[];
+  evidence: TraceReferenceView[];
 }
 
 export interface TraceEvidenceView {
   id: string;
+  schema_version?: number;
   label: string;
   summary: string;
   role?: string;
-  hop_record_id?: string;
+  hop_record?: TraceReferenceView;
   raw: boolean;
   source_owned: boolean;
   reference: string;

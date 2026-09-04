@@ -51,6 +51,8 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.getByRole('heading', { name: 'Why CanaryView believes this' })).toBeVisible();
   await expect(page.getByText('Bounded · 2.25s trace window', { exact: true })).toBeVisible();
   await expect(page.getByText(/Bounded \(±250ms\)/)).toBeVisible();
+  await expect(page.getByText('Policy decision · cilium-policy-allow · schema v3', { exact: true })).toBeVisible();
+  await expect(page.getByText('Policy decision · cilium-policy-allow · schema v4', { exact: true })).toBeVisible();
   await expect(page.getByText('Partial coverage', { exact: true })).toBeVisible();
   await expect(page.getByText('Conflicting evidence', { exact: true })).toBeVisible();
   await expect(page.getByText('This workspace is read-only and cannot trigger or change a response.')).toBeVisible();
@@ -60,7 +62,7 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.locator('.trace-lifecycle').getByText('None', { exact: true })).toBeVisible();
 
   await page.getByText('Technical references').last().click();
-  await expect(page.getByText('evidence-policy-conflict', { exact: true })).toBeVisible();
+  await expect(page.getByText('evidence-policy-conflict · schema v3', { exact: true })).toBeVisible();
 
   const evidenceButton = page.getByRole('button', { name: 'View raw reference for Gateway Request' });
   await expect(evidenceButton).toBeVisible();

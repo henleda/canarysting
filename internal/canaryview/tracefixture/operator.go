@@ -43,15 +43,15 @@ func OperatorConflict() (trace.Trace, error) {
 		return trace.Trace{}, err
 	}
 
-	anchor, err := record("gateway-request", scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestID)
+	anchor, err := record("gateway-request", model.CurrentSchemaVersion, scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	allow, err := record("cilium-policy-allow", scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestID)
+	allow, err := record("cilium-policy-allow", model.CurrentSchemaVersion, scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	deny, err := record("mesh-policy-deny", scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestID)
+	deny, err := record("cilium-policy-allow", model.CurrentSchemaVersion+1, scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -85,7 +85,7 @@ func OperatorConflict() (trace.Trace, error) {
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	denyEvidence, err := model.NewEvidenceReference("evidence-mesh-policy", model.CurrentSchemaVersion, model.EvidenceSupporting, "", "")
+	denyEvidence, err := model.NewEvidenceReference("evidence-policy-conflict", model.CurrentSchemaVersion+1, model.EvidenceSupporting, "", "")
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -132,8 +132,8 @@ func OperatorConflict() (trace.Trace, error) {
 	})
 }
 
-func record(id string, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestID correlation.OpaqueID) (correlation.Record, error) {
-	ref, err := reference(id)
+func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestID correlation.OpaqueID) (correlation.Record, error) {
+	ref, err := model.NewRecordReference(id, schemaVersion)
 	if err != nil {
 		return correlation.Record{}, err
 	}

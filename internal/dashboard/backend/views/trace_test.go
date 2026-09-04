@@ -32,13 +32,20 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 		t.Fatalf("trace time confidence = %#v", got.Confidence)
 	}
 	boundedHop := false
+	recordVersions := make(map[uint32]bool)
 	for _, hop := range got.Hops {
-		if hop.RecordID == "gateway-request" {
+		if hop.Record.ID == "gateway-request" {
 			boundedHop = hop.TimeStatus == "Bounded source time" && hop.TimeUncertainty == "Bounded" && hop.TimeWindow == "250ms"
+		}
+		if hop.Record.ID == "cilium-policy-allow" {
+			recordVersions[hop.Record.SchemaVersion] = true
 		}
 	}
 	if !boundedHop {
 		t.Fatalf("bounded source-time projection missing: %#v", got.Hops)
+	}
+	if !recordVersions[3] || !recordVersions[4] || len(recordVersions) != 2 {
+		t.Fatalf("same-ID record schema versions were not preserved: %#v", got.Hops)
 	}
 	if !strings.Contains(got.WhatHappened, "3 source records") || !strings.Contains(got.WhatHappened, "1 observation") || !strings.Contains(got.WhatHappened, "2 policy decisions") {
 		t.Fatalf("what happened = %q", got.WhatHappened)
@@ -49,6 +56,11 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	for _, join := range got.Explanation.Joins {
 		if join.Method != "Request ID" || join.Strength != "Exact" || len(join.Citations) != 2 {
 			t.Fatalf("join = %#v", join)
+		}
+		for _, citation := range join.Citations {
+			if citation.ID == "" || citation.SchemaVersion == 0 {
+				t.Fatalf("unversioned join citation = %#v", join)
+			}
 		}
 	}
 	if len(got.Affected) != 2 || got.Affected[0].Name != "Checkout API" || got.Affected[1].Name != "Payments" {
@@ -73,20 +85,21 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	if got.Evidence[0].Role != "" {
 		t.Fatalf("raw reference invented claim role: %#v", got.Evidence[0])
 	}
-	supporting, contradicting := false, false
+	supporting, versionedSupporting, contradicting := false, false, false
 	for _, evidence := range got.Evidence {
 		if evidence.ID != "evidence-policy-conflict" {
 			continue
 		}
-		supporting = supporting || evidence.Role == "Supporting" && evidence.HopRecordID == "cilium-policy-allow"
-		contradicting = contradicting || evidence.Role == "Contradicting" && evidence.HopRecordID == ""
+		supporting = supporting || evidence.Role == "Supporting" && evidence.SchemaVersion == 3 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 3
+		versionedSupporting = versionedSupporting || evidence.Role == "Supporting" && evidence.SchemaVersion == 4 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 4
+		contradicting = contradicting || evidence.Role == "Contradicting" && evidence.SchemaVersion == 3 && evidence.HopRecord == nil
 	}
-	if !supporting || !contradicting {
+	if !supporting || !versionedSupporting || !contradicting {
 		t.Fatalf("same-ID evidence contexts were not preserved: %#v", got.Evidence)
 	}
 	foundConflictEvidence := false
 	for _, conflict := range got.Conflicts {
-		foundConflictEvidence = foundConflictEvidence || len(conflict.EvidenceIDs) == 1 && conflict.EvidenceIDs[0] == "evidence-policy-conflict"
+		foundConflictEvidence = foundConflictEvidence || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict" && conflict.Evidence[0].SchemaVersion == 3
 	}
 	if !foundConflictEvidence {
 		t.Fatalf("conflict evidence IDs = %#v", got.Conflicts)

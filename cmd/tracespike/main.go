@@ -302,25 +302,35 @@ func executeProof(runID, scenarioID string) error {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
 	rawReferenceMetadataPresent := false
-	supportingContext, contradictingContext := false, false
+	supportingContext, versionedSupportingContext, contradictingContext := false, false, false
 	for _, evidence := range workspace.Evidence {
 		if evidence.Raw && evidence.SourceOwned && evidence.Reference != "" && evidence.Role == "" && evidence.Availability == "Integrity mismatch" && evidence.HashAlgorithm != "" && evidence.HashValue != "" {
 			rawReferenceMetadataPresent = true
 		}
 		if evidence.ID == "evidence-policy-conflict" {
-			supportingContext = supportingContext || evidence.Role == "Supporting" && evidence.HopRecordID == "cilium-policy-allow"
-			contradictingContext = contradictingContext || evidence.Role == "Contradicting" && evidence.HopRecordID == ""
+			supportingContext = supportingContext || evidence.Role == "Supporting" && evidence.SchemaVersion == 3 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 3
+			versionedSupportingContext = versionedSupportingContext || evidence.Role == "Supporting" && evidence.SchemaVersion == 4 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 4
+			contradictingContext = contradictingContext || evidence.Role == "Contradicting" && evidence.SchemaVersion == 3 && evidence.HopRecord == nil
 		}
 	}
-	if !rawReferenceMetadataPresent || !supportingContext || !contradictingContext {
+	if !rawReferenceMetadataPresent || !supportingContext || !versionedSupportingContext || !contradictingContext {
 		return fmt.Errorf("operator trace omitted raw-reference metadata or evidence-role context")
+	}
+	recordVersions := make(map[uint32]bool)
+	for _, hop := range workspace.Hops {
+		if hop.Record.ID == "cilium-policy-allow" {
+			recordVersions[hop.Record.SchemaVersion] = true
+		}
+	}
+	if !recordVersions[3] || !recordVersions[4] || len(recordVersions) != 2 {
+		return fmt.Errorf("operator trace collapsed versioned record identity")
 	}
 	if workspace.Confidence.TimeUncertainty != "Bounded" || workspace.Confidence.TimeWindow == "" || len(workspace.Hops) == 0 || workspace.Hops[0].TimeWindow == "" {
 		return fmt.Errorf("operator trace omitted time uncertainty")
 	}
 	conflictEvidencePresent := false
 	for _, conflict := range workspace.Conflicts {
-		conflictEvidencePresent = conflictEvidencePresent || len(conflict.EvidenceIDs) == 1 && conflict.EvidenceIDs[0] == "evidence-policy-conflict"
+		conflictEvidencePresent = conflictEvidencePresent || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict" && conflict.Evidence[0].SchemaVersion == 3
 	}
 	if !conflictEvidencePresent {
 		return fmt.Errorf("operator trace conflict omitted its evidence reference")
