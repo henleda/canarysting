@@ -49,6 +49,7 @@ for marker in \
   'join_citations=PASS all_links_evidence_backed=true' \
   'broken_raw=PASS availability=INTEGRITY_MISMATCH' \
   'ambiguity=PASS candidates=2 chosen=false' \
+  'operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3' \
   'fixed proof output is incomplete or contains extra data' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
@@ -85,13 +86,13 @@ write_valid_result() {
 key	value
 format_version	1
 run_id	m2b4-schema
-scenario_id	m2b4-trace-construction-m2b4-schema
+scenario_id	m2b5-operator-conflict
 profile	trace-construction
 source_revision	1111111111111111111111111111111111111111
 source_state	clean
 source_tree_sha256	2222222222222222222222222222222222222222222222222222222222222222
 artifact_sha256	3333333333333333333333333333333333333333333333333333333333333333
-proof_line_count	8
+proof_line_count	9
 raw_identifiers_emitted	false
 privilege	unprivileged
 started_utc	2026-09-03T12:00:00Z
@@ -105,7 +106,7 @@ RESULT
 }
 run_schema_validator() {
   bash -c "${validator_definition}"$'\n''validate_trace_result_schema "$@"' -- \
-    "${result_file}" m2b4-schema m2b4-trace-construction-m2b4-schema \
+    "${result_file}" m2b4-schema \
     1111111111111111111111111111111111111111 clean \
     2222222222222222222222222222222222222222222222222222222222222222 \
     3333333333333333333333333333333333333333333333333333333333333333
@@ -134,6 +135,12 @@ grep -v $'^scenario_id\t' "${result_file}" >"${result_file}.missing"
 mv "${result_file}.missing" "${result_file}"
 if run_schema_validator; then
   fail 'trace result schema accepted a missing scenario binding'
+fi
+write_valid_result
+sed 's/^scenario_id\t.*/scenario_id\tm2b4-trace-construction-m2b4-schema/' "${result_file}" >"${result_file}.wrong"
+mv "${result_file}.wrong" "${result_file}"
+if run_schema_validator; then
+  fail 'trace result schema accepted a scenario other than the bounded M2B.5 operator fixture'
 fi
 write_valid_result
 printf 'unexpected\tvalue\n' >>"${result_file}"

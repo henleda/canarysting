@@ -81,14 +81,17 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 		switch {
 		case strings.HasPrefix(file, "internal/testgate/"), strings.HasPrefix(file, "cmd/testgate/"), strings.HasPrefix(file, "test/gates/"), file == "Makefile", strings.HasPrefix(file, ".github/workflows/"):
 			addAvailable(selected, all, "gate-selftests", "gate-synthetic-collect-all", "affected-go-build", "affected-go-test", "security-invariants")
+		case isFrontendPath(file):
+			addAvailable(selected, all, "frontend-lint", "frontend-playwright")
+			if strings.HasSuffix(file, ".go") {
+				addAvailable(selected, all, "affected-go-build", "affected-go-test", "go-vet", "security-invariants")
+			}
 		case strings.HasSuffix(file, ".go"), file == "go.mod", file == "go.sum":
 			addAvailable(selected, all, "affected-go-build", "affected-go-test", "go-vet", "security-invariants")
 			if isSecurityPath(file) {
 				addAvailable(selected, all, "selfcheck-sting", "selfcheck-envoy")
 				selectAdversarial(selected, all, files)
 			}
-		case strings.HasPrefix(file, "dashboard/app/"):
-			addAvailable(selected, all, "frontend-lint")
 		case strings.HasPrefix(file, "bpf/"):
 			addAvailable(selected, all, "bpf-compile", "bpf-object-assert", "affected-go-build", "affected-go-test", "security-invariants")
 			selectAdversarial(selected, all, files)
@@ -125,8 +128,8 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 	}
 	for _, file := range files {
 		switch {
-		case strings.HasPrefix(file, "dashboard/app/"):
-			addAvailable(selected, all, "frontend-lint", "frontend-build")
+		case isFrontendPath(file):
+			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")
 		case strings.HasPrefix(file, "bpf/"):
 			addAvailable(selected, all, "bpf-compile", "bpf-object-assert")
 			selectAdversarial(selected, all, files)
@@ -137,6 +140,24 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 		}
 	}
 	return selected
+}
+
+// isFrontendPath includes the Go-backed trace path used by Playwright. A
+// fixture, projection, or handler-only change must not bypass the browser gate
+// merely because no TypeScript file changed.
+func isFrontendPath(path string) bool {
+	for _, prefix := range []string{
+		"dashboard/app/",
+		"test/fixtures/tracebackend/",
+		"internal/dashboard/backend/",
+		"internal/canaryview/tracefixture/",
+		"internal/canaryview/trace/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func addAvailable(selected map[string]bool, all map[string]Check, ids ...string) {

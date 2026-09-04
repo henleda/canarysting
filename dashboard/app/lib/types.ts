@@ -11,6 +11,149 @@ export interface CalibView {
   evidence_floor: number;
 }
 
+// Read-only M2B.5 projection of one immutable canonical correlated trace.
+// Raw source payloads are never part of this contract; Evidence.reference is
+// an opaque source-owned or canonical evidence reference only.
+export interface TraceStatusView {
+  code: 'PARTIAL' | 'COMPLETE_UNDER_DECLARED_COVERAGE' | 'CONFLICTED';
+  label: string;
+  detail: string;
+}
+
+export interface TraceConfidenceView {
+  level: string;
+  method: string;
+  completeness: string;
+  source_quality: string;
+  identity_assurance: string;
+  candidate_count: number;
+  time_uncertainty: string;
+  time_window?: string;
+  human_review: string;
+}
+
+export interface TraceScopeView {
+  tenant_id: string;
+  scope_id: string;
+  display_name: string;
+  deployment_boundary: string;
+  residency_cell_id: string;
+}
+
+export interface TraceIdentityView {
+  id: string;
+  kind: string;
+  name: string;
+  assertion_mode: string;
+  verified: boolean;
+}
+
+export interface TraceReferenceView {
+  id: string;
+  schema_version: number;
+}
+
+export interface TraceHopView {
+  record: TraceReferenceView;
+  kind: string;
+  label: string;
+  at?: string;
+  time_status: string;
+  time_uncertainty: string;
+  time_window?: string;
+  identities: TraceIdentityView[];
+  evidence_count: number;
+}
+
+export interface TraceJoinView {
+  anchor: TraceReferenceView;
+  candidate: TraceReferenceView;
+  method: string;
+  strength: string;
+  key_fingerprint: string;
+  time_gap?: string;
+  window?: string;
+  translation_path: TraceTranslationStepView[];
+  citations: TraceReferenceView[];
+  selected: boolean;
+  ambiguous: boolean;
+}
+
+export interface TraceTranslationStepView {
+  record: TraceReferenceView;
+  direction: string;
+}
+
+export interface TraceExplanationView {
+  claim: string;
+  reason: string;
+  methods: string[];
+  joins: TraceJoinView[];
+}
+
+export interface TraceGapView {
+  kind: string;
+  label: string;
+  record?: TraceReferenceView;
+  availability?: string;
+  next_step: string;
+}
+
+export interface TraceConflictView {
+  kind: string;
+  label: string;
+  records: TraceReferenceView[];
+  evidence: TraceReferenceView[];
+}
+
+export interface TraceEvidenceView {
+  id: string;
+  schema_version?: number;
+  label: string;
+  summary: string;
+  role?: string;
+  hop_record?: TraceReferenceView;
+  raw: boolean;
+  source_owned: boolean;
+  reference: string;
+  availability: string;
+  hash_algorithm?: string;
+  hash_value?: string;
+}
+
+export interface TraceLifecycleView {
+  data_class: string;
+  sensitivity: string;
+  retention_profile: string;
+  state: string;
+  expires_at: string;
+  legal_hold_ids: string[];
+  residency_policy_ref: string;
+  encryption_boundary: string;
+  per_tenant_model_use: boolean;
+  cross_tenant_model_use: boolean;
+}
+
+export interface TraceWorkspace {
+  trace_id: string;
+  title: string;
+  summary: string;
+  what_happened: string;
+  status: TraceStatusView;
+  confidence: TraceConfidenceView;
+  scope: TraceScopeView;
+  affected: TraceIdentityView[];
+  hops: TraceHopView[];
+  explanation: TraceExplanationView;
+  missing: TraceGapView[];
+  conflicts: TraceConflictView[];
+  evidence: TraceEvidenceView[];
+  lifecycle: TraceLifecycleView;
+  synthetic: boolean;
+  scenario_id?: string;
+  safety_note: string;
+}
+
 // KillSwitchView is the deployment-wide enforcement kill-switch posture (B1/B2).
 // 1:1 mirror of internal/sting/killswitch/killswitch.go:47-63 (Status struct) — the
 // SOURCE OF TRUTH for these json tags. The wire key everywhere is `kill_switch`.

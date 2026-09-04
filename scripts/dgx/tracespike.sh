@@ -24,11 +24,11 @@ usage() {
 Usage:
   scripts/dgx/tracespike.sh --run-id ID [--dry-run | --inspect | --cleanup]
 
-Run the fixed M2B.4 unprivileged DGX trace-construction proof. The artifact
-uses only minimized synthetic records to prove passive partial traces,
-ambiguity, evidence citations, lifecycle, exact-scope invalidation, and hard
-bounds. It emits only eight fixed proof statements and changes no Kubernetes,
-Cilium, BPF, service, firewall, socket, or system state.
+Run the fixed M2B.4/M2B.5 unprivileged DGX trace proof. The artifact uses only
+minimized synthetic records to prove passive partial traces, ambiguity,
+evidence citations, lifecycle, exact-scope invalidation, hard bounds, and the
+read-only operator projection. It emits only nine fixed proof statements and
+changes no Kubernetes, Cilium, BPF, service, firewall, socket, or system state.
 USAGE
 }
 
@@ -141,20 +141,18 @@ source_tree_sha256="$(manifest_value source_tree_sha256)" || fail 'manifest sour
 [[ "${source_revision}" =~ ^[0-9a-f]{40}$ ]] || fail 'manifest source revision is malformed'
 [[ "${source_state}" == 'clean' || "${source_state}" == 'dirty' ]] || fail 'manifest source state is malformed'
 [[ "${source_tree_sha256}" =~ ^[0-9a-f]{64}$ ]] || fail 'manifest source-tree checksum is malformed'
-scenario_id="m2b4-trace-construction-${run_id}"
+scenario_id='m2b5-operator-conflict'
 readonly source_revision source_state source_tree_sha256 scenario_id
 
 validate_trace_result_schema() {
   local result_file="$1"
   local wanted_run="$2"
-  local wanted_scenario="$3"
-  local wanted_revision="$4"
-  local wanted_state="$5"
-  local wanted_tree="$6"
-  local wanted_artifact="$7"
+  local wanted_revision="$3"
+  local wanted_state="$4"
+  local wanted_tree="$5"
+  local wanted_artifact="$6"
   awk -F '\t' \
     -v run="${wanted_run}" \
-    -v scenario="${wanted_scenario}" \
     -v revision="${wanted_revision}" \
     -v source_state="${wanted_state}" \
     -v source_tree="${wanted_tree}" \
@@ -165,13 +163,13 @@ validate_trace_result_schema() {
       if (NF != 2 || seen[$1]++) { good=0; next }
       if (NR == 2) good=good && ($1 == "format_version" && $2 == "1")
       else if (NR == 3) good=good && ($1 == "run_id" && $2 == run)
-      else if (NR == 4) good=good && ($1 == "scenario_id" && $2 == scenario)
+      else if (NR == 4) good=good && ($1 == "scenario_id" && $2 == "m2b5-operator-conflict")
       else if (NR == 5) good=good && ($1 == "profile" && $2 == "trace-construction")
       else if (NR == 6) good=good && ($1 == "source_revision" && $2 == revision && length($2) == 40 && $2 !~ /[^0-9a-f]/)
       else if (NR == 7) good=good && ($1 == "source_state" && $2 == source_state && ($2 == "clean" || $2 == "dirty"))
       else if (NR == 8) good=good && ($1 == "source_tree_sha256" && $2 == source_tree && length($2) == 64 && $2 !~ /[^0-9a-f]/)
       else if (NR == 9) good=good && ($1 == "artifact_sha256" && $2 == artifact && length($2) == 64 && $2 !~ /[^0-9a-f]/)
-      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "8")
+      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "9")
       else if (NR == 11) good=good && ($1 == "raw_identifiers_emitted" && $2 == "false")
       else if (NR == 12) good=good && ($1 == "privilege" && $2 == "unprivileged")
       else if (NR == 13) good=good && ($1 == "started_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
@@ -197,8 +195,9 @@ validate_fixed_trace_output() {
     NR == 6 { good=good && ($0 == "PROOF lifecycle=PASS held_visible=true expired_hidden=true") }
     NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
     NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
-    NR > 8 { good=0 }
-    END { exit !(good && NR == 8) }
+    NR == 9 { good=good && ($0 == "PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3") }
+    NR > 9 { good=0 }
+    END { exit !(good && NR == 9) }
   ' "$1"
 }
 
@@ -240,7 +239,7 @@ validate_published_evidence() {
     [[ "$(stat -c %s "${evidence}/${file}")" -le 1048576 ]] || fail "evidence file exceeds 1 MiB: ${file}"
   done
   validate_trace_result_schema \
-    "${evidence}/result.tsv" "${run_id}" "${scenario_id}" "${source_revision}" \
+    "${evidence}/result.tsv" "${run_id}" "${source_revision}" \
     "${source_state}" "${source_tree_sha256}" "${expected_sha256}" ||
     fail 'result schema, lineage, or proof fields are invalid'
   validate_trace_result_timestamps "${evidence}/result.tsv" ||

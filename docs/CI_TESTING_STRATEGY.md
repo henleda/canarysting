@@ -27,18 +27,19 @@ The repository does not yet contain the bounded Ollama/Qwen runtime or its appro
 | HIGH | Contracts, engine, identity, scope, scoring, adapters, operator/deploy/config, or gate orchestration | Broad Level 2 race/security/replay profile; selected remote smoke only when the path map requires it |
 | CRITICAL | `bpf/`, containment, DGX execution/cleanup, attacker tool authority | Broad Level 2 plus relevant privileged or DGX qualification |
 
-Multiple matches choose the highest. Unknown paths are HIGH. Manual CRITICAL with no mapped profile produces an unsatisfied remote profile and fails closed rather than guessing.
+Multiple matches choose the highest risk and retain the union of required remote profiles. PR CI runs every implemented profile in that union with an independent run ID and exact cleanup; an unsupported member fails the job closed. Unknown paths are HIGH. Manual CRITICAL with no mapped profile produces an unsatisfied remote profile and fails closed rather than guessing.
 
 ## Conservative path-to-gate map
 
 | Change area | Level 0/1/2 selection | DGX selection |
 |---|---|---|
 | Docs/slides/prose | Structural/schema/config checks | None |
-| Dashboard/operator UI | Lint/build and affected Go/UI checks | None unless deployment integration changes |
+| Dashboard/operator UI and its Go-backed trace fixture/projection/handler | Lint/build, Playwright, and affected Go/UI checks | None unless deployment integration changes |
 | CanaryView model/evidence/provenance/correlation | Relevant Go/replay/invariant checks; shared contracts expand | None unless runtime identity/reference environment changes |
 | Connectors | Schema/parser/replay/capability fixtures; no vendor write | Only when part of the approved reference stack |
 | Engine, Sting, contract, trigger, scope | Full fast invariants, broad Go/race checks, affected deterministic replay | Selected datapath smoke only when kernel behavior changes |
 | `bpf/`, cgroup, kernel, cookiespike/enforcespike | All local eBPF compile/contract checks and privileged proof | `kernel-full` or enforcement profile with exact cleanup |
+| `cmd/tracespike/`, `scripts/dgx/tracespike*` | Trace/projection tests plus the exact local harness contract | `trace`; no generic-preflight substitution |
 | Operator, Kubernetes identity/manifests/deploy | Unit/envtest when present, broad local security checks | Kubernetes smoke is selected but currently fails closed because that M2 profile is not implemented |
 | CanaryAttacker scenario/runner/tool | Schema, bounded-policy tests, deterministic replay | Live smoke is selected for tool-authority changes; currently blocked on re-baselined M2D |
 | Test-gate orchestration | Gate self-tests, synthetic collect-all, broad Level 2 local graph | Level 3 through main/nightly/integration; DGX harness changes also select the relevant DGX profile |
@@ -54,7 +55,7 @@ The full suites retain redirect, integration, race, eBPF, and scenario variants.
 ## Adversarial placement
 
 1. **Deterministic replay (Levels 1–3).** Versioned manifests record `AttackerIntent`, `AttackerAction`, deterministic seed, expected evidence/response, prohibited outcomes, exact required test passes, cleanup, ground truth, affected paths, and replay command. PRs select relevant entries; uncertain impact selects all.
-2. **Targeted live smoke (Level 2 HIGH/CRITICAL only).** One or two fixed scenarios, approved DGX target, strict timeout, one workflow preflight/build/transfer, and exact cleanup. The current bounded kernel `cookie`, `enforcement`, and `kernel-full` profiles are implemented. Kubernetes and live-Qwen profiles refuse weaker substitution until their planned harnesses exist.
+2. **Targeted live smoke (Level 2 HIGH/CRITICAL only).** One or two fixed scenarios, approved DGX target, strict timeout, one profile-scoped preflight/build/transfer, and exact cleanup. The current bounded `cookie`, `enforcement`, `kernel-full`, `stack`, `correlation`, and `trace` profiles are implemented; correlation and trace are unprivileged. Kubernetes and live-Qwen profiles refuse weaker substitution until their planned harnesses exist. Trace-harness changes select the task-specific `dgx-trace` remote classification. When paths select multiple implemented remote profiles, CI runs each instead of accepting the first match or substituting generic preflight.
 3. **Full live campaign (Level 4).** Weekly/on-demand only. The workflow is scheduled, but its Qwen step intentionally fails closed pending re-baselined M2D. It must eventually measure trace completeness, identity/correlation accuracy, evidence gaps, response precision, resource ceilings, cleanup, and repeatability without giving Qwen shell, SSH, Kubernetes, Docker, filesystem, or unrestricted network authority.
 
 ## DGX capacity and safety

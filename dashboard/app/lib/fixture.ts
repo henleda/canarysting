@@ -1,8 +1,8 @@
-// DEV / VISUAL-VERIFICATION ONLY. This is the static, prototype-matching Overview
-// used to verify pixel fidelity against dashboard/design/prototype.html. It is
-// rendered ONLY when process.env.NEXT_PUBLIC_FIXTURE === '1' (see page.tsx).
-// It is NEVER the production render path — production always uses useOverview().
-// Do not import this from any component or the live data layer.
+// DEV / VISUAL-VERIFICATION ONLY. These static overview views exercise deterministic
+// operator journeys and prototype fidelity. Route modules may select them only
+// when process.env.NEXT_PUBLIC_FIXTURE === '1'; production uses the live read
+// APIs. The trace route deliberately has no fixture shortcut: Playwright obtains
+// its canonical Go projection through the live API path.
 
 import type { Overview } from './types';
 
@@ -273,7 +273,6 @@ export const fixtureOverview: Overview = {
     note: "Same host, still serving — the kernel jail dropped only the attacker's socket; every other flow here is untouched by the response and keeps returning traffic. We contain the flow, not the host.",
   },
 };
-
 // ---- Interactive console drill-down fixtures (NEXT_PUBLIC_FIXTURE=1) ----
 import type { FlowDetail, FlowsList, CostBreakdown, ReconTimeline } from './types';
 

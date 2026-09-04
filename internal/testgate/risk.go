@@ -62,9 +62,12 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			report.Automatic = level
 		}
 		report.Executable = report.Executable || executable
-		switch {
-		case strings.HasPrefix(path, "dashboard/app/"):
+		if isFrontendPath(path) {
 			report.FrontendAffected = true
+		}
+		switch {
+		case strings.HasPrefix(path, "cmd/tracespike/"):
+			profiles["dgx-trace"] = true
 		case strings.HasPrefix(path, "bpf/"):
 			report.EBPFAffected = true
 			report.RequiresPrivileged = true
@@ -74,6 +77,8 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			profiles["dgx-enforcement"] = true
 		case strings.HasPrefix(path, "scripts/dgx/"):
 			switch {
+			case strings.Contains(path, "tracespike"):
+				profiles["dgx-trace"] = true
 			case strings.Contains(path, "cookiespike"), strings.Contains(path, "enforcespike"),
 				strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"),
 				strings.HasSuffix(path, "/preflight-proof.sh"):
@@ -123,7 +128,7 @@ func classifyPath(path string) (RiskLevel, string, bool) {
 	switch {
 	case path == "":
 		return RiskHigh, "empty or unknown path defaults to HIGH", true
-	case strings.HasPrefix(path, "bpf/"), strings.HasPrefix(path, "scripts/dgx/"),
+	case strings.HasPrefix(path, "bpf/"), strings.HasPrefix(path, "scripts/dgx/"), strings.HasPrefix(path, "cmd/tracespike/"),
 		strings.HasPrefix(path, "internal/sting/containment/"), strings.HasPrefix(path, "bpf/sockops/"),
 		strings.HasPrefix(path, "internal/llm/attacker/"), strings.HasPrefix(path, "cmd/llm-attacker/"):
 		return RiskCritical, "kernel, containment, DGX, or attacker-tool safety boundary", true

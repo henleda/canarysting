@@ -1,28 +1,39 @@
 // Package backend is the read-only dashboard-backend service. It polls the
-// engine tap (internal/dashboard/tap) over HTTP, derives the Overview view tree
-// (internal/dashboard/backend/views), caches the last-good snapshot, and serves
-// it to the Next.js frontend over JSON + SSE. It NEVER writes anything and never
-// imports a store/persist/contract/adapter/bpf package — it talks to the engine
-// only via HTTP GETs to the tap, so read-only is enforced by construction.
+// engine tap (internal/dashboard/tap) over HTTP, derives bounded view trees,
+// caches the last-good overview, and serves the Next.js frontend over JSON +
+// SSE. Canonical traces arrive through an injected, already-authorized query
+// boundary. The package never writes evidence or enters the verdict path.
 package backend
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/canaryview/trace"
 	"github.com/canarysting/canarysting/internal/dashboard/backend/views"
 	"github.com/canarysting/canarysting/internal/intelligence"
 )
+
+var canonicalTraceID = regexp.MustCompile(`^trace:sha256:[0-9a-f]{64}$`)
+
+// TraceSource is an application/query boundary for one already-authorized
+// scope. The HTTP route never accepts tenant or scope selectors; a concrete
+// source must bind those from authenticated context before returning a trace.
+type TraceSource interface {
+	GetTrace(context.Context, string) (trace.Trace, error)
+}
 
 const (
 	defaultPollInterval = 5 * time.Second
@@ -45,6 +56,7 @@ type Config struct {
 	EventsWindow time.Duration // default 1h; passed as since_sec to the tap
 	HTTPClient   *http.Client  // nil => default with a 4s timeout
 	Env          string        // free-form environment label surfaced in the topbar
+	TraceSource  TraceSource   // nil until a scoped CanaryView query service is wired
 }
 
 // Backend polls the tap and serves the dashboard API.
@@ -56,6 +68,7 @@ type Backend struct {
 	last   *views.Overview // last successfully derived snapshot; nil until first poll
 	lastAt time.Time       // wall time of the last SUCCESSFUL poll
 	tapOK  bool            // whether the most recent poll reached the tap
+	traces TraceSource     // read-only scoped canonical trace query
 	// lastEvents is the raw event slice from the most recent successful poll —
 	// the fallback for drill-down handlers when a per-request tap fetch fails.
 	lastEvents []intelligence.AdversaryInteractionEvent
@@ -89,9 +102,8 @@ func New(cfg Config) *Backend {
 		client = &http.Client{Timeout: httpClientTimeout}
 	}
 	return &Backend{
-		cfg:    cfg,
-		client: client,
-		subs:   make(map[chan struct{}]struct{}),
+		cfg: cfg, client: client, traces: cfg.TraceSource,
+		subs: make(map[chan struct{}]struct{}),
 	}
 }
 
@@ -360,8 +372,8 @@ func (b *Backend) snapshot() (views.Overview, bool) {
 	return ov, true
 }
 
-// Handler returns the dashboard API mux: GET /api/overview, GET /api/stream,
-// GET /healthz.
+// Handler returns the dashboard API mux, including the read-only overview,
+// stream, drill-down, canonical-trace, and health endpoints.
 func (b *Backend) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/overview", b.serveOverview)
@@ -374,7 +386,41 @@ func (b *Backend) Handler() http.Handler {
 	mux.HandleFunc("GET /api/recon", b.serveReconTimeline)
 	mux.HandleFunc("GET /api/topology", b.serveTopology)
 	mux.HandleFunc("GET /api/deviants", b.serveDeviants)
+	mux.HandleFunc("GET /api/traces/{trace_id}", b.serveTraceWorkspace)
 	return mux
+}
+
+// serveTraceWorkspace projects one immutable canonical trace into the bounded
+// operator contract. It is read-only and cannot write evidence, issue an
+// action, or enter the CanarySting verdict path.
+func (b *Backend) serveTraceWorkspace(w http.ResponseWriter, r *http.Request) {
+	traceID := r.PathValue("trace_id")
+	if !canonicalTraceID.MatchString(traceID) {
+		writeErr(w, http.StatusBadRequest, "invalid trace id")
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeErr(w, http.StatusBadRequest, "trace query parameters are not accepted")
+		return
+	}
+	if b.traces == nil {
+		writeErr(w, http.StatusServiceUnavailable, "trace query source unavailable")
+		return
+	}
+	value, err := b.traces.GetTrace(r.Context(), traceID)
+	if errors.Is(err, trace.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "trace not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "trace query failed")
+		return
+	}
+	if value.Envelope().RecordID() != traceID {
+		writeErr(w, http.StatusServiceUnavailable, "trace query returned a mismatched record")
+		return
+	}
+	writeJSON(w, views.ProjectTrace(value))
 }
 
 // drillEvents resolves the events for a drill-down request: a per-request tap

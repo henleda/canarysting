@@ -51,6 +51,44 @@ func TestManualRiskCanIncreaseButNeverReduce(t *testing.T) {
 	}
 }
 
+func TestTraceProofChangesSelectOnlyTraceDGXProfile(t *testing.T) {
+	for _, path := range []string{"cmd/tracespike/main.go", "scripts/dgx/tracespike.sh", "scripts/dgx/tracespike_test.sh"} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || len(report.RemoteProfiles) != 1 || report.RemoteProfiles[0] != "dgx-trace" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
+func TestCombinedCriticalChangesRetainEveryDGXProfile(t *testing.T) {
+	report, err := ClassifyRisk([]string{"bpf/enforce/enforce.bpf.c", "cmd/tracespike/main.go"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(report.RemoteProfiles, ","); got != "dgx-kernel,dgx-trace" {
+		t.Fatalf("remote profiles = %q, want both kernel and trace", got)
+	}
+}
+
+func TestGoBackedTracePathsSelectFrontendValidation(t *testing.T) {
+	for _, path := range []string{
+		"test/fixtures/tracebackend/main.go",
+		"internal/dashboard/backend/views/trace.go",
+		"internal/canaryview/tracefixture/operator.go",
+	} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.FrontendAffected {
+			t.Fatalf("%s did not mark the frontend affected: %+v", path, report)
+		}
+	}
+}
+
 func TestTimingBudgetsDependOnLevelAndRisk(t *testing.T) {
 	if got := timingBudget("check-fast", RiskCritical); got != 180 {
 		t.Fatalf("check-fast budget=%v", got)
@@ -70,7 +108,7 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 	ids := []string{
 		"manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator",
 		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants",
-		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "bpf-compile", "bpf-object-assert",
+		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "frontend-playwright", "bpf-compile", "bpf-object-assert",
 		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce",
 	}
 	manifest := Manifest{Version: 1}
@@ -89,6 +127,18 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSelected(t, standard, "affected-go-race", "affected-go-integration")
+
+	frontend, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"dashboard/app/app/page.tsx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, frontend, "frontend-lint", "frontend-build", "frontend-playwright")
+
+	goBackedFrontend, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"test/fixtures/tracebackend/main.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, goBackedFrontend, "frontend-lint", "frontend-build", "frontend-playwright", "go-test")
 
 	high, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"internal/engine/engine.go"})
 	if err != nil {

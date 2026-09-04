@@ -1,6 +1,6 @@
-// tracespike is the bounded M2B.4 DGX proof. It uses only minimized synthetic
-// records and emits fixed assertions; no customer payload or raw identifier is
-// accepted or written.
+// tracespike is the bounded M2B.4/M2B.5 DGX proof. It uses only minimized
+// synthetic records and emits fixed assertions; no customer payload or raw
+// identifier is accepted or written.
 package main
 
 import (
@@ -18,9 +18,17 @@ import (
 	"github.com/canarysting/canarysting/internal/canaryview/correlation"
 	"github.com/canarysting/canarysting/internal/canaryview/model"
 	"github.com/canarysting/canarysting/internal/canaryview/trace"
+	"github.com/canarysting/canarysting/internal/canaryview/tracefixture"
+	"github.com/canarysting/canarysting/internal/dashboard/backend/views"
 )
 
 var safeID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,94}[a-z0-9])?$`)
+
+const (
+	operatorScenarioID    = "m2b5-operator-conflict"
+	operatorMissingCount  = 2
+	operatorConflictCount = 3
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -50,6 +58,9 @@ func run(args []string, output io.Writer) error {
 	if !safeID.MatchString(*scenarioID) || len(*scenarioID) > 96 {
 		return fmt.Errorf("scenario ID must be 1-96 lowercase alphanumeric/hyphen characters")
 	}
+	if *scenarioID != operatorScenarioID {
+		return fmt.Errorf("scenario ID must be %q", operatorScenarioID)
+	}
 	if output == nil {
 		return fmt.Errorf("proof output is required")
 	}
@@ -65,6 +76,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF lifecycle=PASS held_visible=true expired_hidden=true",
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
+		fmt.Sprintf("PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=%d conflicts=%d", operatorMissingCount, operatorConflictCount),
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -280,6 +292,81 @@ func executeProof(runID, scenarioID string) error {
 	overBound.Expectations = []trace.ExpectationInput{{Kind: trace.ExpectObservation}}
 	if _, err := boundedBuilder.Build(overBound); err == nil {
 		return fmt.Errorf("over-bound trace input was truncated or accepted")
+	}
+
+	operatorTrace, err := tracefixture.OperatorConflict()
+	if err != nil {
+		return fmt.Errorf("build operator trace fixture: %w", err)
+	}
+	workspace := views.ProjectTrace(operatorTrace)
+	if workspace.TraceID != operatorTrace.Envelope().RecordID() || workspace.WhatHappened == "" || workspace.Explanation.Claim == "" || workspace.Explanation.Reason == "" {
+		return fmt.Errorf("operator trace explanation is incomplete")
+	}
+	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != operatorMissingCount || len(workspace.Conflicts) != operatorConflictCount {
+		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
+	}
+	joinIdentities := make(map[string]bool)
+	translatedPathPresent := false
+	for _, join := range workspace.Explanation.Joins {
+		pathIdentity := ""
+		for _, step := range join.TranslationPath {
+			pathIdentity += fmt.Sprintf(":%s:v%d:%s", step.Record.ID, step.Record.SchemaVersion, step.Direction)
+		}
+		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s:%s:%s%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.Strength, join.KeyFingerprint, join.TimeGap+":"+join.Window, pathIdentity)
+		if join.KeyFingerprint == "" || joinIdentities[identity] {
+			return fmt.Errorf("operator trace collapsed a canonical join explanation")
+		}
+		if join.Method == "Request ID" && (join.TimeGap != "" || join.Window != "" || len(join.TranslationPath) != 0) {
+			return fmt.Errorf("operator trace invented context for an exact identifier join")
+		}
+		if join.Method == "Translated tuple and time window" {
+			if join.TimeGap == "" || join.Window == "" || len(join.TranslationPath) == 0 {
+				return fmt.Errorf("operator trace omitted translated join context")
+			}
+			translatedPathPresent = true
+		}
+		joinIdentities[identity] = true
+	}
+	if len(joinIdentities) != 8 || !translatedPathPresent {
+		return fmt.Errorf("operator trace join explanations = %d translated_path=%t, want 8/true", len(joinIdentities), translatedPathPresent)
+	}
+	rawReferenceMetadataPresent := false
+	supportingContext, versionedSupportingContext, contradictingContext := false, false, false
+	for _, evidence := range workspace.Evidence {
+		if evidence.Raw && evidence.SourceOwned && evidence.Reference != "" && evidence.Role == "" && evidence.Availability == "Integrity mismatch" && evidence.HashAlgorithm != "" && evidence.HashValue != "" {
+			rawReferenceMetadataPresent = true
+		}
+		if evidence.ID == "evidence-policy-conflict" {
+			supportingContext = supportingContext || evidence.Role == "Supporting" && evidence.SchemaVersion == 3 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 3
+			versionedSupportingContext = versionedSupportingContext || evidence.Role == "Supporting" && evidence.SchemaVersion == 4 && evidence.HopRecord != nil && evidence.HopRecord.ID == "cilium-policy-allow" && evidence.HopRecord.SchemaVersion == 4
+			contradictingContext = contradictingContext || evidence.Role == "Contradicting" && evidence.SchemaVersion == 3 && evidence.HopRecord == nil
+		}
+	}
+	if !rawReferenceMetadataPresent || !supportingContext || !versionedSupportingContext || !contradictingContext {
+		return fmt.Errorf("operator trace omitted raw-reference metadata or evidence-role context")
+	}
+	recordVersions := make(map[uint32]bool)
+	for _, hop := range workspace.Hops {
+		if hop.Record.ID == "cilium-policy-allow" {
+			recordVersions[hop.Record.SchemaVersion] = true
+		}
+	}
+	if !recordVersions[3] || !recordVersions[4] || len(recordVersions) != 2 {
+		return fmt.Errorf("operator trace collapsed versioned record identity")
+	}
+	if workspace.Confidence.TimeUncertainty != "Bounded" || workspace.Confidence.TimeWindow == "" || len(workspace.Hops) == 0 || workspace.Hops[0].TimeWindow == "" {
+		return fmt.Errorf("operator trace omitted time uncertainty")
+	}
+	conflictEvidencePresent, secondaryConflictEvidencePresent := false, false
+	for _, conflict := range workspace.Conflicts {
+		conflictEvidencePresent = conflictEvidencePresent || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict" && conflict.Evidence[0].SchemaVersion == 3
+		secondaryConflictEvidencePresent = secondaryConflictEvidencePresent || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict-secondary" && conflict.Evidence[0].SchemaVersion == 3
+	}
+	if !conflictEvidencePresent || !secondaryConflictEvidencePresent {
+		return fmt.Errorf("operator trace conflict omitted its evidence reference")
+	}
+	if tracefixture.ScenarioID != operatorScenarioID || !workspace.Synthetic || workspace.ScenarioID != scenarioID || workspace.SafetyNote != "This workspace is read-only and cannot trigger or change a response." {
+		return fmt.Errorf("operator trace safety or synthetic provenance is incomplete")
 	}
 	return nil
 }
