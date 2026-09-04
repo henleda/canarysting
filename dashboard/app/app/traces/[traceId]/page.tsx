@@ -19,6 +19,7 @@ export default function TracePage() {
 }
 
 type TraceLoadState =
+  | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ready'; view: TraceWorkspaceView }
   | { kind: 'not-found' }
@@ -27,7 +28,7 @@ type TraceLoadState =
 
 function LiveTracePage({ traceID }: { traceID: string }) {
   const { snapshot, status } = useOverview();
-  const [traceState, setTraceState] = useState<TraceLoadState>({ kind: 'loading' });
+  const [traceState, setTraceState] = useState<TraceLoadState>({ kind: 'idle' });
 
   useEffect(() => {
     if (!traceID) {
@@ -79,8 +80,8 @@ function TracePageFrame({
         </p>
         {traceState.kind === 'ready' ? (
           <TraceWorkspace view={traceState.view} />
-        ) : traceState.kind === 'loading' ? (
-          <section className="detail-section" aria-live="polite">
+        ) : traceState.kind === 'idle' || traceState.kind === 'loading' ? (
+          <section className="detail-section">
             <h1>Loading security trace…</h1>
             <p className="dim">Waiting for the scoped read-only trace query.</p>
           </section>

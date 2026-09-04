@@ -207,6 +207,7 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
         <dl className="trace-facts">
           <div><dt>Data class</dt><dd>{view.lifecycle.data_class}</dd></div>
           <div><dt>Lifecycle</dt><dd>{view.lifecycle.state} · expires {formatUTC(view.lifecycle.expires_at)} UTC</dd></div>
+          <div><dt>Legal hold</dt><dd>{view.lifecycle.legal_hold_ids.length ? view.lifecycle.legal_hold_ids.join(', ') : 'None'}</dd></div>
           <div><dt>Residency</dt><dd>{view.scope.residency_cell_id} · {view.lifecycle.residency_policy_ref}</dd></div>
           <div><dt>Encryption boundary</dt><dd>{view.lifecycle.encryption_boundary}</dd></div>
           <div><dt>Model use</dt><dd>Per-tenant {view.lifecycle.per_tenant_model_use ? 'allowed' : 'off'} · Cross-tenant {view.lifecycle.cross_tenant_model_use ? 'allowed' : 'off'}</dd></div>

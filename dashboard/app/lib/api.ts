@@ -110,16 +110,33 @@ const strings = (value: unknown): value is string[] => Array.isArray(value) && v
 const oneOf = (value: unknown, allowed: readonly string[]): value is string => string(value) && allowed.includes(value);
 const optionalAbsentOr = (value: unknown, validate: (candidate: unknown) => boolean): boolean => value === undefined || validate(value);
 
-const rfc3339Pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const rfc3339Pattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 const durationPattern = /^(?:\d+(?:\.\d+)?(?:ns|µs|us|ms|s|m|h))+$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 
 function rfc3339(value: unknown): value is string {
-  return string(value) && rfc3339Pattern.test(value) && Number.isFinite(Date.parse(value));
+  if (!string(value)) return false;
+  const match = rfc3339Pattern.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1] &&
+    hour <= 23 && minute <= 59 && second <= 59 && offsetHour <= 23 && offsetMinute <= 59 &&
+    Number.isFinite(Date.parse(value));
 }
 
 function positiveDuration(value: unknown): value is string {
-  return string(value) && durationPattern.test(value) && !/^0+(?:\.0+)?(?:ns|µs|us|ms|s|m|h)$/.test(value);
+  if (!string(value) || !durationPattern.test(value)) return false;
+  const components = [...value.matchAll(/(\d+(?:\.\d+)?)(?:ns|µs|us|ms|s|m|h)/g)].map((match) => Number(match[1]));
+  return components.length > 0 && components.every(Number.isFinite) && components.some((component) => component > 0);
 }
 
 function timeFields(at: unknown, status: unknown, uncertainty: unknown, window: unknown): boolean {
@@ -185,7 +202,7 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
     oneOf(confidence.completeness, ['Partial', 'Complete']) &&
     oneOf(confidence.source_quality, ['Unverified', 'Declared', 'Verified']) &&
     oneOf(confidence.identity_assurance, ['Unverified', 'Declared', 'Verified']) &&
-    number(confidence.candidate_count) && Number.isInteger(confidence.candidate_count) && confidence.candidate_count >= 0 &&
+    number(confidence.candidate_count) && Number.isInteger(confidence.candidate_count) && confidence.candidate_count > 0 &&
     aggregateTimeFields(confidence.time_uncertainty, confidence.time_window) &&
     oneOf(confidence.human_review, ['Unreviewed', 'Confirmed', 'Rejected']) &&
     nonEmptyString(scope.tenant_id) && nonEmptyString(scope.scope_id) && nonEmptyString(scope.display_name) &&
@@ -213,6 +230,8 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
     oneOf(lifecycle.retention_profile, ['Lean', 'Standard', 'Regulated', 'Approved override']) &&
     oneOf(lifecycle.state, ['Active', 'Expiry due', 'Held', 'Deletion pending', 'Deleted', 'Invalidated', 'Deletion failed']) &&
     rfc3339(lifecycle.expires_at) && strings(lifecycle.legal_hold_ids) && lifecycle.legal_hold_ids.every(nonEmptyString) &&
+    new Set(lifecycle.legal_hold_ids).size === lifecycle.legal_hold_ids.length &&
+    ((lifecycle.state === 'Held') === (lifecycle.legal_hold_ids.length > 0)) &&
     nonEmptyString(lifecycle.residency_policy_ref) && nonEmptyString(lifecycle.encryption_boundary) &&
     boolean(lifecycle.per_tenant_model_use) && boolean(lifecycle.cross_tenant_model_use) &&
     boolean(value.synthetic) && optionalAbsentOr(value.scenario_id, nonEmptyString) && nonEmptyString(value.safety_note) &&

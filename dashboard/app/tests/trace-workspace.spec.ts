@@ -6,6 +6,11 @@ type FixtureIDs = {
   unavailable_trace_id: string;
   malformed_trace_id: string;
   invalid_evidence_id: string;
+  invalid_json_id: string;
+  zero_candidate_id: string;
+  zero_duration_id: string;
+  held_without_hold_id: string;
+  duplicate_hold_id: string;
 };
 
 async function fixtureIDs(request: APIRequestContext): Promise<FixtureIDs> {
@@ -32,6 +37,7 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   );
   const navigation = openTrace(page, ids.trace_id);
   await expect(page.getByRole('heading', { level: 1, name: 'Loading security trace…' })).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('Loading security trace');
   releaseTrace();
   await navigation;
   const projectedJSON = await (await projectedResponse).json() as { trace_id?: string; scenario_id?: string };
@@ -48,6 +54,10 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.getByText('Partial coverage', { exact: true })).toBeVisible();
   await expect(page.getByText('Conflicting evidence', { exact: true })).toBeVisible();
   await expect(page.getByText('This workspace is read-only and cannot trigger or change a response.')).toBeVisible();
+
+  await page.getByText('Trace lifecycle and technical scope').click();
+  await expect(page.locator('.trace-lifecycle').getByText('Legal hold', { exact: true })).toBeVisible();
+  await expect(page.locator('.trace-lifecycle').getByText('None', { exact: true })).toBeVisible();
 
   await page.getByText('Technical references').last().click();
   await expect(page.getByText('evidence-policy-conflict', { exact: true })).toBeVisible();
@@ -105,6 +115,31 @@ for (const terminal of [
   },
   {
     id: 'invalid_evidence_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'invalid_json_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'zero_candidate_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'zero_duration_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'held_without_hold_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'duplicate_hold_id' as const,
     heading: 'Security trace could not be read',
     nextStep: 'check the dashboard-backend trace route and projection logs',
   },

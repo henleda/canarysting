@@ -24,6 +24,11 @@ const (
 	unavailableTraceID = "trace:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	malformedTraceID   = "trace:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	invalidEvidenceID  = "trace:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	invalidJSONID      = "trace:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	zeroCandidateID    = "trace:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	zeroDurationID     = "trace:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	heldWithoutHoldID  = "trace:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	duplicateHoldID    = "trace:sha256:3333333333333333333333333333333333333333333333333333333333333333"
 )
 
 type fixtureSource struct {
@@ -48,10 +53,23 @@ func main() {
 	productionHandler := backend.New(backend.Config{TraceSource: fixtureSource{value: value}}).Handler()
 	malformedProjection := views.ProjectTrace(value)
 	malformedProjection.TraceID = malformedTraceID
-	malformedProjection.Lifecycle.ExpiresAt = "not-an-rfc3339-timestamp"
+	malformedProjection.Lifecycle.ExpiresAt = "2026-02-29T12:00:00Z"
 	invalidEvidenceProjection := views.ProjectTrace(value)
 	invalidEvidenceProjection.TraceID = invalidEvidenceID
 	invalidEvidenceProjection.Evidence[0].Role = "Supporting"
+	zeroCandidateProjection := views.ProjectTrace(value)
+	zeroCandidateProjection.TraceID = zeroCandidateID
+	zeroCandidateProjection.Confidence.CandidateCount = 0
+	zeroDurationProjection := views.ProjectTrace(value)
+	zeroDurationProjection.TraceID = zeroDurationID
+	zeroDurationProjection.Confidence.TimeWindow = "0s0ms"
+	heldWithoutHoldProjection := views.ProjectTrace(value)
+	heldWithoutHoldProjection.TraceID = heldWithoutHoldID
+	heldWithoutHoldProjection.Lifecycle.State = "Held"
+	duplicateHoldProjection := views.ProjectTrace(value)
+	duplicateHoldProjection.TraceID = duplicateHoldID
+	duplicateHoldProjection.Lifecycle.State = "Held"
+	duplicateHoldProjection.Lifecycle.LegalHoldIDs = []string{"hold-fixture", "hold-fixture"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -64,6 +82,11 @@ func main() {
 			"unavailable_trace_id": unavailableTraceID,
 			"malformed_trace_id":   malformedTraceID,
 			"invalid_evidence_id":  invalidEvidenceID,
+			"invalid_json_id":      invalidJSONID,
+			"zero_candidate_id":    zeroCandidateID,
+			"zero_duration_id":     zeroDurationID,
+			"held_without_hold_id": heldWithoutHoldID,
+			"duplicate_hold_id":    duplicateHoldID,
 		})
 	})
 	mux.HandleFunc("GET /api/traces/"+malformedTraceID, func(w http.ResponseWriter, _ *http.Request) {
@@ -73,6 +96,26 @@ func main() {
 	mux.HandleFunc("GET /api/traces/"+invalidEvidenceID, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(invalidEvidenceProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+invalidJSONID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{malformed"))
+	})
+	mux.HandleFunc("GET /api/traces/"+zeroCandidateID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(zeroCandidateProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+zeroDurationID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(zeroDurationProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+heldWithoutHoldID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(heldWithoutHoldProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+duplicateHoldID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(duplicateHoldProjection)
 	})
 	mux.Handle("/", productionHandler)
 
