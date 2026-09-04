@@ -29,6 +29,7 @@ const (
 	zeroDurationID     = "trace:sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	heldWithoutHoldID  = "trace:sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	duplicateHoldID    = "trace:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	invalidJoinID      = "trace:sha256:4444444444444444444444444444444444444444444444444444444444444444"
 )
 
 type fixtureSource struct {
@@ -70,6 +71,9 @@ func main() {
 	duplicateHoldProjection.TraceID = duplicateHoldID
 	duplicateHoldProjection.Lifecycle.State = "Held"
 	duplicateHoldProjection.Lifecycle.LegalHoldIDs = []string{"hold-fixture", "hold-fixture"}
+	invalidJoinProjection := views.ProjectTrace(value)
+	invalidJoinProjection.TraceID = invalidJoinID
+	invalidJoinProjection.Explanation.Joins[0].KeyFingerprint = ""
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -87,6 +91,7 @@ func main() {
 			"zero_duration_id":     zeroDurationID,
 			"held_without_hold_id": heldWithoutHoldID,
 			"duplicate_hold_id":    duplicateHoldID,
+			"invalid_join_id":      invalidJoinID,
 		})
 	})
 	mux.HandleFunc("GET /api/traces/"+malformedTraceID, func(w http.ResponseWriter, _ *http.Request) {
@@ -116,6 +121,10 @@ func main() {
 	mux.HandleFunc("GET /api/traces/"+duplicateHoldID, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(duplicateHoldProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+invalidJoinID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(invalidJoinProjection)
 	})
 	mux.Handle("/", productionHandler)
 

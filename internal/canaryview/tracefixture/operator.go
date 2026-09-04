@@ -42,16 +42,21 @@ func OperatorConflict() (trace.Trace, error) {
 	if err != nil {
 		return trace.Trace{}, err
 	}
+	secondRequestID, err := correlation.NewOpaqueID("fixture.gateway.request", digest("request-two"))
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	requestIDs := []correlation.OpaqueID{requestID, secondRequestID}
 
-	anchor, err := record("gateway-request", model.CurrentSchemaVersion, scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestID)
+	anchor, err := record("gateway-request", model.CurrentSchemaVersion, scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	allow, err := record("cilium-policy-allow", model.CurrentSchemaVersion, scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestID)
+	allow, err := record("cilium-policy-allow", model.CurrentSchemaVersion, scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	deny, err := record("cilium-policy-allow", model.CurrentSchemaVersion+1, scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestID)
+	deny, err := record("cilium-policy-allow", model.CurrentSchemaVersion+1, scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -132,7 +137,7 @@ func OperatorConflict() (trace.Trace, error) {
 	})
 }
 
-func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestID correlation.OpaqueID) (correlation.Record, error) {
+func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestIDs []correlation.OpaqueID) (correlation.Record, error) {
 	ref, err := model.NewRecordReference(id, schemaVersion)
 	if err != nil {
 		return correlation.Record{}, err
@@ -143,7 +148,7 @@ func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.
 	}
 	return correlation.NewRecord(correlation.RecordInput{
 		Reference: ref, Scope: scope, Vantage: correlation.SourceVantageGeneral,
-		Time: &eventTime, Identities: identities, RequestIDs: []correlation.OpaqueID{requestID},
+		Time: &eventTime, Identities: identities, RequestIDs: requestIDs,
 		Synthetic: synthetic,
 	})
 }

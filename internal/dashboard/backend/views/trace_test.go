@@ -2,6 +2,7 @@ package views_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,17 +51,34 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	if !strings.Contains(got.WhatHappened, "3 source records") || !strings.Contains(got.WhatHappened, "1 observation") || !strings.Contains(got.WhatHappened, "2 policy decisions") {
 		t.Fatalf("what happened = %q", got.WhatHappened)
 	}
-	if got.Explanation.Claim == "" || got.Explanation.Reason == "" || len(got.Explanation.Joins) != 2 {
+	if got.Explanation.Claim == "" || got.Explanation.Reason == "" || len(got.Explanation.Joins) != 4 {
 		t.Fatalf("explanation = %#v", got.Explanation)
 	}
+	joinIdentities := make(map[string]bool)
+	fingerprintsByCandidate := make(map[string]map[string]bool)
 	for _, join := range got.Explanation.Joins {
-		if join.Method != "Request ID" || join.Strength != "Exact" || len(join.Citations) != 2 {
+		if join.Method != "Request ID" || join.Strength != "Exact" || join.KeyFingerprint == "" || join.TimeGap != "0s" || join.Window != "0s" || len(join.TranslationPath) != 0 || len(join.Citations) != 2 {
 			t.Fatalf("join = %#v", join)
 		}
+		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.KeyFingerprint)
+		if joinIdentities[identity] {
+			t.Fatalf("duplicate projected join identity %q: %#v", identity, got.Explanation.Joins)
+		}
+		joinIdentities[identity] = true
+		candidateKey := fmt.Sprintf("%s:v%d", join.Candidate.ID, join.Candidate.SchemaVersion)
+		if fingerprintsByCandidate[candidateKey] == nil {
+			fingerprintsByCandidate[candidateKey] = make(map[string]bool)
+		}
+		fingerprintsByCandidate[candidateKey][join.KeyFingerprint] = true
 		for _, citation := range join.Citations {
 			if citation.ID == "" || citation.SchemaVersion == 0 {
 				t.Fatalf("unversioned join citation = %#v", join)
 			}
+		}
+	}
+	for candidate, fingerprints := range fingerprintsByCandidate {
+		if len(fingerprints) != 2 {
+			t.Fatalf("candidate %q fingerprints = %#v, want two distinct join explanations", candidate, fingerprints)
 		}
 	}
 	if len(got.Affected) != 2 || got.Affected[0].Name != "Checkout API" || got.Affected[1].Name != "Payments" {

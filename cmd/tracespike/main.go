@@ -301,6 +301,17 @@ func executeProof(runID, scenarioID string) error {
 	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 2 {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
+	joinIdentities := make(map[string]bool)
+	for _, join := range workspace.Explanation.Joins {
+		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.KeyFingerprint)
+		if join.KeyFingerprint == "" || joinIdentities[identity] {
+			return fmt.Errorf("operator trace collapsed a canonical join explanation")
+		}
+		joinIdentities[identity] = true
+	}
+	if len(joinIdentities) != 4 {
+		return fmt.Errorf("operator trace join explanations = %d, want 4", len(joinIdentities))
+	}
 	rawReferenceMetadataPresent := false
 	supportingContext, versionedSupportingContext, contradictingContext := false, false, false
 	for _, evidence := range workspace.Evidence {

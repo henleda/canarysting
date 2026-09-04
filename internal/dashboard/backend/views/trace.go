@@ -93,13 +93,22 @@ type TraceExplanationView struct {
 }
 
 type TraceJoinView struct {
-	Anchor    TraceReferenceView   `json:"anchor"`
-	Candidate TraceReferenceView   `json:"candidate"`
-	Method    string               `json:"method"`
-	Strength  string               `json:"strength"`
-	Citations []TraceReferenceView `json:"citations"`
-	Selected  bool                 `json:"selected"`
-	Ambiguous bool                 `json:"ambiguous"`
+	Anchor          TraceReferenceView         `json:"anchor"`
+	Candidate       TraceReferenceView         `json:"candidate"`
+	Method          string                     `json:"method"`
+	Strength        string                     `json:"strength"`
+	KeyFingerprint  string                     `json:"key_fingerprint"`
+	TimeGap         string                     `json:"time_gap"`
+	Window          string                     `json:"window"`
+	TranslationPath []TraceTranslationStepView `json:"translation_path"`
+	Citations       []TraceReferenceView       `json:"citations"`
+	Selected        bool                       `json:"selected"`
+	Ambiguous       bool                       `json:"ambiguous"`
+}
+
+type TraceTranslationStepView struct {
+	Record    TraceReferenceView `json:"record"`
+	Direction string             `json:"direction"`
 }
 
 type TraceGapView struct {
@@ -276,9 +285,17 @@ func projectTraceJoins(values []trace.CorrelationSet) ([]TraceJoinView, []string
 				for _, citation := range explanation.Citations() {
 					citations = append(citations, traceReferenceView(citation))
 				}
+				translationPath := make([]TraceTranslationStepView, 0, len(explanation.TranslationPath()))
+				for _, step := range explanation.TranslationPath() {
+					translationPath = append(translationPath, TraceTranslationStepView{
+						Record: traceReferenceView(step.Reference()), Direction: displayEnum(string(step.Direction())),
+					})
+				}
 				joins = append(joins, TraceJoinView{
 					Anchor: traceReferenceView(set.Anchor()), Candidate: traceReferenceView(candidate.Reference()), Method: method,
-					Strength: displayEnum(string(explanation.Strength())), Citations: citations,
+					Strength: displayEnum(string(explanation.Strength())), KeyFingerprint: explanation.KeyFingerprint(),
+					TimeGap: explanation.TimeGap().String(), Window: explanation.Window().String(),
+					TranslationPath: translationPath, Citations: citations,
 					Selected: hasChosen && chosen == candidate.Reference(), Ambiguous: set.Ambiguous() || candidate.TranslationPathAmbiguous(),
 				})
 			}

@@ -113,6 +113,7 @@ const optionalAbsentOr = (value: unknown, validate: (candidate: unknown) => bool
 const rfc3339Pattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 const durationPattern = /^(?:\d+(?:\.\d+)?(?:ns|µs|us|ms|s|m|h))+$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
+const correlationKeyPattern = /^correlation-key:sha256:[0-9a-f]{64}$/;
 
 function rfc3339(value: unknown): value is string {
   if (!string(value)) return false;
@@ -134,9 +135,15 @@ function rfc3339(value: unknown): value is string {
 }
 
 function positiveDuration(value: unknown): value is string {
+  if (!duration(value)) return false;
+  const components = [...value.matchAll(/(\d+(?:\.\d+)?)(?:ns|µs|us|ms|s|m|h)/g)].map((match) => Number(match[1]));
+  return components.some((component) => component > 0);
+}
+
+function duration(value: unknown): value is string {
   if (!string(value) || !durationPattern.test(value)) return false;
   const components = [...value.matchAll(/(\d+(?:\.\d+)?)(?:ns|µs|us|ms|s|m|h)/g)].map((match) => Number(match[1]));
-  return components.length > 0 && components.every(Number.isFinite) && components.some((component) => component > 0);
+  return components.length > 0 && components.every(Number.isFinite);
 }
 
 function timeFields(at: unknown, status: unknown, uncertainty: unknown, window: unknown): boolean {
@@ -223,7 +230,9 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
     nonEmptyString(explanation.claim) && nonEmptyString(explanation.reason) && strings(explanation.methods) && explanation.methods.every(nonEmptyString) &&
     Array.isArray(explanation.joins) && explanation.joins.every((join) => record(join) && traceReference(join.anchor) &&
       traceReference(join.candidate) && oneOf(join.method, ['Request ID', 'Vendor transaction ID', 'Socket cookie', 'OpenTelemetry trace and span ID', 'OpenTelemetry trace ID', 'Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']) &&
-      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && Array.isArray(join.citations) && join.citations.length > 0 && join.citations.every(traceReference) &&
+      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && string(join.key_fingerprint) && correlationKeyPattern.test(join.key_fingerprint) && duration(join.time_gap) && duration(join.window) &&
+      Array.isArray(join.translation_path) && join.translation_path.every((step) => record(step) && traceReference(step.record) && oneOf(step.direction, ['Forward', 'Reverse'])) &&
+      Array.isArray(join.citations) && join.citations.length > 0 && join.citations.every(traceReference) &&
       boolean(join.selected) && boolean(join.ambiguous)) &&
     Array.isArray(value.missing) && value.missing.every((gap) => record(gap) &&
       oneOf(gap.kind, ['OBSERVATION', 'POLICY_DECISION', 'SOURCE_TIME', 'RAW_EVIDENCE', 'CORRELATION']) && nonEmptyString(gap.label) &&

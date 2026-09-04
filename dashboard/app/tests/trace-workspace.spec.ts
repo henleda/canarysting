@@ -11,6 +11,7 @@ type FixtureIDs = {
   zero_duration_id: string;
   held_without_hold_id: string;
   duplicate_hold_id: string;
+  invalid_join_id: string;
 };
 
 async function fixtureIDs(request: APIRequestContext): Promise<FixtureIDs> {
@@ -40,9 +41,18 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.getByRole('status')).toHaveText('Loading security trace');
   releaseTrace();
   await navigation;
-  const projectedJSON = await (await projectedResponse).json() as { trace_id?: string; scenario_id?: string };
+  const projectedJSON = await (await projectedResponse).json() as {
+    trace_id?: string;
+    scenario_id?: string;
+    explanation?: { joins?: Array<{ candidate?: { id?: string; schema_version?: number }; key_fingerprint?: string }> };
+  };
   expect(projectedJSON.trace_id).toBe(ids.trace_id);
   expect(projectedJSON.scenario_id).toBe('m2b5-operator-conflict');
+  const projectedJoins = projectedJSON.explanation?.joins ?? [];
+  expect(projectedJoins).toHaveLength(4);
+  const identities = projectedJoins.map((join) => `${join.candidate?.id}:v${join.candidate?.schema_version}:${join.key_fingerprint}`);
+  expect(new Set(identities).size).toBe(4);
+  expect(projectedJoins.every((join) => Boolean(join.key_fingerprint))).toBeTruthy();
 
   await expect(page.getByRole('heading', { level: 1, name: 'Conflicting evidence across Checkout API and Payments' })).toBeVisible();
   await expect(page.getByRole('status')).toHaveText(/Security trace loaded: Conflicting evidence across Checkout API and Payments/);
@@ -56,6 +66,9 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.getByText('Partial coverage', { exact: true })).toBeVisible();
   await expect(page.getByText('Conflicting evidence', { exact: true })).toBeVisible();
   await expect(page.getByText('This workspace is read-only and cannot trigger or change a response.')).toBeVisible();
+  await expect(page.locator('.trace-joins > li')).toHaveCount(4);
+  await page.getByText('Technical citations').first().click();
+  await expect(page.getByText('Key fingerprint', { exact: true }).first()).toBeVisible();
 
   await page.getByText('Trace lifecycle and technical scope').click();
   await expect(page.locator('.trace-lifecycle').getByText('Legal hold', { exact: true })).toBeVisible();
@@ -142,6 +155,11 @@ for (const terminal of [
   },
   {
     id: 'duplicate_hold_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'invalid_join_id' as const,
     heading: 'Security trace could not be read',
     nextStep: 'check the dashboard-backend trace route and projection logs',
   },
