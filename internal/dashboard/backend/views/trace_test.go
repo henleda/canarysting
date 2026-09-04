@@ -51,14 +51,36 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	if !strings.Contains(got.WhatHappened, "3 source records") || !strings.Contains(got.WhatHappened, "1 observation") || !strings.Contains(got.WhatHappened, "2 policy decisions") {
 		t.Fatalf("what happened = %q", got.WhatHappened)
 	}
-	if got.Explanation.Claim == "" || got.Explanation.Reason == "" || len(got.Explanation.Joins) != 4 {
+	if got.Explanation.Claim == "" || got.Explanation.Reason == "" || len(got.Explanation.Joins) != 8 {
 		t.Fatalf("explanation = %#v", got.Explanation)
 	}
 	joinIdentities := make(map[string]bool)
 	fingerprintsByCandidate := make(map[string]map[string]bool)
+	methodCounts := make(map[string]int)
 	for _, join := range got.Explanation.Joins {
-		if join.Method != "Request ID" || join.Strength != "Exact" || join.KeyFingerprint == "" || join.TimeGap != "0s" || join.Window != "0s" || len(join.TranslationPath) != 0 || len(join.Citations) != 2 {
+		if join.KeyFingerprint == "" {
 			t.Fatalf("join = %#v", join)
+		}
+		methodCounts[join.Method]++
+		switch join.Method {
+		case "Request ID":
+			if join.Strength != "Exact" || join.TimeGap != "" || join.Window != "" || len(join.TranslationPath) != 0 || len(join.Citations) != 2 {
+				t.Fatalf("non-time-qualified request join invented timing: %#v", join)
+			}
+		case "Declared identity and time window":
+			if join.Strength != "Weak" || (join.TimeGap != "750ms" && join.TimeGap != "1.75s") || join.Window != "2m0s" || len(join.TranslationPath) != 0 || len(join.Citations) != 2 {
+				t.Fatalf("time-qualified identity join omitted timing: %#v", join)
+			}
+		case "Translated tuple and time window":
+			if join.Strength != "Strong" || (join.TimeGap != "750ms" && join.TimeGap != "1.75s") || join.Window != "2m0s" || len(join.TranslationPath) != 1 || len(join.Citations) != 3 {
+				t.Fatalf("translated join omitted timing, path, or citation: %#v", join)
+			}
+			step := join.TranslationPath[0]
+			if step.Record.ID != "gateway-address-translation" || step.Record.SchemaVersion != 3 || step.Direction != "Forward" {
+				t.Fatalf("translated join path = %#v", join.TranslationPath)
+			}
+		default:
+			t.Fatalf("unexpected join method: %#v", join)
 		}
 		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.KeyFingerprint)
 		if joinIdentities[identity] {
@@ -77,9 +99,12 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 		}
 	}
 	for candidate, fingerprints := range fingerprintsByCandidate {
-		if len(fingerprints) != 2 {
-			t.Fatalf("candidate %q fingerprints = %#v, want two distinct join explanations", candidate, fingerprints)
+		if len(fingerprints) != 4 {
+			t.Fatalf("candidate %q fingerprints = %#v, want four distinct join explanations", candidate, fingerprints)
 		}
+	}
+	if methodCounts["Request ID"] != 4 || methodCounts["Declared identity and time window"] != 2 || methodCounts["Translated tuple and time window"] != 2 {
+		t.Fatalf("join methods = %#v", methodCounts)
 	}
 	if len(got.Affected) != 2 || got.Affected[0].Name != "Checkout API" || got.Affected[1].Name != "Payments" {
 		t.Fatalf("affected = %#v", got.Affected)

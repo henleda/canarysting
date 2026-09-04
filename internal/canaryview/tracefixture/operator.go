@@ -47,16 +47,43 @@ func OperatorConflict() (trace.Trace, error) {
 		return trace.Trace{}, err
 	}
 	requestIDs := []correlation.OpaqueID{requestID, secondRequestID}
+	before, err := correlation.NewNetworkTuple(correlation.ProtocolTCP, digest("external-client"), 44321, digest("edge-address"), 443)
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	after, err := correlation.NewNetworkTuple(correlation.ProtocolTCP, digest("gateway-address"), 53001, digest("service-address"), 8443)
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	control, err := model.NewControlIdentity("fixture-nat-gateway", "NAT_GATEWAY")
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	translationTime, err := correlation.NewEventTime(fixtureTime.Add(500*time.Millisecond), 0)
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	translationRef, err := reference("gateway-address-translation")
+	if err != nil {
+		return trace.Trace{}, err
+	}
+	translation, err := correlation.NewTranslation(correlation.TranslationInput{
+		Reference: translationRef, Scope: scope, Before: before, After: after,
+		Control: control, ObservedAt: translationTime, Synthetic: synthetic,
+	})
+	if err != nil {
+		return trace.Trace{}, err
+	}
 
-	anchor, err := record("gateway-request", model.CurrentSchemaVersion, scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestIDs)
+	anchor, err := record("gateway-request", model.CurrentSchemaVersion, scope, synthetic, fixtureTime, 250*time.Millisecond, before, []model.EntityReference{checkout, payments}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	allow, err := record("cilium-policy-allow", model.CurrentSchemaVersion, scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestIDs)
+	allow, err := record("cilium-policy-allow", model.CurrentSchemaVersion, scope, synthetic, fixtureTime.Add(time.Second), 0, after, []model.EntityReference{payments}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	deny, err := record("cilium-policy-allow", model.CurrentSchemaVersion+1, scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestIDs)
+	deny, err := record("cilium-policy-allow", model.CurrentSchemaVersion+1, scope, synthetic, fixtureTime.Add(2*time.Second), 0, after, []model.EntityReference{payments}, requestIDs)
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -65,7 +92,7 @@ func OperatorConflict() (trace.Trace, error) {
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	result, err := engine.Correlate(anchor, []correlation.Record{deny, allow}, nil)
+	result, err := engine.Correlate(anchor, []correlation.Record{deny, allow}, []correlation.Translation{translation})
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -137,7 +164,7 @@ func OperatorConflict() (trace.Trace, error) {
 	})
 }
 
-func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestIDs []correlation.OpaqueID) (correlation.Record, error) {
+func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, tuple correlation.NetworkTuple, identities []model.EntityReference, requestIDs []correlation.OpaqueID) (correlation.Record, error) {
 	ref, err := model.NewRecordReference(id, schemaVersion)
 	if err != nil {
 		return correlation.Record{}, err
@@ -148,7 +175,7 @@ func record(id string, schemaVersion uint32, scope model.Scope, synthetic model.
 	}
 	return correlation.NewRecord(correlation.RecordInput{
 		Reference: ref, Scope: scope, Vantage: correlation.SourceVantageGeneral,
-		Time: &eventTime, Identities: identities, RequestIDs: requestIDs,
+		Time: &eventTime, Tuple: &tuple, Identities: identities, RequestIDs: requestIDs,
 		Synthetic: synthetic,
 	})
 }

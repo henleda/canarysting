@@ -302,15 +302,29 @@ func executeProof(runID, scenarioID string) error {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
 	joinIdentities := make(map[string]bool)
+	translatedPathPresent := false
 	for _, join := range workspace.Explanation.Joins {
-		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.KeyFingerprint)
+		pathIdentity := ""
+		for _, step := range join.TranslationPath {
+			pathIdentity += fmt.Sprintf(":%s:v%d:%s", step.Record.ID, step.Record.SchemaVersion, step.Direction)
+		}
+		identity := fmt.Sprintf("%s:v%d:%s:v%d:%s:%s:%s:%s%s", join.Anchor.ID, join.Anchor.SchemaVersion, join.Candidate.ID, join.Candidate.SchemaVersion, join.Method, join.Strength, join.KeyFingerprint, join.TimeGap+":"+join.Window, pathIdentity)
 		if join.KeyFingerprint == "" || joinIdentities[identity] {
 			return fmt.Errorf("operator trace collapsed a canonical join explanation")
 		}
+		if join.Method == "Request ID" && (join.TimeGap != "" || join.Window != "" || len(join.TranslationPath) != 0) {
+			return fmt.Errorf("operator trace invented context for an exact identifier join")
+		}
+		if join.Method == "Translated tuple and time window" {
+			if join.TimeGap == "" || join.Window == "" || len(join.TranslationPath) == 0 {
+				return fmt.Errorf("operator trace omitted translated join context")
+			}
+			translatedPathPresent = true
+		}
 		joinIdentities[identity] = true
 	}
-	if len(joinIdentities) != 4 {
-		return fmt.Errorf("operator trace join explanations = %d, want 4", len(joinIdentities))
+	if len(joinIdentities) != 8 || !translatedPathPresent {
+		return fmt.Errorf("operator trace join explanations = %d translated_path=%t, want 8/true", len(joinIdentities), translatedPathPresent)
 	}
 	rawReferenceMetadataPresent := false
 	supportingContext, versionedSupportingContext, contradictingContext := false, false, false

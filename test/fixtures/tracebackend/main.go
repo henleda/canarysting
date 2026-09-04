@@ -30,6 +30,8 @@ const (
 	heldWithoutHoldID  = "trace:sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	duplicateHoldID    = "trace:sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	invalidJoinID      = "trace:sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	invalidJoinTimeID  = "trace:sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	duplicateJoinID    = "trace:sha256:6666666666666666666666666666666666666666666666666666666666666666"
 )
 
 type fixtureSource struct {
@@ -74,6 +76,18 @@ func main() {
 	invalidJoinProjection := views.ProjectTrace(value)
 	invalidJoinProjection.TraceID = invalidJoinID
 	invalidJoinProjection.Explanation.Joins[0].KeyFingerprint = ""
+	invalidJoinTimeProjection := views.ProjectTrace(value)
+	invalidJoinTimeProjection.TraceID = invalidJoinTimeID
+	for index := range invalidJoinTimeProjection.Explanation.Joins {
+		if invalidJoinTimeProjection.Explanation.Joins[index].Method == "Request ID" {
+			invalidJoinTimeProjection.Explanation.Joins[index].TimeGap = "0s"
+			invalidJoinTimeProjection.Explanation.Joins[index].Window = "0s"
+			break
+		}
+	}
+	duplicateJoinProjection := views.ProjectTrace(value)
+	duplicateJoinProjection.TraceID = duplicateJoinID
+	duplicateJoinProjection.Explanation.Joins = append(duplicateJoinProjection.Explanation.Joins, duplicateJoinProjection.Explanation.Joins[0])
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -92,6 +106,8 @@ func main() {
 			"held_without_hold_id": heldWithoutHoldID,
 			"duplicate_hold_id":    duplicateHoldID,
 			"invalid_join_id":      invalidJoinID,
+			"invalid_join_time_id": invalidJoinTimeID,
+			"duplicate_join_id":    duplicateJoinID,
 		})
 	})
 	mux.HandleFunc("GET /api/traces/"+malformedTraceID, func(w http.ResponseWriter, _ *http.Request) {
@@ -125,6 +141,14 @@ func main() {
 	mux.HandleFunc("GET /api/traces/"+invalidJoinID, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(invalidJoinProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+invalidJoinTimeID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(invalidJoinTimeProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+duplicateJoinID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(duplicateJoinProjection)
 	})
 	mux.Handle("/", productionHandler)
 

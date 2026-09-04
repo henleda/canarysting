@@ -12,6 +12,8 @@ type FixtureIDs = {
   held_without_hold_id: string;
   duplicate_hold_id: string;
   invalid_join_id: string;
+  invalid_join_time_id: string;
+  duplicate_join_id: string;
 };
 
 async function fixtureIDs(request: APIRequestContext): Promise<FixtureIDs> {
@@ -44,15 +46,28 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   const projectedJSON = await (await projectedResponse).json() as {
     trace_id?: string;
     scenario_id?: string;
-    explanation?: { joins?: Array<{ candidate?: { id?: string; schema_version?: number }; key_fingerprint?: string }> };
+    explanation?: { joins?: Array<{
+      candidate?: { id?: string; schema_version?: number };
+      method?: string;
+      key_fingerprint?: string;
+      time_gap?: string;
+      window?: string;
+      translation_path?: Array<{ record?: { id?: string; schema_version?: number }; direction?: string }>;
+    }> };
   };
   expect(projectedJSON.trace_id).toBe(ids.trace_id);
   expect(projectedJSON.scenario_id).toBe('m2b5-operator-conflict');
   const projectedJoins = projectedJSON.explanation?.joins ?? [];
-  expect(projectedJoins).toHaveLength(4);
+  expect(projectedJoins).toHaveLength(8);
   const identities = projectedJoins.map((join) => `${join.candidate?.id}:v${join.candidate?.schema_version}:${join.key_fingerprint}`);
-  expect(new Set(identities).size).toBe(4);
+  expect(new Set(identities).size).toBe(8);
   expect(projectedJoins.every((join) => Boolean(join.key_fingerprint))).toBeTruthy();
+  const requestJoins = projectedJoins.filter((join) => join.method === 'Request ID');
+  expect(requestJoins).toHaveLength(4);
+  expect(requestJoins.every((join) => join.time_gap === undefined && join.window === undefined)).toBeTruthy();
+  const translatedJoins = projectedJoins.filter((join) => join.method === 'Translated tuple and time window');
+  expect(translatedJoins).toHaveLength(2);
+  expect(translatedJoins.every((join) => join.time_gap && join.window === '2m0s' && join.translation_path?.length === 1)).toBeTruthy();
 
   await expect(page.getByRole('heading', { level: 1, name: 'Conflicting evidence across Checkout API and Payments' })).toBeVisible();
   await expect(page.getByRole('status')).toHaveText(/Security trace loaded: Conflicting evidence across Checkout API and Payments/);
@@ -66,9 +81,15 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.getByText('Partial coverage', { exact: true })).toBeVisible();
   await expect(page.getByText('Conflicting evidence', { exact: true })).toBeVisible();
   await expect(page.getByText('This workspace is read-only and cannot trigger or change a response.')).toBeVisible();
-  await expect(page.locator('.trace-joins > li')).toHaveCount(4);
+  await expect(page.locator('.trace-joins > li')).toHaveCount(8);
   await page.getByText('Technical citations').first().click();
   await expect(page.getByText('Key fingerprint', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Not used by this method', { exact: true }).first()).toBeVisible();
+  const translatedJoin = page.locator('.trace-joins > li').filter({ hasText: 'Translated tuple and time window' }).first();
+  await translatedJoin.getByText('Technical citations').click();
+  await expect(translatedJoin.getByText(/(?:750ms|1\.75s) gap · 2m0s window/, { exact: true })).toBeVisible();
+  await expect(translatedJoin.getByText('Translation path', { exact: true })).toBeVisible();
+  await expect(translatedJoin.getByText('gateway-address-translation · schema v3 · Forward', { exact: true })).toBeVisible();
 
   await page.getByText('Trace lifecycle and technical scope').click();
   await expect(page.locator('.trace-lifecycle').getByText('Legal hold', { exact: true })).toBeVisible();
@@ -160,6 +181,16 @@ for (const terminal of [
   },
   {
     id: 'invalid_join_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'invalid_join_time_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'duplicate_join_id' as const,
     heading: 'Security trace could not be read',
     nextStep: 'check the dashboard-backend trace route and projection logs',
   },

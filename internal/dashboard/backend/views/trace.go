@@ -98,8 +98,8 @@ type TraceJoinView struct {
 	Method          string                     `json:"method"`
 	Strength        string                     `json:"strength"`
 	KeyFingerprint  string                     `json:"key_fingerprint"`
-	TimeGap         string                     `json:"time_gap"`
-	Window          string                     `json:"window"`
+	TimeGap         string                     `json:"time_gap,omitempty"`
+	Window          string                     `json:"window,omitempty"`
 	TranslationPath []TraceTranslationStepView `json:"translation_path"`
 	Citations       []TraceReferenceView       `json:"citations"`
 	Selected        bool                       `json:"selected"`
@@ -279,7 +279,8 @@ func projectTraceJoins(values []trace.CorrelationSet) ([]TraceJoinView, []string
 		chosen, hasChosen := set.Chosen()
 		for _, candidate := range set.Candidates() {
 			for _, explanation := range candidate.Explanations() {
-				method := joinMethodLabel(explanation.Method())
+				joinMethod := explanation.Method()
+				method := joinMethodLabel(joinMethod)
 				methodSet[method] = true
 				citations := make([]TraceReferenceView, 0, len(explanation.Citations()))
 				for _, citation := range explanation.Citations() {
@@ -291,13 +292,17 @@ func projectTraceJoins(values []trace.CorrelationSet) ([]TraceJoinView, []string
 						Record: traceReferenceView(step.Reference()), Direction: displayEnum(string(step.Direction())),
 					})
 				}
-				joins = append(joins, TraceJoinView{
+				projected := TraceJoinView{
 					Anchor: traceReferenceView(set.Anchor()), Candidate: traceReferenceView(candidate.Reference()), Method: method,
 					Strength: displayEnum(string(explanation.Strength())), KeyFingerprint: explanation.KeyFingerprint(),
-					TimeGap: explanation.TimeGap().String(), Window: explanation.Window().String(),
 					TranslationPath: translationPath, Citations: citations,
 					Selected: hasChosen && chosen == candidate.Reference(), Ambiguous: set.Ambiguous() || candidate.TranslationPathAmbiguous(),
-				})
+				}
+				if timeQualifiedJoin(joinMethod) {
+					projected.TimeGap = explanation.TimeGap().String()
+					projected.Window = explanation.Window().String()
+				}
+				joins = append(joins, projected)
 			}
 		}
 	}
@@ -307,6 +312,10 @@ func projectTraceJoins(values []trace.CorrelationSet) ([]TraceJoinView, []string
 	}
 	sort.Strings(methods)
 	return joins, methods
+}
+
+func timeQualifiedJoin(method correlation.JoinMethod) bool {
+	return method == correlation.JoinVerifiedIdentity || method == correlation.JoinDeclaredIdentity || method == correlation.JoinTupleTime || method == correlation.JoinTranslatedTuple
 }
 
 func projectTraceMissing(values []trace.MissingTelemetry) []TraceGapView {

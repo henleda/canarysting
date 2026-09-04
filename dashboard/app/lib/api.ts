@@ -162,6 +162,16 @@ function aggregateTimeFields(uncertainty: unknown, window: unknown): boolean {
     : oneOf(uncertainty, ['Exact', 'Unknown']) && window === undefined;
 }
 
+function joinTiming(method: unknown, gap: unknown, window: unknown): boolean {
+  const timeQualified = oneOf(method, ['Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']);
+  return timeQualified ? duration(gap) && positiveDuration(window) : gap === undefined && window === undefined;
+}
+
+function translationPath(method: unknown, value: unknown): boolean {
+  if (!Array.isArray(value) || !value.every((step) => record(step) && traceReference(step.record) && oneOf(step.direction, ['Forward', 'Reverse']))) return false;
+  return method === 'Translated tuple and time window' ? value.length > 0 : value.length === 0;
+}
+
 function identity(value: unknown): boolean {
   return record(value) && nonEmptyString(value.id) && nonEmptyString(value.kind) && nonEmptyString(value.name) &&
     oneOf(value.assertion_mode, ['Observed', 'Declared', 'Verified', 'Inferred']) && boolean(value.verified) &&
@@ -171,6 +181,18 @@ function identity(value: unknown): boolean {
 function traceReference(value: unknown): boolean {
   return record(value) && nonEmptyString(value.id) && number(value.schema_version) &&
     Number.isInteger(value.schema_version) && value.schema_version > 0;
+}
+
+function joinIdentity(value: unknown): string {
+  if (!record(value)) return '';
+  const referenceIdentity = (candidate: unknown) => record(candidate) ? `${String(candidate.id)}:v${String(candidate.schema_version)}` : '';
+  const path = Array.isArray(value.translation_path)
+    ? value.translation_path.map((step) => record(step) ? [referenceIdentity(step.record), String(step.direction)] : [])
+    : [];
+  return JSON.stringify([
+    referenceIdentity(value.anchor), referenceIdentity(value.candidate), value.method, value.strength,
+    value.key_fingerprint, value.time_gap ?? 'not-used', value.window ?? 'not-used', path,
+  ]);
 }
 
 function evidenceReference(value: unknown): boolean {
@@ -230,10 +252,11 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
     nonEmptyString(explanation.claim) && nonEmptyString(explanation.reason) && strings(explanation.methods) && explanation.methods.every(nonEmptyString) &&
     Array.isArray(explanation.joins) && explanation.joins.every((join) => record(join) && traceReference(join.anchor) &&
       traceReference(join.candidate) && oneOf(join.method, ['Request ID', 'Vendor transaction ID', 'Socket cookie', 'OpenTelemetry trace and span ID', 'OpenTelemetry trace ID', 'Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']) &&
-      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && string(join.key_fingerprint) && correlationKeyPattern.test(join.key_fingerprint) && duration(join.time_gap) && duration(join.window) &&
-      Array.isArray(join.translation_path) && join.translation_path.every((step) => record(step) && traceReference(step.record) && oneOf(step.direction, ['Forward', 'Reverse'])) &&
+      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && string(join.key_fingerprint) && correlationKeyPattern.test(join.key_fingerprint) && joinTiming(join.method, join.time_gap, join.window) &&
+      translationPath(join.method, join.translation_path) &&
       Array.isArray(join.citations) && join.citations.length > 0 && join.citations.every(traceReference) &&
       boolean(join.selected) && boolean(join.ambiguous)) &&
+    new Set(explanation.joins.map(joinIdentity)).size === explanation.joins.length &&
     Array.isArray(value.missing) && value.missing.every((gap) => record(gap) &&
       oneOf(gap.kind, ['OBSERVATION', 'POLICY_DECISION', 'SOURCE_TIME', 'RAW_EVIDENCE', 'CORRELATION']) && nonEmptyString(gap.label) &&
       optionalAbsentOr(gap.record, traceReference) && optionalAbsentOr(gap.availability, (candidate) => oneOf(candidate, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch'])) && nonEmptyString(gap.next_step)) &&

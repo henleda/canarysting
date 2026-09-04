@@ -25,8 +25,11 @@ function formatReference(value: TraceReferenceView): string {
 }
 
 function joinKey(join: TraceWorkspaceView['explanation']['joins'][number]): string {
-  const path = join.translation_path.map((step) => `${referenceKey(step.record)}:${step.direction}`).join('>');
-  return `${referenceKey(join.anchor)}:${referenceKey(join.candidate)}:${join.method}:${join.strength}:${join.key_fingerprint}:${join.time_gap}:${join.window}:${path}`;
+  const path = join.translation_path.map((step) => [referenceKey(step.record), step.direction]);
+  return JSON.stringify([
+    referenceKey(join.anchor), referenceKey(join.candidate), join.method, join.strength,
+    join.key_fingerprint, join.time_gap ?? 'not-used', join.window ?? 'not-used', path,
+  ]);
 }
 
 export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
@@ -136,7 +139,9 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
                   <summary>Technical citations</summary>
                   <dl className="trace-join-technical">
                     <div><dt>Key fingerprint</dt><dd><code>{join.key_fingerprint}</code></dd></div>
-                    <div><dt>Timing</dt><dd>{join.time_gap} gap · {join.window} window</dd></div>
+                    {join.time_gap && join.window
+                      ? <div><dt>Timing</dt><dd>{join.time_gap} gap · {join.window} window</dd></div>
+                      : <div><dt>Timing</dt><dd>Not used by this method</dd></div>}
                     <div><dt>Citations</dt><dd><code>{join.citations.map(formatReference).join(' → ')}</code></dd></div>
                     {join.translation_path.length > 0 && <div><dt>Translation path</dt><dd>{join.translation_path.map((step) => `${formatReference(step.record)} · ${step.direction}`).join(' → ')}</dd></div>}
                   </dl>

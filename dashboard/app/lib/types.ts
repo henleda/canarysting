@@ -71,8 +71,8 @@ export interface TraceJoinView {
   method: string;
   strength: string;
   key_fingerprint: string;
-  time_gap: string;
-  window: string;
+  time_gap?: string;
+  window?: string;
   translation_path: TraceTranslationStepView[];
   citations: TraceReferenceView[];
   selected: boolean;
