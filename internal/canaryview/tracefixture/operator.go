@@ -125,6 +125,10 @@ func OperatorConflict() (trace.Trace, error) {
 	if err != nil {
 		return trace.Trace{}, err
 	}
+	secondaryConflictEvidence, err := model.NewEvidenceReference("evidence-policy-conflict-secondary", model.CurrentSchemaVersion, model.EvidenceContradicting, "", "")
+	if err != nil {
+		return trace.Trace{}, err
+	}
 
 	closedAt := fixtureTime.Add(time.Minute)
 	lifecycle, err := lifecycle(closedAt)
@@ -154,11 +158,18 @@ func OperatorConflict() (trace.Trace, error) {
 			{Kind: trace.ExpectCorrelation},
 			{Kind: trace.ExpectRawEvidence, Record: &anchorRef},
 		},
-		Conflicts: []trace.ConflictInput{{
-			Kind:     trace.ConflictContradictoryEvidence,
-			Records:  []model.RecordReference{allow.Reference(), deny.Reference()},
-			Evidence: []model.EvidenceReference{conflictEvidence},
-		}},
+		Conflicts: []trace.ConflictInput{
+			{
+				Kind:     trace.ConflictContradictoryEvidence,
+				Records:  []model.RecordReference{allow.Reference(), deny.Reference()},
+				Evidence: []model.EvidenceReference{conflictEvidence},
+			},
+			{
+				Kind:     trace.ConflictContradictoryEvidence,
+				Records:  []model.RecordReference{deny.Reference(), allow.Reference()},
+				Evidence: []model.EvidenceReference{secondaryConflictEvidence},
+			},
+		},
 		ClosedAt: closedAt, BuiltAt: closedAt.Add(time.Minute), HighWaterMark: highWater,
 		Lifecycle: lifecycle, Synthetic: synthetic,
 	})

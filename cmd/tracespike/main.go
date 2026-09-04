@@ -298,7 +298,7 @@ func executeProof(runID, scenarioID string) error {
 	if workspace.TraceID != operatorTrace.Envelope().RecordID() || workspace.WhatHappened == "" || workspace.Explanation.Claim == "" || workspace.Explanation.Reason == "" {
 		return fmt.Errorf("operator trace explanation is incomplete")
 	}
-	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 2 {
+	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 3 {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
 	joinIdentities := make(map[string]bool)
@@ -353,11 +353,12 @@ func executeProof(runID, scenarioID string) error {
 	if workspace.Confidence.TimeUncertainty != "Bounded" || workspace.Confidence.TimeWindow == "" || len(workspace.Hops) == 0 || workspace.Hops[0].TimeWindow == "" {
 		return fmt.Errorf("operator trace omitted time uncertainty")
 	}
-	conflictEvidencePresent := false
+	conflictEvidencePresent, secondaryConflictEvidencePresent := false, false
 	for _, conflict := range workspace.Conflicts {
 		conflictEvidencePresent = conflictEvidencePresent || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict" && conflict.Evidence[0].SchemaVersion == 3
+		secondaryConflictEvidencePresent = secondaryConflictEvidencePresent || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict-secondary" && conflict.Evidence[0].SchemaVersion == 3
 	}
-	if !conflictEvidencePresent {
+	if !conflictEvidencePresent || !secondaryConflictEvidencePresent {
 		return fmt.Errorf("operator trace conflict omitted its evidence reference")
 	}
 	if tracefixture.ScenarioID != operatorScenarioID || !workspace.Synthetic || workspace.ScenarioID != scenarioID || workspace.SafetyNote != "This workspace is read-only and cannot trigger or change a response." {

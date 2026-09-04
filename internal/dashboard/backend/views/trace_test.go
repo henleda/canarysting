@@ -119,7 +119,7 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	if !foundBrokenRaw {
 		t.Fatalf("broken raw gap missing: %#v", got.Missing)
 	}
-	if len(got.Conflicts) != 2 {
+	if len(got.Conflicts) != 3 {
 		t.Fatalf("conflicts = %#v", got.Conflicts)
 	}
 	if len(got.Evidence) < 1 || !got.Evidence[0].Raw || got.Evidence[0].Availability != "Integrity mismatch" {
@@ -140,12 +140,21 @@ func TestProjectTraceExplainsPartialConflictedJourney(t *testing.T) {
 	if !supporting || !versionedSupporting || !contradicting {
 		t.Fatalf("same-ID evidence contexts were not preserved: %#v", got.Evidence)
 	}
-	foundConflictEvidence := false
+	conflictEvidenceIDs := make(map[string]bool)
+	contradictoryRecordSet := ""
 	for _, conflict := range got.Conflicts {
-		foundConflictEvidence = foundConflictEvidence || len(conflict.Evidence) == 1 && conflict.Evidence[0].ID == "evidence-policy-conflict" && conflict.Evidence[0].SchemaVersion == 3
+		if conflict.Kind != "CONTRADICTORY_EVIDENCE" || len(conflict.Evidence) != 1 {
+			continue
+		}
+		recordSet := fmt.Sprint(conflict.Records)
+		if contradictoryRecordSet != "" && contradictoryRecordSet != recordSet {
+			t.Fatalf("same-evidence conflict records diverged: %#v", got.Conflicts)
+		}
+		contradictoryRecordSet = recordSet
+		conflictEvidenceIDs[fmt.Sprintf("%s:v%d", conflict.Evidence[0].ID, conflict.Evidence[0].SchemaVersion)] = true
 	}
-	if !foundConflictEvidence {
-		t.Fatalf("conflict evidence IDs = %#v", got.Conflicts)
+	if !conflictEvidenceIDs["evidence-policy-conflict:v3"] || !conflictEvidenceIDs["evidence-policy-conflict-secondary:v3"] || len(conflictEvidenceIDs) != 2 {
+		t.Fatalf("same-record conflict evidence identities = %#v", got.Conflicts)
 	}
 	rawBlob, err := json.Marshal(got.Evidence[0])
 	if err != nil {

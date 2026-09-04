@@ -195,6 +195,14 @@ function joinIdentity(value: unknown): string {
   ]);
 }
 
+function conflictIdentity(value: unknown): string {
+  if (!record(value)) return '';
+  const referenceIdentity = (candidate: unknown) => record(candidate) ? [String(candidate.id), String(candidate.schema_version)] : [];
+  const records = Array.isArray(value.records) ? value.records.map(referenceIdentity) : [];
+  const evidence = Array.isArray(value.evidence) ? value.evidence.map(referenceIdentity) : [];
+  return JSON.stringify([value.kind, records, evidence]);
+}
+
 function evidenceReference(value: unknown): boolean {
   if (!record(value) || !nonEmptyString(value.id) || !nonEmptyString(value.label) || !nonEmptyString(value.summary) ||
       !optionalAbsentOr(value.schema_version, (candidate) => number(candidate) && Number.isInteger(candidate) && candidate > 0) ||
@@ -264,6 +272,7 @@ function isTraceWorkspace(value: unknown): value is TraceWorkspace {
       oneOf(conflict.kind, ['AMBIGUOUS_CORRELATION', 'CONTRADICTORY_EVIDENCE', 'ORDERING_UNCERTAINTY']) &&
       nonEmptyString(conflict.label) && Array.isArray(conflict.records) && conflict.records.length >= 2 && conflict.records.every(traceReference) &&
       Array.isArray(conflict.evidence) && conflict.evidence.every(traceReference)) &&
+    new Set(value.conflicts.map(conflictIdentity)).size === value.conflicts.length &&
     Array.isArray(value.evidence) && value.evidence.every(evidenceReference) &&
     lifecycle.data_class === 'Correlated trace' && lifecycle.sensitivity === 'Confidential' &&
     oneOf(lifecycle.retention_profile, ['Lean', 'Standard', 'Regulated', 'Approved override']) &&

@@ -32,6 +32,14 @@ function joinKey(join: TraceWorkspaceView['explanation']['joins'][number]): stri
   ]);
 }
 
+function conflictKey(conflict: TraceWorkspaceView['conflicts'][number]): string {
+  return JSON.stringify([
+    conflict.kind,
+    conflict.records.map(referenceKey),
+    conflict.evidence.map(referenceKey),
+  ]);
+}
+
 export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
   const [selectedEvidence, setSelectedEvidence] = useState<TraceEvidenceView | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -204,7 +212,7 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
           ) : (
             <ul>
               {view.conflicts.map((conflict) => (
-                <li key={`${conflict.kind}:${conflict.records.map(referenceKey).join(':')}`}>
+                <li key={conflictKey(conflict)}>
                   <strong>{conflict.label}</strong>
                   <span>{plural(conflict.records.length, 'cited record')}</span>
                   <details>

@@ -14,6 +14,7 @@ type FixtureIDs = {
   invalid_join_id: string;
   invalid_join_time_id: string;
   duplicate_join_id: string;
+  duplicate_conflict_id: string;
 };
 
 async function fixtureIDs(request: APIRequestContext): Promise<FixtureIDs> {
@@ -54,6 +55,11 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
       window?: string;
       translation_path?: Array<{ record?: { id?: string; schema_version?: number }; direction?: string }>;
     }> };
+    conflicts?: Array<{
+      kind?: string;
+      records?: Array<{ id?: string; schema_version?: number }>;
+      evidence?: Array<{ id?: string; schema_version?: number }>;
+    }>;
   };
   expect(projectedJSON.trace_id).toBe(ids.trace_id);
   expect(projectedJSON.scenario_id).toBe('m2b5-operator-conflict');
@@ -68,6 +74,12 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   const translatedJoins = projectedJoins.filter((join) => join.method === 'Translated tuple and time window');
   expect(translatedJoins).toHaveLength(2);
   expect(translatedJoins.every((join) => join.time_gap && join.window === '2m0s' && join.translation_path?.length === 1)).toBeTruthy();
+  const contradictoryConflicts = (projectedJSON.conflicts ?? []).filter((conflict) => conflict.kind === 'CONTRADICTORY_EVIDENCE');
+  expect(contradictoryConflicts).toHaveLength(2);
+  const conflictRecordSets = contradictoryConflicts.map((conflict) => JSON.stringify(conflict.records));
+  expect(new Set(conflictRecordSets).size).toBe(1);
+  const conflictEvidenceSets = contradictoryConflicts.map((conflict) => JSON.stringify(conflict.evidence));
+  expect(new Set(conflictEvidenceSets).size).toBe(2);
 
   await expect(page.getByRole('heading', { level: 1, name: 'Conflicting evidence across Checkout API and Payments' })).toBeVisible();
   await expect(page.getByRole('status')).toHaveText(/Security trace loaded: Conflicting evidence across Checkout API and Payments/);
@@ -95,8 +107,13 @@ test('loads the canonical Go projection and explains a partial, conflicted trace
   await expect(page.locator('.trace-lifecycle').getByText('Legal hold', { exact: true })).toBeVisible();
   await expect(page.locator('.trace-lifecycle').getByText('None', { exact: true })).toBeVisible();
 
-  await page.getByText('Technical references').last().click();
-  await expect(page.getByText('evidence-policy-conflict · schema v3', { exact: true })).toBeVisible();
+  await expect(page.locator('.trace-conflict-card li')).toHaveCount(3);
+  const primaryConflict = page.locator('.trace-conflict-card li').filter({ has: page.getByText('evidence-policy-conflict · schema v3', { exact: true }) });
+  const secondaryConflict = page.locator('.trace-conflict-card li').filter({ has: page.getByText('evidence-policy-conflict-secondary · schema v3', { exact: true }) });
+  await primaryConflict.getByText('Technical references').click();
+  await secondaryConflict.getByText('Technical references').click();
+  await expect(primaryConflict.getByText('evidence-policy-conflict · schema v3', { exact: true })).toBeVisible();
+  await expect(secondaryConflict.getByText('evidence-policy-conflict-secondary · schema v3', { exact: true })).toBeVisible();
 
   const evidenceButton = page.getByRole('button', { name: 'View raw reference for Gateway Request' });
   await expect(evidenceButton).toBeVisible();
@@ -191,6 +208,11 @@ for (const terminal of [
   },
   {
     id: 'duplicate_join_id' as const,
+    heading: 'Security trace could not be read',
+    nextStep: 'check the dashboard-backend trace route and projection logs',
+  },
+  {
+    id: 'duplicate_conflict_id' as const,
     heading: 'Security trace could not be read',
     nextStep: 'check the dashboard-backend trace route and projection logs',
   },

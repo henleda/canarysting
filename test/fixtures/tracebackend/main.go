@@ -19,19 +19,20 @@ import (
 )
 
 const (
-	listenAddress      = "127.0.0.1:3102"
-	notFoundTraceID    = "trace:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	unavailableTraceID = "trace:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	malformedTraceID   = "trace:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	invalidEvidenceID  = "trace:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	invalidJSONID      = "trace:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	zeroCandidateID    = "trace:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	zeroDurationID     = "trace:sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	heldWithoutHoldID  = "trace:sha256:2222222222222222222222222222222222222222222222222222222222222222"
-	duplicateHoldID    = "trace:sha256:3333333333333333333333333333333333333333333333333333333333333333"
-	invalidJoinID      = "trace:sha256:4444444444444444444444444444444444444444444444444444444444444444"
-	invalidJoinTimeID  = "trace:sha256:5555555555555555555555555555555555555555555555555555555555555555"
-	duplicateJoinID    = "trace:sha256:6666666666666666666666666666666666666666666666666666666666666666"
+	listenAddress       = "127.0.0.1:3102"
+	notFoundTraceID     = "trace:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	unavailableTraceID  = "trace:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	malformedTraceID    = "trace:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	invalidEvidenceID   = "trace:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	invalidJSONID       = "trace:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	zeroCandidateID     = "trace:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	zeroDurationID      = "trace:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	heldWithoutHoldID   = "trace:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	duplicateHoldID     = "trace:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	invalidJoinID       = "trace:sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	invalidJoinTimeID   = "trace:sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	duplicateJoinID     = "trace:sha256:6666666666666666666666666666666666666666666666666666666666666666"
+	duplicateConflictID = "trace:sha256:7777777777777777777777777777777777777777777777777777777777777777"
 )
 
 type fixtureSource struct {
@@ -88,6 +89,9 @@ func main() {
 	duplicateJoinProjection := views.ProjectTrace(value)
 	duplicateJoinProjection.TraceID = duplicateJoinID
 	duplicateJoinProjection.Explanation.Joins = append(duplicateJoinProjection.Explanation.Joins, duplicateJoinProjection.Explanation.Joins[0])
+	duplicateConflictProjection := views.ProjectTrace(value)
+	duplicateConflictProjection.TraceID = duplicateConflictID
+	duplicateConflictProjection.Conflicts = append(duplicateConflictProjection.Conflicts, duplicateConflictProjection.Conflicts[0])
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -95,19 +99,20 @@ func main() {
 	mux.HandleFunc("GET /api/test/trace-fixture", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"trace_id":             value.Envelope().RecordID(),
-			"not_found_trace_id":   notFoundTraceID,
-			"unavailable_trace_id": unavailableTraceID,
-			"malformed_trace_id":   malformedTraceID,
-			"invalid_evidence_id":  invalidEvidenceID,
-			"invalid_json_id":      invalidJSONID,
-			"zero_candidate_id":    zeroCandidateID,
-			"zero_duration_id":     zeroDurationID,
-			"held_without_hold_id": heldWithoutHoldID,
-			"duplicate_hold_id":    duplicateHoldID,
-			"invalid_join_id":      invalidJoinID,
-			"invalid_join_time_id": invalidJoinTimeID,
-			"duplicate_join_id":    duplicateJoinID,
+			"trace_id":              value.Envelope().RecordID(),
+			"not_found_trace_id":    notFoundTraceID,
+			"unavailable_trace_id":  unavailableTraceID,
+			"malformed_trace_id":    malformedTraceID,
+			"invalid_evidence_id":   invalidEvidenceID,
+			"invalid_json_id":       invalidJSONID,
+			"zero_candidate_id":     zeroCandidateID,
+			"zero_duration_id":      zeroDurationID,
+			"held_without_hold_id":  heldWithoutHoldID,
+			"duplicate_hold_id":     duplicateHoldID,
+			"invalid_join_id":       invalidJoinID,
+			"invalid_join_time_id":  invalidJoinTimeID,
+			"duplicate_join_id":     duplicateJoinID,
+			"duplicate_conflict_id": duplicateConflictID,
 		})
 	})
 	mux.HandleFunc("GET /api/traces/"+malformedTraceID, func(w http.ResponseWriter, _ *http.Request) {
@@ -149,6 +154,10 @@ func main() {
 	mux.HandleFunc("GET /api/traces/"+duplicateJoinID, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(duplicateJoinProjection)
+	})
+	mux.HandleFunc("GET /api/traces/"+duplicateConflictID, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(duplicateConflictProjection)
 	})
 	mux.Handle("/", productionHandler)
 
