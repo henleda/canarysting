@@ -98,7 +98,7 @@ The operator can ask visually: why allowed, which controls observed it, what dis
 
 The first implemented slice projects one immutable correlated trace into a read-only workspace under **Flows**. It leads with a plain-language summary, separately labeled status and confidence, affected application/service identities, and an ordered observation/policy-decision timeline. The deterministic explanation is visible with zero clicks. Missing declared coverage and conflicting evidence have their own named sections, and every candidate join retains its cited records rather than selecting an unsupported path.
 
-An evidence control adjacent to the explanation opens the opaque source-owned raw reference in one click and shows availability, integrity, expiry, hold, residency, and separate model-use state without embedding the source payload. The fixture explicitly identifies itself as synthetic, the page identifies itself as read-only, and keyboard activation plus focus restoration are covered by Playwright. This is the M2B vertical slice, not the complete M4 incident/flow console: production scoped-query/authentication wiring, full source/control labels, cases, impact, recommendations, actions, graph alternatives, and broader navigation remain later tasks.
+An evidence control adjacent to the explanation opens the opaque source-owned raw reference in one activation and shows its availability and integrity without embedding the source payload or inventing a claim role. Trace expiry, hold, residency, and model-use state remain visible in a separately labeled trace-projection lifecycle section; they are not attributed to the independently governed source evidence. The fixture explicitly identifies itself as synthetic, the page identifies itself as read-only, and natural sequential keyboard activation plus focus restoration are covered by Playwright through the real Go projection, backend route, Next rewrite, and fetch path. This is the M2B vertical slice, not the complete M4 incident/flow console: production scoped-query/authentication wiring, full source/control labels, cases, impact, recommendations, actions, graph alternatives, and broader navigation remain later tasks.
 
 ## Canary recommendation workflow
 
@@ -209,6 +209,8 @@ Simple must not mean incomplete. Expanding detail keeps the selected claim and r
 
 Evidence is attached to claims, trace hops, impact statements, recommendations, and actions. The evidence drawer shows a safe summary, source/collector, source and observed time, assertion mode, confidence, correlation method, integrity/retention status, expiry, legal-hold state, lineage, model-use state, and supported/contradicted claims. Authorized users can reveal bounded raw evidence or follow a native reference without leaving the case context.
 
+Source-owned raw evidence and CanaryView projections retain independent lifecycle authority. A drawer must identify which object owns each expiry, hold, residency, and model-use value; a trace lifecycle must never be shown as the source evidence's lifecycle.
+
 Conflicts and missing evidence are first-class, not small-print warnings. Expired/unavailable raw evidence leaves its provenance and availability state visible.
 
 ## AI transparency and trust
@@ -296,7 +298,7 @@ The hold workspace shows the next review deadline and overdue state. Lean/Standa
 
 Lifecycle states are explicit: Active, Expiry due, Held, Deletion pending, Deleted, Invalidated, and Deletion failed. A failed deletion shows affected scope, protected copies/indexes still present, retry state, operator impact, and a named next step. “Expired” is never displayed as “deleted,” and source-system deletion is never presented as CanaryView deletion.
 
-Data-lifecycle transparency follows the object. From a claim or evidence item, one click shows data class, sensitivity, source ownership, raw-reference availability, snapshot/redaction status, expiry, legal hold, residency, encryption-key boundary identifier, lineage, model-use policy, and deletion/invalidation behavior. Broken source references are labeled expired, deleted, inaccessible, moved, or integrity-mismatched, and their effect on confidence is explained.
+Data-lifecycle transparency follows the object. From a claim or evidence item, one click shows data class, sensitivity, source ownership, raw-reference availability, snapshot/redaction status, and the selected object's expiry, legal hold, residency, encryption-key boundary identifier, lineage, model-use policy, and deletion/invalidation behavior. When the source object is independently governed and only a reference is retained, the interface says so and does not substitute the trace projection's lifecycle. Broken source references are labeled expired, deleted, inaccessible, moved, or integrity-mismatched, and their effect on confidence is explained.
 
 The same drawer shows source timestamp, collector-observed timestamp, trusted retention-start basis, policy/override version, original and current expiry, lifecycle state, deletion/invalidated descendants, and any minimum-snapshot trigger/authorizer. It never reveals credential material, actual canary values, authorization headers, or unredacted request bodies.
 

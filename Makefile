@@ -112,7 +112,7 @@ selfcheck:
 	$(GO) run ./cmd/sting-selfcheck
 	$(GO) run ./cmd/envoy-selfcheck
 
-## frontend-check: lint, build, and run fixture-driven Playwright journeys
+## frontend-check: lint, build, and run Go-projected Playwright journeys
 .PHONY: frontend-check
 frontend-check:
 	@command -v $(NPM) >/dev/null 2>&1 || { echo "frontend-check: npm not found — install Node.js/npm first."; exit 1; }
@@ -238,7 +238,7 @@ check-dgx:
 ## check-dgx-smoke: run one risk-selected DGX profile with one preflight/build/transfer (requires explicit values)
 .PHONY: check-dgx-smoke
 check-dgx-smoke:
-	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|cookie|enforcement|kernel-full|stack> is required"; exit 2; }
+	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|cookie|enforcement|kernel-full|stack|correlation|trace> is required"; exit 2; }
 	@test -n "$(RUN_ID)" || { echo "check-dgx-smoke: RUN_ID=<bounded-run-id> is required"; exit 2; }
 	scripts/dgx/pr.sh --profile "$(DGX_PROFILE)" --run-id "$(RUN_ID)"
 

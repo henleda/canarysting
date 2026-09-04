@@ -61,3 +61,30 @@ func TestSelfHostedDGXJobsDoNotUploadControllerGoCache(t *testing.T) {
 		}
 	}
 }
+
+func TestPRDGXRunsEveryMappedProfile(t *testing.T) {
+	workflowBytes, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(workflowBytes)
+	start := strings.Index(workflow, "\n  pr-dgx:\n")
+	end := strings.Index(workflow, "\n  pr-gate:\n")
+	if start < 0 || end <= start {
+		t.Fatal("workflow PR DGX job boundaries are missing")
+	}
+	job := workflow[start:end]
+	if !strings.Contains(job, "dgx-trace) selected='trace' ;;") {
+		t.Fatal("PR DGX job does not route dgx-trace to the trace coordinator profile")
+	}
+	for _, required := range []string{
+		`IFS=',' read -ra required_profiles`,
+		`for required in "${required_profiles[@]}"`,
+		`for selected in ${SELECTED_PROFILES}`,
+		`RUN_ID="pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}-${index}"`,
+	} {
+		if !strings.Contains(job, required) {
+			t.Fatalf("PR DGX job does not preserve and run every required profile; missing %q", required)
+		}
+	}
+}

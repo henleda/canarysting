@@ -27,6 +27,8 @@ export interface TraceConfidenceView {
   source_quality: string;
   identity_assurance: string;
   candidate_count: number;
+  time_uncertainty: string;
+  time_window?: string;
   human_review: string;
 }
 
@@ -52,6 +54,8 @@ export interface TraceHopView {
   label: string;
   at?: string;
   time_status: string;
+  time_uncertainty: string;
+  time_window?: string;
   identities: TraceIdentityView[];
   evidence_count: number;
 }
@@ -92,7 +96,7 @@ export interface TraceEvidenceView {
   id: string;
   label: string;
   summary: string;
-  role: string;
+  role?: string;
   hop_record_id?: string;
   raw: boolean;
   source_owned: boolean;

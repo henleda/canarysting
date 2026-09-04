@@ -24,6 +24,8 @@ import (
 
 var safeID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,94}[a-z0-9])?$`)
 
+const operatorScenarioID = "m2b5-operator-conflict"
+
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "tracespike: %v\n", err)
@@ -52,6 +54,9 @@ func run(args []string, output io.Writer) error {
 	if !safeID.MatchString(*scenarioID) || len(*scenarioID) > 96 {
 		return fmt.Errorf("scenario ID must be 1-96 lowercase alphanumeric/hyphen characters")
 	}
+	if *scenarioID != operatorScenarioID {
+		return fmt.Errorf("scenario ID must be %q", operatorScenarioID)
+	}
 	if output == nil {
 		return fmt.Errorf("proof output is required")
 	}
@@ -67,7 +72,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF lifecycle=PASS held_visible=true expired_hidden=true",
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
-		"PROOF operator_workspace=PASS explanation_zero_click=true raw_reference_available=true partial_conflict_explicit=true",
+		"PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=2",
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -296,17 +301,31 @@ func executeProof(runID, scenarioID string) error {
 	if workspace.Status.Code != string(trace.StatusConflicted) || len(workspace.Missing) != 2 || len(workspace.Conflicts) != 2 {
 		return fmt.Errorf("operator trace partial/conflicting state is not explicit")
 	}
-	rawReferenceAvailable := false
+	rawReferenceMetadataPresent := false
+	supportingContext, contradictingContext := false, false
 	for _, evidence := range workspace.Evidence {
-		if evidence.Raw && evidence.SourceOwned && evidence.Reference != "" {
-			rawReferenceAvailable = true
-			break
+		if evidence.Raw && evidence.SourceOwned && evidence.Reference != "" && evidence.Role == "" && evidence.Availability == "Integrity mismatch" && evidence.HashAlgorithm != "" && evidence.HashValue != "" {
+			rawReferenceMetadataPresent = true
+		}
+		if evidence.ID == "evidence-policy-conflict" {
+			supportingContext = supportingContext || evidence.Role == "Supporting" && evidence.HopRecordID == "cilium-policy-allow"
+			contradictingContext = contradictingContext || evidence.Role == "Contradicting" && evidence.HopRecordID == ""
 		}
 	}
-	if !rawReferenceAvailable {
-		return fmt.Errorf("operator trace omitted its source-owned raw reference")
+	if !rawReferenceMetadataPresent || !supportingContext || !contradictingContext {
+		return fmt.Errorf("operator trace omitted raw-reference metadata or evidence-role context")
 	}
-	if !workspace.Synthetic || workspace.ScenarioID != tracefixture.ScenarioID || workspace.SafetyNote != "This workspace is read-only and cannot trigger or change a response." {
+	if workspace.Confidence.TimeUncertainty != "Bounded" || workspace.Confidence.TimeWindow == "" || len(workspace.Hops) == 0 || workspace.Hops[0].TimeWindow == "" {
+		return fmt.Errorf("operator trace omitted time uncertainty")
+	}
+	conflictEvidencePresent := false
+	for _, conflict := range workspace.Conflicts {
+		conflictEvidencePresent = conflictEvidencePresent || len(conflict.EvidenceIDs) == 1 && conflict.EvidenceIDs[0] == "evidence-policy-conflict"
+	}
+	if !conflictEvidencePresent {
+		return fmt.Errorf("operator trace conflict omitted its evidence reference")
+	}
+	if tracefixture.ScenarioID != operatorScenarioID || !workspace.Synthetic || workspace.ScenarioID != scenarioID || workspace.SafetyNote != "This workspace is read-only and cannot trigger or change a response." {
 		return fmt.Errorf("operator trace safety or synthetic provenance is incomplete")
 	}
 	return nil

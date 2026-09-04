@@ -46,6 +46,8 @@ type TraceConfidenceView struct {
 	SourceQuality     string `json:"source_quality"`
 	IdentityAssurance string `json:"identity_assurance"`
 	CandidateCount    uint32 `json:"candidate_count"`
+	TimeUncertainty   string `json:"time_uncertainty"`
+	TimeWindow        string `json:"time_window,omitempty"`
 	HumanReview       string `json:"human_review"`
 }
 
@@ -66,13 +68,15 @@ type TraceIdentityView struct {
 }
 
 type TraceHopView struct {
-	RecordID      string              `json:"record_id"`
-	Kind          string              `json:"kind"`
-	Label         string              `json:"label"`
-	At            string              `json:"at,omitempty"`
-	TimeStatus    string              `json:"time_status"`
-	Identities    []TraceIdentityView `json:"identities"`
-	EvidenceCount int                 `json:"evidence_count"`
+	RecordID        string              `json:"record_id"`
+	Kind            string              `json:"kind"`
+	Label           string              `json:"label"`
+	At              string              `json:"at,omitempty"`
+	TimeStatus      string              `json:"time_status"`
+	TimeUncertainty string              `json:"time_uncertainty"`
+	TimeWindow      string              `json:"time_window,omitempty"`
+	Identities      []TraceIdentityView `json:"identities"`
+	EvidenceCount   int                 `json:"evidence_count"`
 }
 
 type TraceExplanationView struct {
@@ -111,7 +115,7 @@ type TraceEvidenceView struct {
 	ID            string `json:"id"`
 	Label         string `json:"label"`
 	Summary       string `json:"summary"`
-	Role          string `json:"role"`
+	Role          string `json:"role,omitempty"`
 	HopRecordID   string `json:"hop_record_id,omitempty"`
 	Raw           bool   `json:"raw"`
 	SourceOwned   bool   `json:"source_owned"`
@@ -179,6 +183,7 @@ func ProjectTrace(value trace.Trace) TraceWorkspace {
 			Level: displayEnum(string(confidence.Level())), Method: displayEnum(string(confidence.Method())),
 			Completeness: displayEnum(string(confidence.Completeness())), SourceQuality: displayEnum(string(confidence.SourceQuality())),
 			IdentityAssurance: displayEnum(string(confidence.IdentityAssurance())), CandidateCount: confidence.CandidateCount(),
+			TimeUncertainty: displayEnum(string(confidence.TimeUncertainty())), TimeWindow: durationIfPositive(confidence.TimeWindow()),
 			HumanReview: displayEnum(string(confidence.HumanReview())),
 		},
 		Scope: TraceScopeView{
@@ -191,7 +196,7 @@ func ProjectTrace(value trace.Trace) TraceWorkspace {
 		Lifecycle: TraceLifecycleView{
 			DataClass: displayEnum(string(lifecycle.DataClass())), Sensitivity: displayEnum(string(lifecycle.Sensitivity())),
 			RetentionProfile: displayEnum(string(lifecycle.RetentionProfile())), State: displayEnum(string(lifecycle.State())),
-			ExpiresAt: lifecycle.ExpiresAt().Format(time.RFC3339), LegalHoldIDs: lifecycle.LegalHoldIDs(),
+			ExpiresAt: lifecycle.ExpiresAt().Format(time.RFC3339), LegalHoldIDs: nonNilStrings(lifecycle.LegalHoldIDs()),
 			ResidencyPolicyRef: lifecycle.ResidencyPolicyRef(), EncryptionBoundary: lifecycle.EncryptionKeyRef(),
 			PerTenantModelUse: lifecycle.PerTenantModelUse().Allowed(), CrossTenantModelUse: lifecycle.CrossTenantModelUse().Allowed(),
 		},
@@ -211,14 +216,20 @@ func projectTraceHops(values []trace.Hop) []TraceHopView {
 				AssertionMode: displayEnum(string(identity.AssertionMode())), Verified: verified,
 			})
 		}
-		at, timeStatus := "", "Source time missing"
+		at, timeStatus, timeUncertainty, timeWindow := "", "Source time missing", "Unknown", ""
 		if eventTime, ok := value.Time(); ok {
-			at, timeStatus = eventTime.At().Format(time.RFC3339Nano), "Source time present"
+			at = eventTime.At().Format(time.RFC3339Nano)
+			if eventTime.Uncertainty() == 0 {
+				timeStatus, timeUncertainty = "Exact source time", "Exact"
+			} else {
+				timeStatus, timeUncertainty, timeWindow = "Bounded source time", "Bounded", eventTime.Uncertainty().String()
+			}
 		}
 		_, hasRaw := value.RawEvent()
 		result = append(result, TraceHopView{
 			RecordID: value.Reference().ID(), Kind: displayEnum(string(value.Kind())), Label: humanizeIdentifier(value.Reference().ID()),
-			At: at, TimeStatus: timeStatus, Identities: identities, EvidenceCount: len(value.Evidence()) + boolInt(hasRaw),
+			At: at, TimeStatus: timeStatus, TimeUncertainty: timeUncertainty, TimeWindow: timeWindow,
+			Identities: identities, EvidenceCount: len(value.Evidence()) + boolInt(hasRaw),
 		})
 	}
 	return result
@@ -313,43 +324,47 @@ func projectTraceConflicts(values []trace.Conflict) []TraceConflictView {
 
 func projectTraceEvidence(hops []trace.Hop, conflicts []trace.Conflict) []TraceEvidenceView {
 	result := make([]TraceEvidenceView, 0)
-	seen := make(map[string]bool)
 	for _, hop := range hops {
 		label := humanizeIdentifier(hop.Reference().ID())
 		if raw, ok := hop.RawEvent(); ok {
 			result = append(result, TraceEvidenceView{
 				ID: raw.Reference(), Label: label, Summary: "Source-owned raw evidence reference for " + label + ".",
-				Role: "Supporting", HopRecordID: hop.Reference().ID(), Raw: true, SourceOwned: true,
+				HopRecordID: hop.Reference().ID(), Raw: true, SourceOwned: true,
 				Reference: raw.Reference(), Availability: displayEnum(string(raw.Availability())),
 				HashAlgorithm: raw.HashAlgorithm(), HashValue: raw.HashValue(),
 			})
-			seen[raw.Reference()] = true
 		}
 		for _, evidence := range hop.Evidence() {
-			if seen[evidence.ID()] {
-				continue
-			}
 			result = append(result, TraceEvidenceView{
-				ID: evidence.ID(), Label: label, Summary: "Evidence reference supporting " + label + ".",
+				ID: evidence.ID(), Label: label, Summary: "Evidence reference attached to " + label + ".",
 				Role: displayEnum(string(evidence.Role())), HopRecordID: hop.Reference().ID(),
 				Reference: evidence.ID(), Availability: "Reference only",
 			})
-			seen[evidence.ID()] = true
 		}
 	}
 	for _, conflict := range conflicts {
 		for _, evidence := range conflict.Evidence() {
-			if seen[evidence.ID()] {
-				continue
-			}
 			result = append(result, TraceEvidenceView{
 				ID: evidence.ID(), Label: conflictLabel(conflict.Kind()), Summary: "Evidence reference attached to " + strings.ToLower(conflictLabel(conflict.Kind())) + ".",
 				Role: displayEnum(string(evidence.Role())), Reference: evidence.ID(), Availability: "Reference only",
 			})
-			seen[evidence.ID()] = true
 		}
 	}
 	return result
+}
+
+func durationIfPositive(value time.Duration) string {
+	if value <= 0 {
+		return ""
+	}
+	return value.String()
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func traceStatus(status trace.Status, missing, conflicts int) TraceStatusView {

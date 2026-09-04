@@ -181,26 +181,42 @@ jobs:
           # The persistent controller already retains its local Go caches. Do
           # not upload the controller user's global multi-project cache.
           cache: false
-      - name: Map conservative classifier output to a bounded DGX profile
-        id: profile
+      - name: Map every conservative classifier output to a bounded DGX profile
+        id: profiles
         shell: bash
         env:
           REMOTE_PROFILES: ${{ needs.risk.outputs.remote_profiles }}
         run: |
-          case ",${REMOTE_PROFILES}," in
-            *',dgx-kernel,'*) selected='kernel-full' ;;
-            *',dgx-enforcement,'*) selected='enforcement' ;;
-            *',dgx-harness,'*) selected='preflight' ;;
-            *)
-              echo "No implemented bounded DGX profile for ${REMOTE_PROFILES}; refusing weaker substitution" >&2
-              exit 2
-              ;;
-          esac
-          echo "profile=${selected}" >> "$GITHUB_OUTPUT"
-      - name: Run one preflight, build, transfer, scenario set, and cleanup
+          selected_profiles=''
+          IFS=',' read -ra required_profiles <<< "${REMOTE_PROFILES}"
+          for required in "${required_profiles[@]}"; do
+            case "${required}" in
+              dgx-kernel) selected='kernel-full' ;;
+              dgx-enforcement) selected='enforcement' ;;
+              dgx-trace) selected='trace' ;;
+              dgx-harness) selected='preflight' ;;
+              *)
+                echo "No implemented bounded DGX profile for ${required}; refusing weaker substitution" >&2
+                exit 2
+                ;;
+            esac
+            case " ${selected_profiles} " in
+              *" ${selected} "*) ;;
+              *) selected_profiles="${selected_profiles:+${selected_profiles} }${selected}" ;;
+            esac
+          done
+          [[ -n "${selected_profiles}" ]] || { echo 'No DGX profile was selected' >&2; exit 2; }
+          echo "profiles=${selected_profiles}" >> "$GITHUB_OUTPUT"
+      - name: Run each required bounded DGX profile with exact cleanup
+        env:
+          SELECTED_PROFILES: ${{ steps.profiles.outputs.profiles }}
         run: |
           short_sha="${GITHUB_SHA:0:10}"
-          make check-dgx-smoke DGX_PROFILE='${{ steps.profile.outputs.profile }}' RUN_ID="pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}"
+          index=0
+          for selected in ${SELECTED_PROFILES}; do
+            index=$((index + 1))
+            make check-dgx-smoke DGX_PROFILE="${selected}" RUN_ID="pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}-${index}"
+          done
 
   pr-gate:
     name: authoritative Level 2 PR gate

@@ -85,7 +85,10 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
                     <strong>{hop.label}</strong>
                     <span>{hop.kind}</span>
                   </div>
-                  <time dateTime={hop.at}>{formatUTC(hop.at)} UTC</time>
+                  <span className="trace-hop-time">
+                    {hop.at ? <time dateTime={hop.at}>{formatUTC(hop.at)} UTC</time> : hop.time_status}
+                    {' · '}{hop.time_uncertainty}{hop.time_window ? ` (±${hop.time_window})` : ''}
+                  </span>
                   <div className="trace-hop-identities">
                     {hop.identities.map((identity) => (
                       <span key={`${identity.kind}:${identity.id}`}>
@@ -108,6 +111,7 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
             <div><dt>Correlation method</dt><dd>{view.explanation.methods.join(', ') || 'No join established'}</dd></div>
             <div><dt>Confidence</dt><dd>{view.confidence.level} · {view.confidence.method}</dd></div>
             <div><dt>Identity assurance</dt><dd>{view.confidence.identity_assurance}</dd></div>
+            <div><dt>Event-time confidence</dt><dd>{view.confidence.time_uncertainty}{view.confidence.time_window ? ` · ${view.confidence.time_window} trace window` : ''}</dd></div>
             <div><dt>Human review</dt><dd>{view.confidence.human_review}</dd></div>
           </dl>
           <ul className="trace-joins" aria-label="Evidence-backed candidate joins">
@@ -122,14 +126,14 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
               </li>
             ))}
           </ul>
-          {rawEvidence.map((evidence) => (
+          {rawEvidence.map((evidence, index) => (
             <button
-              key={evidence.id}
+              key={`${evidence.id}:${evidence.hop_record_id ?? ''}:${index}`}
               type="button"
               className="trace-evidence-button"
               onClick={(event) => openEvidence(evidence, event.currentTarget)}
             >
-              View raw evidence for {evidence.label}
+              View raw reference for {evidence.label}
             </button>
           ))}
         </section>
@@ -181,8 +185,11 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
                   <strong>{conflict.label}</strong>
                   <span>{plural(conflict.records.length, 'cited record')}</span>
                   <details>
-                    <summary>Record references</summary>
+                    <summary>Technical references</summary>
+                    <span>Records</span>
                     <code>{conflict.records.join(', ')}</code>
+                    <span>Evidence</span>
+                    <code>{conflict.evidence_ids.length ? conflict.evidence_ids.join(', ') : 'No separate evidence reference'}</code>
                   </details>
                 </li>
               ))}
@@ -200,7 +207,8 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
         <dl className="trace-facts">
           <div><dt>Data class</dt><dd>{view.lifecycle.data_class}</dd></div>
           <div><dt>Lifecycle</dt><dd>{view.lifecycle.state} · expires {formatUTC(view.lifecycle.expires_at)} UTC</dd></div>
-          <div><dt>Residency</dt><dd>{view.scope.residency_cell_id}</dd></div>
+          <div><dt>Residency</dt><dd>{view.scope.residency_cell_id} · {view.lifecycle.residency_policy_ref}</dd></div>
+          <div><dt>Encryption boundary</dt><dd>{view.lifecycle.encryption_boundary}</dd></div>
           <div><dt>Model use</dt><dd>Per-tenant {view.lifecycle.per_tenant_model_use ? 'allowed' : 'off'} · Cross-tenant {view.lifecycle.cross_tenant_model_use ? 'allowed' : 'off'}</dd></div>
           <div><dt>Trace ID</dt><dd><code>{view.trace_id}</code></dd></div>
           <div><dt>Deployment boundary</dt><dd>{view.scope.deployment_boundary}</dd></div>
@@ -221,10 +229,14 @@ export default function TraceWorkspace({ view }: { view: TraceWorkspaceView }) {
             <dl className="trace-facts">
               <div><dt>Availability</dt><dd>{selectedEvidence.availability}</dd></div>
               <div><dt>Ownership</dt><dd>{selectedEvidence.source_owned ? 'Source-owned reference' : 'CanaryView evidence reference'}</dd></div>
-              <div><dt>Role</dt><dd>{selectedEvidence.role}</dd></div>
+              {selectedEvidence.role && <div><dt>Claim role</dt><dd>{selectedEvidence.role}</dd></div>}
               <div><dt>Record</dt><dd>{selectedEvidence.label}</dd></div>
               <div><dt>Reference</dt><dd><code>{selectedEvidence.reference}</code></dd></div>
               <div><dt>Integrity</dt><dd>{selectedEvidence.hash_algorithm ? `${selectedEvidence.hash_algorithm}: ${selectedEvidence.hash_value}` : 'No digest supplied'}</dd></div>
+              <div><dt>Raw evidence lifecycle</dt><dd>Source-owned; not represented by this trace projection</dd></div>
+            </dl>
+            <h3>Trace projection lifecycle</h3>
+            <dl className="trace-facts">
               <div><dt>Expiry</dt><dd>{formatUTC(view.lifecycle.expires_at)} UTC</dd></div>
               <div><dt>Legal hold</dt><dd>{view.lifecycle.legal_hold_ids.length ? view.lifecycle.legal_hold_ids.join(', ') : 'None'}</dd></div>
               <div><dt>Residency</dt><dd>{view.scope.residency_cell_id}</dd></div>

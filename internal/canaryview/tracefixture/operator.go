@@ -43,15 +43,15 @@ func OperatorConflict() (trace.Trace, error) {
 		return trace.Trace{}, err
 	}
 
-	anchor, err := record("gateway-request", scope, synthetic, fixtureTime, []model.EntityReference{checkout}, requestID)
+	anchor, err := record("gateway-request", scope, synthetic, fixtureTime, 250*time.Millisecond, []model.EntityReference{checkout}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	allow, err := record("cilium-policy-allow", scope, synthetic, fixtureTime.Add(time.Second), []model.EntityReference{payments}, requestID)
+	allow, err := record("cilium-policy-allow", scope, synthetic, fixtureTime.Add(time.Second), 0, []model.EntityReference{payments}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	deny, err := record("mesh-policy-deny", scope, synthetic, fixtureTime.Add(2*time.Second), []model.EntityReference{payments}, requestID)
+	deny, err := record("mesh-policy-deny", scope, synthetic, fixtureTime.Add(2*time.Second), 0, []model.EntityReference{payments}, requestID)
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -78,7 +78,10 @@ func OperatorConflict() (trace.Trace, error) {
 	if err != nil {
 		return trace.Trace{}, err
 	}
-	allowEvidence, err := model.NewEvidenceReference("evidence-cilium-policy", model.CurrentSchemaVersion, model.EvidenceSupporting, "", "")
+	// Reuse the same canonical evidence ID in supporting and contradicting
+	// contexts. The projection must preserve both roles rather than deduplicating
+	// by ID and hiding the contradiction from the operator.
+	allowEvidence, err := model.NewEvidenceReference("evidence-policy-conflict", model.CurrentSchemaVersion, model.EvidenceSupporting, "", "")
 	if err != nil {
 		return trace.Trace{}, err
 	}
@@ -129,12 +132,12 @@ func OperatorConflict() (trace.Trace, error) {
 	})
 }
 
-func record(id string, scope model.Scope, synthetic model.SyntheticContext, at time.Time, identities []model.EntityReference, requestID correlation.OpaqueID) (correlation.Record, error) {
+func record(id string, scope model.Scope, synthetic model.SyntheticContext, at time.Time, uncertainty time.Duration, identities []model.EntityReference, requestID correlation.OpaqueID) (correlation.Record, error) {
 	ref, err := reference(id)
 	if err != nil {
 		return correlation.Record{}, err
 	}
-	eventTime, err := correlation.NewEventTime(at, 0)
+	eventTime, err := correlation.NewEventTime(at, uncertainty)
 	if err != nil {
 		return correlation.Record{}, err
 	}

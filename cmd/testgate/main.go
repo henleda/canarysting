@@ -275,12 +275,17 @@ func probe(args []string) {
 		}
 		fmt.Printf("PASS: discovered %d Go packages\n", count)
 	case "frontend":
-		mustRegular("dashboard/app/package.json")
-		mustRegular("dashboard/app/package-lock.json")
+		for _, path := range []string{
+			"dashboard/app/package.json", "dashboard/app/package-lock.json",
+			"dashboard/app/playwright.config.ts", "dashboard/app/tests/trace-workspace.spec.ts",
+			"test/fixtures/tracebackend/main.go",
+		} {
+			mustRegular(path)
+		}
 		if info, err := os.Stat("dashboard/app/node_modules"); err != nil || !info.IsDir() {
 			fatal("frontend dependencies missing; run cd dashboard/app && npm ci")
 		}
-		fmt.Println("PASS: frontend lockfile, configuration, and installed dependencies are present")
+		fmt.Println("PASS: frontend lockfile, Playwright/Go trace configuration, and installed dependencies are present")
 	case "bpf":
 		matches, _ := filepath.Glob("bpf/*/*.bpf.c")
 		sort.Strings(matches)

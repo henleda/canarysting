@@ -113,8 +113,8 @@ Selection uses the union of the local working tree and committed branch changes 
 | Any Go/module change | Affected compile/tests and reverse dependents in Level 0; full build/non-race in Level 1/2; affected race unless HIGH/CRITICAL expands to full race |
 | `internal/contract`, engine, sting, adapters, identity, operator, deploy, attacker | Wide security selection and path-matched deterministic replay; unknown security impact selects the full replay corpus |
 | `bpf/` | All local eBPF checks, Go race suite, adversarial scenarios |
-| Dashboard | Frontend config, lint, and build |
-| DGX scripts | Relevant local DGX harness contracts plus CRITICAL remote profile selection |
+| Dashboard plus the Go-backed trace fixture/projection/handler | Frontend config, lint, build, and zero-retry Playwright against the canonical Go projection when selected; fixture-only or projection-only changes cannot bypass the browser gate |
+| DGX scripts | Relevant local DGX harness contracts plus CRITICAL remote profile selection; trace proof paths select `dgx-trace` |
 | Protobuf/operator-generation input | Applicable drift check and Go race suite |
 | Documentation/skill/gitignore | Structural preflight |
 | Unknown | HIGH broad Level 2 selection |
@@ -149,6 +149,6 @@ The first complete new gate used an intentionally isolated cold Go cache and pas
 
 ## GitHub Actions
 
-PR CI first records explainable LOW/STANDARD/HIGH/CRITICAL risk, then runs one shared Level 2 local graph. Frontend and eBPF prerequisites are installed only when selected. Privileged and DGX jobs wait for that graph and run only when required; PR concurrency cancels superseded commits, and the DGX job has its own per-PR cancellation group. Feature pushes do not duplicate the PR workflow. Failed jobs upload `.test-artifacts/gates/`; the compact risk decision is always retained. DGX jobs require the repository-level `canarysting-dgx-controller` self-hosted Mac runner documented in `docs/DEVELOPMENT_ENVIRONMENT.md`; an unavailable runner leaves the job queued and never permits a weaker substitute. Its persistent local Go cache is reused directly rather than uploaded through `actions/setup-go`.
+PR CI first records explainable LOW/STANDARD/HIGH/CRITICAL risk, then runs one shared Level 2 local graph. Frontend and eBPF prerequisites are installed only when selected. Privileged and DGX jobs wait for that graph and run only when required; every selected implemented DGX profile runs with its own exact-cleanup run ID, and any unsupported profile fails the job closed. PR concurrency cancels superseded commits, and the DGX job has its own per-PR cancellation group. Feature pushes do not duplicate the PR workflow. Failed jobs upload `.test-artifacts/gates/`; the compact risk decision is always retained. DGX jobs require the repository-level `canarysting-dgx-controller` self-hosted Mac runner documented in `docs/DEVELOPMENT_ENVIRONMENT.md`; an unavailable runner leaves the job queued and never permits a weaker substitute. Its persistent local Go cache is reused directly rather than uploaded through `actions/setup-go`.
 
 Pushes to `main`, nightly schedules, and integration dispatches run Level 3 once. Weekly and campaign dispatches proceed to Level 4 only after Level 3 succeeds. The live Qwen step is scheduled but deliberately fails closed until the re-baselined M2D bounded tool/runtime contract exists. The privileged `ebpf-privileged` check retains its structured zero-skip PASS floor when selected.

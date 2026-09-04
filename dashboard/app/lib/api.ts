@@ -63,8 +63,26 @@ export function traceWorkspaceURL(traceID: string): string {
 
 async function fetchJSON<T>(url: string, label: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, { cache: 'no-store', headers: { Accept: 'application/json' }, signal });
-  if (!res.ok) throw new Error(`${label}: HTTP ${res.status}`);
-  return res.json() as Promise<T>;
+  if (!res.ok) throw new APIRequestError(label, res.status);
+  try {
+    return (await res.json()) as T;
+  } catch (cause) {
+    throw new MalformedResponseError(label, cause);
+  }
+}
+
+export class APIRequestError extends Error {
+  constructor(public readonly label: string, public readonly status: number) {
+    super(`${label}: HTTP ${status}`);
+    this.name = 'APIRequestError';
+  }
+}
+
+export class MalformedResponseError extends Error {
+  constructor(public readonly label: string, options?: unknown) {
+    super(`${label}: response was malformed`, options instanceof Error ? { cause: options } : undefined);
+    this.name = 'MalformedResponseError';
+  }
 }
 export const fetchFlowDetail = (cookie: string, since: string, session?: number) =>
   fetchJSON<FlowDetail>(flowDetailURL(cookie, since, session), 'flow');
@@ -74,5 +92,131 @@ export const fetchCost = (since: string) => fetchJSON<CostBreakdown>(costURL(sin
 export const fetchRecon = (since: string) => fetchJSON<ReconTimeline>(reconURL(since), 'recon');
 export const fetchTopology = () => fetchJSON<TopologyView>(topologyURL(), 'topology');
 export const fetchDeviants = () => fetchJSON<DeviantsView>(deviantsURL(), 'deviants');
-export const fetchTraceWorkspace = (traceID: string, signal?: AbortSignal) =>
-  fetchJSON<TraceWorkspace>(traceWorkspaceURL(traceID), 'trace', signal);
+export async function fetchTraceWorkspace(traceID: string, signal?: AbortSignal): Promise<TraceWorkspace> {
+  const value = await fetchJSON<unknown>(traceWorkspaceURL(traceID), 'trace', signal);
+  if (!isTraceWorkspace(value)) throw new MalformedResponseError('trace');
+  return value;
+}
+
+type JSONRecord = Record<string, unknown>;
+
+const record = (value: unknown): value is JSONRecord => typeof value === 'object' && value !== null && !Array.isArray(value);
+const string = (value: unknown): value is string => typeof value === 'string';
+const nonEmptyString = (value: unknown): value is string => string(value) && value.trim().length > 0;
+const boolean = (value: unknown): value is boolean => typeof value === 'boolean';
+const number = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const optionalString = (value: unknown): boolean => value === undefined || string(value);
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(string);
+const oneOf = (value: unknown, allowed: readonly string[]): value is string => string(value) && allowed.includes(value);
+const optionalAbsentOr = (value: unknown, validate: (candidate: unknown) => boolean): boolean => value === undefined || validate(value);
+
+const rfc3339Pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const durationPattern = /^(?:\d+(?:\.\d+)?(?:ns|µs|us|ms|s|m|h))+$/;
+const sha256Pattern = /^[0-9a-f]{64}$/;
+
+function rfc3339(value: unknown): value is string {
+  return string(value) && rfc3339Pattern.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function positiveDuration(value: unknown): value is string {
+  return string(value) && durationPattern.test(value) && !/^0+(?:\.0+)?(?:ns|µs|us|ms|s|m|h)$/.test(value);
+}
+
+function timeFields(at: unknown, status: unknown, uncertainty: unknown, window: unknown): boolean {
+  if (at === undefined) {
+    return status === 'Source time missing' && uncertainty === 'Unknown' && window === undefined;
+  }
+  if (!rfc3339(at)) return false;
+  if (uncertainty === 'Exact') return status === 'Exact source time' && window === undefined;
+  if (uncertainty === 'Bounded') return status === 'Bounded source time' && positiveDuration(window);
+  return false;
+}
+
+function aggregateTimeFields(uncertainty: unknown, window: unknown): boolean {
+  return uncertainty === 'Bounded'
+    ? positiveDuration(window)
+    : oneOf(uncertainty, ['Exact', 'Unknown']) && window === undefined;
+}
+
+function identity(value: unknown): boolean {
+  return record(value) && nonEmptyString(value.id) && nonEmptyString(value.kind) && nonEmptyString(value.name) &&
+    oneOf(value.assertion_mode, ['Observed', 'Declared', 'Verified', 'Inferred']) && boolean(value.verified) &&
+    value.verified === (value.assertion_mode === 'Verified');
+}
+
+function evidenceReference(value: unknown): boolean {
+  if (!record(value) || !nonEmptyString(value.id) || !nonEmptyString(value.label) || !nonEmptyString(value.summary) ||
+      !optionalAbsentOr(value.hop_record_id, nonEmptyString) || !boolean(value.raw) || !boolean(value.source_owned) ||
+      !nonEmptyString(value.reference) || !nonEmptyString(value.availability) ||
+      !optionalString(value.hash_algorithm) || !optionalString(value.hash_value)) return false;
+
+  if (value.raw) {
+    const digest = value.reference.replace('rawref:sha256:', '');
+    const hashesAbsent = value.hash_algorithm === undefined && value.hash_value === undefined;
+    const hashesValid = value.hash_algorithm === 'sha256' && string(value.hash_value) && sha256Pattern.test(value.hash_value);
+    return value.source_owned && value.role === undefined && nonEmptyString(value.hop_record_id) &&
+      value.id === value.reference && value.reference.startsWith('rawref:sha256:') && sha256Pattern.test(digest) &&
+      oneOf(value.availability, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch']) &&
+      (hashesAbsent || hashesValid);
+  }
+
+  return !value.source_owned && oneOf(value.role, ['Supporting', 'Contradicting', 'Vendor extension']) &&
+    value.id === value.reference && value.availability === 'Reference only' &&
+    value.hash_algorithm === undefined && value.hash_value === undefined;
+}
+
+function isTraceWorkspace(value: unknown): value is TraceWorkspace {
+  if (!record(value) || !record(value.status) || !record(value.confidence) || !record(value.scope) ||
+      !record(value.explanation) || !record(value.lifecycle)) return false;
+  const status = value.status;
+  const confidence = value.confidence;
+  const scope = value.scope;
+  const explanation = value.explanation;
+  const lifecycle = value.lifecycle;
+  const statusLabels: Record<string, string> = {
+    PARTIAL: 'Partial',
+    COMPLETE_UNDER_DECLARED_COVERAGE: 'Complete under declared coverage',
+    CONFLICTED: 'Conflicted',
+  };
+  return nonEmptyString(value.trace_id) && nonEmptyString(value.title) && nonEmptyString(value.summary) && nonEmptyString(value.what_happened) &&
+    oneOf(status.code, Object.keys(statusLabels)) && status.label === statusLabels[status.code] && nonEmptyString(status.detail) &&
+    oneOf(confidence.level, ['Low', 'Medium', 'High']) &&
+    oneOf(confidence.method, ['Direct source', 'Exact identifier', 'Verified identity', 'Declared mapping', 'Tuple time window', 'Composite correlation', 'Probabilistic inference', 'Model interpretation']) &&
+    oneOf(confidence.completeness, ['Partial', 'Complete']) &&
+    oneOf(confidence.source_quality, ['Unverified', 'Declared', 'Verified']) &&
+    oneOf(confidence.identity_assurance, ['Unverified', 'Declared', 'Verified']) &&
+    number(confidence.candidate_count) && Number.isInteger(confidence.candidate_count) && confidence.candidate_count >= 0 &&
+    aggregateTimeFields(confidence.time_uncertainty, confidence.time_window) &&
+    oneOf(confidence.human_review, ['Unreviewed', 'Confirmed', 'Rejected']) &&
+    nonEmptyString(scope.tenant_id) && nonEmptyString(scope.scope_id) && nonEmptyString(scope.display_name) &&
+    nonEmptyString(scope.deployment_boundary) && nonEmptyString(scope.residency_cell_id) &&
+    Array.isArray(value.affected) && value.affected.every(identity) &&
+    Array.isArray(value.hops) && value.hops.every((hop) => record(hop) && nonEmptyString(hop.record_id) &&
+      oneOf(hop.kind, ['Observation', 'Policy decision']) && nonEmptyString(hop.label) &&
+      timeFields(hop.at, hop.time_status, hop.time_uncertainty, hop.time_window) &&
+      Array.isArray(hop.identities) && hop.identities.every(identity) &&
+      number(hop.evidence_count) && Number.isInteger(hop.evidence_count) && hop.evidence_count >= 0) &&
+    nonEmptyString(explanation.claim) && nonEmptyString(explanation.reason) && strings(explanation.methods) && explanation.methods.every(nonEmptyString) &&
+    Array.isArray(explanation.joins) && explanation.joins.every((join) => record(join) && nonEmptyString(join.anchor_id) &&
+      nonEmptyString(join.candidate_id) && oneOf(join.method, ['Request ID', 'Vendor transaction ID', 'Socket cookie', 'OpenTelemetry trace and span ID', 'OpenTelemetry trace ID', 'Verified identity', 'Declared identity and time window', 'Translated tuple and time window', 'Network tuple and time window']) &&
+      oneOf(join.strength, ['Exact', 'Strong', 'Weak']) && strings(join.citations) && join.citations.length > 0 && join.citations.every(nonEmptyString) &&
+      boolean(join.selected) && boolean(join.ambiguous)) &&
+    Array.isArray(value.missing) && value.missing.every((gap) => record(gap) &&
+      oneOf(gap.kind, ['OBSERVATION', 'POLICY_DECISION', 'SOURCE_TIME', 'RAW_EVIDENCE', 'CORRELATION']) && nonEmptyString(gap.label) &&
+      optionalAbsentOr(gap.record_id, nonEmptyString) && optionalAbsentOr(gap.availability, (candidate) => oneOf(candidate, ['Available', 'Expired', 'Deleted', 'Access denied', 'Moved', 'Integrity mismatch'])) && nonEmptyString(gap.next_step)) &&
+    Array.isArray(value.conflicts) && value.conflicts.every((conflict) => record(conflict) &&
+      oneOf(conflict.kind, ['AMBIGUOUS_CORRELATION', 'CONTRADICTORY_EVIDENCE', 'ORDERING_UNCERTAINTY']) &&
+      nonEmptyString(conflict.label) && strings(conflict.records) && conflict.records.length >= 2 && conflict.records.every(nonEmptyString) &&
+      strings(conflict.evidence_ids) && conflict.evidence_ids.every(nonEmptyString)) &&
+    Array.isArray(value.evidence) && value.evidence.every(evidenceReference) &&
+    lifecycle.data_class === 'Correlated trace' && lifecycle.sensitivity === 'Confidential' &&
+    oneOf(lifecycle.retention_profile, ['Lean', 'Standard', 'Regulated', 'Approved override']) &&
+    oneOf(lifecycle.state, ['Active', 'Expiry due', 'Held', 'Deletion pending', 'Deleted', 'Invalidated', 'Deletion failed']) &&
+    rfc3339(lifecycle.expires_at) && strings(lifecycle.legal_hold_ids) && lifecycle.legal_hold_ids.every(nonEmptyString) &&
+    nonEmptyString(lifecycle.residency_policy_ref) && nonEmptyString(lifecycle.encryption_boundary) &&
+    boolean(lifecycle.per_tenant_model_use) && boolean(lifecycle.cross_tenant_model_use) &&
+    boolean(value.synthetic) && optionalAbsentOr(value.scenario_id, nonEmptyString) && nonEmptyString(value.safety_note) &&
+    (value.synthetic ? nonEmptyString(value.scenario_id) : value.scenario_id === undefined) &&
+    (confidence.completeness === (value.missing.length === 0 ? 'Complete' : 'Partial')) &&
+    (status.code === (value.conflicts.length > 0 ? 'CONFLICTED' : value.missing.length > 0 ? 'PARTIAL' : 'COMPLETE_UNDER_DECLARED_COVERAGE'));
+}
