@@ -236,7 +236,7 @@ check-campaign:
 check-dgx:
 	$(TESTGATE) run --gate check-dgx --jobs 1
 
-## check-dgx-smoke: run one risk-selected DGX profile with one preflight/build/transfer (requires explicit values)
+## check-dgx-smoke: run one risk-selected DGX profile; artifact scenarios use preflight/build/transfer
 .PHONY: check-dgx-smoke
 check-dgx-smoke:
 	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|attacker-check|cookie|enforcement|kernel-full|stack|correlation|trace> is required"; exit 2; }

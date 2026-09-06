@@ -167,6 +167,7 @@ jobs:
     needs: [risk, pr-local]
     if: needs.risk.outputs.requires_dgx == 'true'
     runs-on: [self-hosted, canarysting-dgx-controller]
+    timeout-minutes: 20
     concurrency:
       group: dgx-pr-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
