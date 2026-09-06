@@ -262,6 +262,10 @@ func TestProductionObservationIngestionRejectsCorpusWire(t *testing.T) {
 	if _, err := groundtruth.UnmarshalCorpusV1(unknown); err == nil {
 		t.Fatal("unknown corpus field was accepted without a schema review")
 	}
+	duplicate := bytes.Replace(blob, []byte(`"synthetic": true,`), []byte(`"synthetic": false, "synthetic": true,`), 1)
+	if _, err := groundtruth.UnmarshalCorpusV1(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate JSON object key") {
+		t.Fatalf("contradictory duplicate synthetic classification was accepted: %v", err)
+	}
 	trailing := append(append([]byte(nil), blob...), []byte(`{"second":true}`)...)
 	if _, err := groundtruth.UnmarshalCorpusV1(trailing); err == nil {
 		t.Fatal("trailing JSON value was accepted")

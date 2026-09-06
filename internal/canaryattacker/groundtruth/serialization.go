@@ -307,12 +307,75 @@ func unmarshalV1(label string, blob []byte, target any) error {
 	if len(blob) == 0 || len(blob) > MaximumCorpusBytes {
 		return fmt.Errorf("%s input must be between 1 and %d bytes", label, MaximumCorpusBytes)
 	}
+	if err := rejectDuplicateObjectKeys(blob); err != nil {
+		return fmt.Errorf("inspect %s JSON object keys: %w", label, err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(blob))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("decode %s: %w", label, err)
 	}
 	return requireEOF(decoder)
+}
+
+func rejectDuplicateObjectKeys(blob []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(blob))
+	return scanJSONValue(decoder)
+}
+
+func scanJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("JSON object key is not a string")
+			}
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return fmt.Errorf("JSON object has unexpected closing token %v", closing)
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return fmt.Errorf("JSON array has unexpected closing token %v", closing)
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	return nil
 }
 
 func requireEOF(decoder *json.Decoder) error {
