@@ -74,20 +74,69 @@ set -euo pipefail
 readonly expected_model='qwen3-coder:30b-a3b-q8_0'
 
 have() { command -v "$1" >/dev/null 2>&1; }
-bounded() { timeout --signal=TERM --kill-after=2s 8s "$@"; }
-kctl() { bounded sudo -n k3s kubectl --request-timeout=5s "$@"; }
+systemctl_read() {
+  if [[ $# -eq 2 && "${1-}" == 'is-active' && ("${2-}" == 'ollama' || "${2-}" == 'k3s') ]]; then
+    :
+  elif [[ $# -eq 2 && "${1-}" == 'is-enabled' && "${2-}" == 'ollama' ]]; then
+    :
+  elif [[ $# -eq 5 && "${1-}" == 'show' && "${2-}" == 'ollama' && "${3-}" == '-p' && \
+    ("${4-}" == 'User' || "${4-}" == 'MainPID') && "${5-}" == '--value' ]]; then
+    :
+  else
+    return 64
+  fi
+  timeout --signal=TERM --kill-after=2s 8s systemctl "$@"
+}
+kctl() {
+  if [[ $# -eq 5 && "${1-}" == 'get' && "${2-}" == 'node' && "${3-}" == 'spark-5343' && \
+    "${4-}" == '-o' && "${5-}" == 'jsonpath={range .status.conditions[?(@.type=="Ready")]}{.status}{end}' ]]; then
+    :
+  elif [[ $# -eq 7 && "${1-}" == '-n' && "${2-}" == 'kube-system' && "${3-}" == 'get' && \
+    "${4-}" == 'daemonset' && ("${5-}" == 'cilium' || "${5-}" == 'cilium-envoy') && "${6-}" == '-o' && \
+    ("${7-}" == 'jsonpath={.status.desiredNumberScheduled}' || "${7-}" == 'jsonpath={.status.numberReady}') ]]; then
+    :
+  elif [[ $# -eq 7 && "${1-}" == '-n' && "${2-}" == 'kube-system' && "${3-}" == 'get' && \
+    "${4-}" == 'deployment' && ("${5-}" == 'cilium-operator' || "${5-}" == 'hubble-relay') && "${6-}" == '-o' && \
+    ("${7-}" == 'jsonpath={.spec.replicas}' || "${7-}" == 'jsonpath={.status.readyReplicas}') ]]; then
+    :
+  else
+    return 64
+  fi
+  timeout --signal=TERM --kill-after=2s 8s sudo -n k3s kubectl --request-timeout=5s "$@"
+}
 ollama_local() {
+  [[ $# -eq 1 && ("${1-}" == '--version' || "${1-}" == 'list' || "${1-}" == 'ps') ]] || return 64
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
     -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
     OLLAMA_HOST=http://127.0.0.1:11434 \
     timeout --signal=TERM --kill-after=2s 8s ollama "$@"
 }
 curl_local() {
+  [[ $# -eq 1 && "${1-}" == 'http://127.0.0.1:11434/api/version' ]] || return 64
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
     -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
     timeout --signal=TERM --kill-after=2s 8s \
     curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
       --noproxy '*' --proto '=http' "$@"
+}
+listener_inventory() {
+  [[ $# -eq 1 && "${1-}" =~ ^[1-9][0-9]*$ ]] || return 64
+  timeout --signal=TERM --kill-after=2s 8s sudo -n ss -H -lntp
+}
+owned_listener_addresses() {
+  local service_pid="${1-}"
+  [[ $# -eq 1 && "${service_pid}" =~ ^[1-9][0-9]*$ ]] || return 64
+  listener_inventory "${service_pid}" | \
+    awk -v wanted="${service_pid}" 'index($0, "pid=" wanted ",") {print $4}' | sort -u
+}
+timedate_read() {
+  [[ $# -eq 1 && ("${1-}" == 'NTPSynchronized' || "${1-}" == 'Timezone') ]] || return 64
+  timeout --signal=TERM --kill-after=2s 8s timedatectl show -p "$1" --value
+}
+gpu_inventory() {
+  [[ $# -eq 0 ]] || return 64
+  timeout --signal=TERM --kill-after=2s 8s \
+    nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv,noheader,nounits
 }
 trim() {
   local value="$1"
@@ -137,13 +186,13 @@ kernel="$(uname -r)"
 os_id="${ID:-unknown}-${VERSION_ID:-unknown}"
 inspection_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 inspection_epoch="$(date -u +%s)"
-ntp_synchronized="$(bounded timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+ntp_synchronized="$(timedate_read NTPSynchronized 2>/dev/null || true)"
 case "${ntp_synchronized,,}" in
   yes|true) ntp_synchronized='true' ;;
   no|false) ntp_synchronized='false' ;;
   *) ntp_synchronized='unknown' ;;
 esac
-timezone="$(bounded timedatectl show -p Timezone --value 2>/dev/null || true)"
+timezone="$(timedate_read Timezone 2>/dev/null || true)"
 [[ -n "${timezone}" ]] || timezone='unknown'
 cpu_count="$(nproc)"
 memory_total_kib="$(awk '/MemTotal:/ {print $2}' /proc/meminfo)"
@@ -157,7 +206,7 @@ gpu_memory_total_mib='unavailable'
 gpu_memory_free_mib='unavailable'
 gpu_probe_status='unavailable'
 if have nvidia-smi; then
-  if gpu_lines="$(bounded nvidia-smi --query-gpu=name,driver_version,memory.total,memory.free --format=csv,noheader,nounits 2>/dev/null)"; then
+  if gpu_lines="$(gpu_inventory 2>/dev/null)"; then
     gpu_probe_status='ok'
     gpu_count="$(awk 'NF {count++} END {print count+0}' <<<"${gpu_lines}")"
     if ((gpu_count > 0)); then
@@ -177,9 +226,10 @@ fi
 
 ollama_cli_path='missing'
 ollama_cli_version='unavailable'
-ollama_service_active="$(bounded systemctl is-active ollama 2>/dev/null || true)"
-ollama_service_enabled="$(bounded systemctl is-enabled ollama 2>/dev/null || true)"
-ollama_service_user="$(bounded systemctl show ollama -p User --value 2>/dev/null || true)"
+ollama_service_active="$(systemctl_read is-active ollama 2>/dev/null || true)"
+ollama_service_enabled="$(systemctl_read is-enabled ollama 2>/dev/null || true)"
+ollama_service_user="$(systemctl_read show ollama -p User --value 2>/dev/null || true)"
+ollama_service_main_pid="$(systemctl_read show ollama -p MainPID --value 2>/dev/null || true)"
 [[ -n "${ollama_service_active}" ]] || ollama_service_active='unknown'
 [[ -n "${ollama_service_enabled}" ]] || ollama_service_enabled='unknown'
 [[ -n "${ollama_service_user}" ]] || ollama_service_user='unknown'
@@ -201,16 +251,16 @@ if have ollama; then
   [[ -n "${ollama_cli_version}" ]] || ollama_cli_version='unavailable'
 fi
 
-if have ss && listener_lines="$(bounded ss -H -lnt 'sport = :11434' 2>/dev/null | awk '{print $4}' | sort -u)"; then
+if have ss && [[ "${ollama_service_main_pid}" =~ ^[1-9][0-9]*$ ]] && \
+  listener_lines="$(owned_listener_addresses "${ollama_service_main_pid}" 2>/dev/null)"; then
   ollama_listener_probe_status='ok'
   if [[ -n "${listener_lines}" ]]; then
     ollama_listener_addresses="$(paste -sd, <<<"${listener_lines}")"
     ollama_binding='loopback_only'
     while IFS= read -r listener; do
-      case "${listener}" in
-        127.0.0.1:11434|'[::1]:11434') ;;
-        *) ollama_binding='unsafe_non_loopback' ;;
-      esac
+      if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
+        ollama_binding='unsafe_non_loopback'
+      fi
     done <<<"${listener_lines}"
   else
     ollama_listener_addresses='none'
@@ -246,7 +296,7 @@ if have ollama && [[ "${ollama_api_version}" != 'unavailable' ]]; then
   fi
 fi
 
-k3s_service_active="$(bounded systemctl is-active k3s 2>/dev/null || true)"
+k3s_service_active="$(systemctl_read is-active k3s 2>/dev/null || true)"
 [[ -n "${k3s_service_active}" ]] || k3s_service_active='unknown'
 node_ready='unknown'
 cilium_daemonset_ready='unavailable'
@@ -449,10 +499,9 @@ elif [[ "${values[26]}" == 'loopback_only' ]]; then
   read -r -a listeners <<<"${values[24]}"
   IFS="${old_ifs}"
   for listener in "${listeners[@]}"; do
-    case "${listener}" in
-      127.0.0.1:11434|'[::1]:11434') ;;
-      *) fail "non-loopback Ollama listener ${listener} was classified as safe" ;;
-    esac
+    if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
+      fail "non-loopback Ollama listener ${listener} was classified as safe"
+    fi
   done
 fi
 if [[ "${values[26]}" == 'unsafe_non_loopback' ]]; then

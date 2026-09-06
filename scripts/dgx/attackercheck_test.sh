@@ -112,31 +112,61 @@ grep -Fq -- "--noproxy '*' --proto '=http'" "${remote_body}"
 grep -Fq 'kubectl --request-timeout=5s' "${remote_body}"
 grep -Fq 'ollama_local list' "${remote_body}"
 grep -Fq 'ollama_local ps' "${remote_body}"
+grep -Fq 'systemctl_read show ollama -p MainPID --value' "${remote_body}"
+grep -Fq 'timeout --signal=TERM --kill-after=2s 8s sudo -n ss -H -lntp' "${remote_body}"
+grep -Fq 'index($0, "pid=" wanted ",") {print $4}' "${remote_body}"
 grep -Fq "target_lab_status='unconfigured'" "${remote_body}"
-if grep -Eq 'bpftool|feature[[:space:]]+probe|/sys/fs/bpf' "${remote_body}"; then
-  echo 'FAIL: passive inspection contains a BPF probe or pin-path access' >&2
+
+remote_policy="${fixture_root}/remote-policy.sh"
+awk '/^\. \/etc\/os-release$/ {exit} {print}' "${remote_body}" >"${remote_policy}"
+bash -n "${remote_policy}"
+
+policy_marker="${fixture_root}/policy.marker"
+assert_policy_rejects() {
+  local policy_function="$1"
+  shift
+  : >"${policy_marker}"
+  if (
+    source "${remote_policy}"
+    timeout() { printf 'timeout %s\n' "$*" >>"${policy_marker}"; return 0; }
+    env() { printf 'env %s\n' "$*" >>"${policy_marker}"; return 0; }
+    "${policy_function}" "$@"
+  ); then
+    printf 'FAIL: remote allowlist accepted: %s %s\n' "${policy_function}" "$*" >&2
+    exit 1
+  fi
+  if [[ -s "${policy_marker}" ]]; then
+    printf 'FAIL: rejected remote command reached an executable: %s %s\n' "${policy_function}" "$*" >&2
+    exit 1
+  fi
+}
+
+assert_policy_rejects systemctl_read --user restart ollama
+assert_policy_rejects kctl -n default get secret/admin -o yaml
+assert_policy_rejects kctl get --raw /api/v1/namespaces/default/secrets
+assert_policy_rejects kctl -n x label pod p x=y
+assert_policy_rejects kctl -n x run p --image=busybox
+assert_policy_rejects ollama_local stop
+assert_policy_rejects ollama_local pull qwen3-coder:30b-a3b-q8_0
+assert_policy_rejects curl_local http://0.0.0.0:11434/api/version
+assert_policy_rejects listener_inventory 0
+assert_policy_rejects timedate_read Environment
+assert_policy_rejects gpu_inventory --list-gpus
+
+alternate_port_listeners="$(
+  source "${remote_policy}"
+  listener_inventory() {
+    printf '%s\n' \
+      'LISTEN 0 4096 0.0.0.0:22434 0.0.0.0:* users:(("ollama",pid=4242,fd=3))' \
+      'LISTEN 0 4096 127.0.0.1:11434 0.0.0.0:* users:(("ollama",pid=4242,fd=4))' \
+      'LISTEN 0 4096 0.0.0.0:9999 0.0.0.0:* users:(("other",pid=4243,fd=5))'
+  }
+  owned_listener_addresses 4242
+)"
+[[ "${alternate_port_listeners}" == $'0.0.0.0:22434\n127.0.0.1:11434' ]] || {
+  echo 'FAIL: process-owned listener discovery missed an alternate Ollama port or included another PID' >&2
   exit 1
-fi
-if grep -Eq '(^|[;&|[:space:]])ollama[[:space:]]+(list|ps|run|pull|create|rm|serve)([[:space:]]|$)' "${remote_body}"; then
-  echo 'FAIL: remote checker bypasses the loopback-pinned Ollama wrapper or mutates model state' >&2
-  exit 1
-fi
-if grep -Eq 'systemctl[[:space:]]+(start|stop|restart|reload|enable|disable|mask|unmask)([[:space:]]|$)' "${remote_body}"; then
-  echo 'FAIL: remote checker contains a service mutation command' >&2
-  exit 1
-fi
-if grep -Eq 'kctl([^[:alnum:]_]|$).*(^|[[:space:]])(apply|create|delete|edit|patch|replace|rollout|scale|set)([[:space:]]|$)' "${remote_body}"; then
-  echo 'FAIL: remote checker contains an option-bearing Kubernetes mutation command' >&2
-  exit 1
-fi
-if grep -Eqi '(kctl|kubectl).*([[:space:]]secret(s)?([[:space:]]|$)|kubeconfig)|/etc/rancher/k3s/k3s\.yaml' "${remote_body}"; then
-  echo 'FAIL: remote checker attempts to read credentials or Secret data' >&2
-  exit 1
-fi
-if grep -Eq '(^|[;&|[:space:]])(rm|mv|cp|chmod|chown|mkdir|rmdir|touch|truncate|mount|umount|iptables|nft|bpftool)([[:space:]]|$)' "${remote_body}"; then
-  echo 'FAIL: remote checker contains a host, filesystem, firewall, or BPF mutation command' >&2
-  exit 1
-fi
+}
 
 summary_output="$(PATH="${fixture_root}/bin:${PATH}" CANARYSTING_ATTACKERCHECK_FIXTURE="${safe_fixture}" "${script_dir}/attackercheck.sh" --summary)"
 grep -Fqx 'report_version=2' <<<"${summary_output}"
@@ -162,7 +192,7 @@ grep -Fqx 'm2c1_inspection=PASS' <<<"${not_ready_output}"
 
 unsafe_fixture="${fixture_root}/unsafe.report"
 awk '
-  /^ollama_listener_addresses=/ {$0="ollama_listener_addresses=0.0.0.0:11434"}
+  /^ollama_listener_addresses=/ {$0="ollama_listener_addresses=0.0.0.0:22434"}
   /^ollama_binding=/ {$0="ollama_binding=unsafe_non_loopback"}
   /^ollama_api_version=/ {$0="ollama_api_version=unavailable"}
   /^ollama_api_probe_status=/ {$0="ollama_api_probe_status=not_queried"}
@@ -238,7 +268,7 @@ fi
 grep -Fq 'Ollama API probe failed' "${fixture_root}/api-error.err"
 
 contradictory_fixture="${fixture_root}/contradictory.report"
-awk '/^ollama_listener_addresses=/ {$0="ollama_listener_addresses=0.0.0.0:11434"} {print}' "${safe_fixture}" >"${contradictory_fixture}"
+awk '/^ollama_listener_addresses=/ {$0="ollama_listener_addresses=0.0.0.0:22434"} {print}' "${safe_fixture}" >"${contradictory_fixture}"
 if PATH="${fixture_root}/bin:${PATH}" CANARYSTING_ATTACKERCHECK_FIXTURE="${contradictory_fixture}" "${script_dir}/attackercheck.sh" >/dev/null 2>&1; then
   echo 'FAIL: non-loopback listener was accepted as loopback-only' >&2
   exit 1
