@@ -18,6 +18,13 @@ if "${script_dir}/preflight-proof.sh" --verify --run-id ci-risk-proof --proof-fi
   exit 1
 fi
 
+preflight_output="$("${script_dir}/pr.sh" --profile preflight --run-id ci-preflight-dry-run --dry-run)"
+grep -Fqx 'profile=preflight' <<<"${preflight_output}"
+grep -Fqx 'read_only_check_count=0' <<<"${preflight_output}"
+grep -Fqx 'artifact_build_count=0' <<<"${preflight_output}"
+grep -Fqx 'artifact_transfer_count=0' <<<"${preflight_output}"
+grep -Fq 'DGX was not accessed' <<<"${preflight_output}"
+
 output="$("${script_dir}/pr.sh" --profile kernel-full --run-id ci-risk-dry-run --dry-run)"
 grep -Fqx 'preflight_count=1' <<<"${output}"
 grep -Fqx 'artifact_build_count=1' <<<"${output}"
@@ -39,6 +46,33 @@ trace_output="$("${script_dir}/pr.sh" --profile trace --run-id ci-trace-dry-run 
 grep -Fqx 'profile=trace' <<<"${trace_output}"
 grep -Fqx 'artifact_build_count=1' <<<"${trace_output}"
 grep -Fq 'trace proof contract passed; DGX was not accessed' <<<"${trace_output}"
+
+attacker_check_output="$("${script_dir}/pr.sh" --profile attacker-check --run-id ci-attacker-check --dry-run)"
+grep -Fqx 'profile=attacker-check' <<<"${attacker_check_output}"
+grep -Fqx 'preflight_count=0' <<<"${attacker_check_output}"
+grep -Fqx 'read_only_check_count=1' <<<"${attacker_check_output}"
+grep -Fqx 'artifact_build_count=0' <<<"${attacker_check_output}"
+grep -Fqx 'artifact_transfer_count=0' <<<"${attacker_check_output}"
+grep -Fq 'attacker-lab inspection contract passed; DGX was not accessed' <<<"${attacker_check_output}"
+
+grep -Fq '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh"
+summary_line="$(grep -nF '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh" | cut -d: -f1)"
+work_root_line="$(grep -nF 'work_root="$(mktemp -d' "${script_dir}/pr.sh" | cut -d: -f1)"
+preflight_line="$(grep -nF '"${script_dir}/preflight-proof.sh" --create' "${script_dir}/pr.sh" | cut -d: -f1)"
+if [[ -z "${summary_line}" || -z "${work_root_line}" || -z "${preflight_line}" ]] || \
+  ((summary_line >= work_root_line || summary_line >= preflight_line)); then
+  echo 'FAIL: passive attacker inspection does not exit before general preflight setup' >&2
+  exit 1
+fi
+if ! awk '
+  /"\$\{script_dir\}\/\$\{read_only_check\}\.sh" --summary/ {seen=1; next}
+  seen && /exit 0/ {found=1; exit}
+  seen && /(preflight-proof|check\.sh|bpftool)/ {exit 1}
+  END {if (!found) exit 1}
+' "${script_dir}/pr.sh"; then
+  echo 'FAIL: passive attacker inspection can fall through to the general or BPF preflight' >&2
+  exit 1
+fi
 
 if "${script_dir}/pr.sh" --profile dgx-kubernetes --run-id ci-risk-dry-run --dry-run >/dev/null 2>&1; then
   echo 'FAIL: unsupported Kubernetes profile did not fail closed' >&2

@@ -63,6 +63,18 @@ func TestTraceProofChangesSelectOnlyTraceDGXProfile(t *testing.T) {
 	}
 }
 
+func TestAttackerReadinessChangesSelectOnlyReadOnlyDGXProfile(t *testing.T) {
+	for _, path := range []string{"scripts/dgx/attackercheck.sh", "scripts/dgx/attackercheck_test.sh"} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || report.RequiresLiveQwen || len(report.RemoteProfiles) != 1 || report.RemoteProfiles[0] != "dgx-attacker-check" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
 func TestCombinedCriticalChangesRetainEveryDGXProfile(t *testing.T) {
 	report, err := ClassifyRisk([]string{"bpf/enforce/enforce.bpf.c", "cmd/tracespike/main.go"}, "")
 	if err != nil {

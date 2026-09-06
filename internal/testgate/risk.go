@@ -79,6 +79,8 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			switch {
 			case strings.Contains(path, "tracespike"):
 				profiles["dgx-trace"] = true
+			case strings.Contains(path, "attackercheck"):
+				profiles["dgx-attacker-check"] = true
 			case strings.Contains(path, "cookiespike"), strings.Contains(path, "enforcespike"),
 				strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"),
 				strings.HasSuffix(path, "/preflight-proof.sh"):

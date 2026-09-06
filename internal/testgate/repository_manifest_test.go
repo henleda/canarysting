@@ -74,8 +74,14 @@ func TestPRDGXRunsEveryMappedProfile(t *testing.T) {
 		t.Fatal("workflow PR DGX job boundaries are missing")
 	}
 	job := workflow[start:end]
+	if !strings.Contains(job, "timeout-minutes: 20") {
+		t.Fatal("PR DGX job does not have a bounded overall timeout")
+	}
 	if !strings.Contains(job, "dgx-trace) selected='trace' ;;") {
 		t.Fatal("PR DGX job does not route dgx-trace to the trace coordinator profile")
+	}
+	if !strings.Contains(job, "dgx-attacker-check) selected='attacker-check' ;;") {
+		t.Fatal("PR DGX job does not route readiness checks to the read-only attacker-check coordinator profile")
 	}
 	for _, required := range []string{
 		`IFS=',' read -ra required_profiles`,
