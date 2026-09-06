@@ -130,9 +130,9 @@ owned_listener_addresses() {
   listener_inventory "${service_pid}" | \
     awk -v wanted="${service_pid}" 'index($0, "pid=" wanted ",") {print $4}' | sort -u
 }
-stable_owned_listener_addresses() {
+stable_ollama_snapshot() {
   [[ $# -eq 0 ]] || return 64
-  local active_before pid_before invocation_before listener_lines active_after pid_after invocation_after
+  local active_before pid_before invocation_before listener_lines listener_csv active_after pid_after invocation_after
 
   active_before="$(systemctl_read is-active ollama 2>/dev/null)" || return 75
   pid_before="$(systemctl_read show ollama -p MainPID --value 2>/dev/null)" || return 75
@@ -148,7 +148,108 @@ stable_owned_listener_addresses() {
   [[ "${active_after}" == 'active' && "${pid_after}" == "${pid_before}" && \
     "${invocation_after}" == "${invocation_before}" ]] || return 75
 
-  printf '%s' "${listener_lines}"
+  listener_csv="$(paste -sd, <<<"${listener_lines}")"
+  printf '%s|%s|%s\n' "${pid_before}" "${invocation_before}" "${listener_csv}"
+}
+invalidate_ollama_evidence() {
+  [[ $# -eq 1 && ("${1-}" == 'error' || "${1-}" == 'identity_changed' || "${1-}" == 'state_changed') ]] || return 64
+  ollama_listener_addresses='unavailable'
+  ollama_listener_probe_status="$1"
+  ollama_binding='probe_error'
+  ollama_fixed_api_socket_owned='false'
+  ollama_api_version='unavailable'
+  ollama_api_probe_status='invalidated'
+  ollama_inventory_status='invalidated'
+  expected_model_present='false'
+  expected_model_id='absent'
+  expected_model_size='absent'
+  loaded_model_count='unavailable'
+}
+collect_ollama_endpoint_evidence() {
+  [[ $# -eq 0 ]] || return 64
+  local initial_snapshot snapshot_remainder listener_csv listener_lines listener_probe_exit final_snapshot final_probe_exit
+
+  if ! have ss; then
+    return 0
+  fi
+
+  if initial_snapshot="$(stable_ollama_snapshot 2>/dev/null)"; then
+    ollama_snapshot_pid="${initial_snapshot%%|*}"
+    snapshot_remainder="${initial_snapshot#*|}"
+    ollama_snapshot_invocation="${snapshot_remainder%%|*}"
+    listener_csv="${snapshot_remainder#*|}"
+    if [[ "${ollama_snapshot_pid}" =~ ^[1-9][0-9]*$ && \
+      "${ollama_snapshot_invocation}" =~ ^[0-9A-Fa-f]{32}$ && \
+      "${listener_csv}" != *'|'* ]]; then
+      ollama_listener_probe_status='ok'
+      listener_lines="${listener_csv//,/$'\n'}"
+      if [[ -n "${listener_lines}" ]]; then
+        ollama_listener_addresses="${listener_csv}"
+        ollama_binding='loopback_only'
+        while IFS= read -r listener; do
+          if [[ "${listener}" == '127.0.0.1:11434' ]]; then
+            ollama_fixed_api_socket_owned='true'
+          fi
+          if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
+            ollama_binding='unsafe_non_loopback'
+          fi
+        done <<<"${listener_lines}"
+      else
+        ollama_listener_addresses='none'
+        ollama_binding='not_listening'
+      fi
+    fi
+  else
+    listener_probe_exit=$?
+    if ((listener_probe_exit == 75)); then
+      ollama_listener_probe_status='identity_changed'
+    fi
+  fi
+
+  if [[ "${ollama_binding}" == 'loopback_only' ]]; then
+    if [[ "${ollama_fixed_api_socket_owned}" != 'true' ]]; then
+      ollama_api_probe_status='ownership_mismatch'
+    elif have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
+      if [[ "${api_json}" =~ \"version\"[[:space:]]*:[[:space:]]*\"([0-9A-Za-z._+-]+)\" ]]; then
+        ollama_api_version="${BASH_REMATCH[1]}"
+        ollama_api_probe_status='ok'
+      else
+        ollama_api_probe_status='error'
+      fi
+    else
+      ollama_api_probe_status='error'
+    fi
+  fi
+
+  if have ollama && [[ "${ollama_api_version}" != 'unavailable' ]]; then
+    if model_list="$(ollama_local list 2>/dev/null)" && loaded_models="$(ollama_local ps 2>/dev/null)"; then
+      ollama_inventory_status='ok'
+      model_line="$(awk -v wanted="${expected_model}" '$1 == wanted {print; exit}' <<<"${model_list}")"
+      if [[ -n "${model_line}" ]]; then
+        expected_model_present='true'
+        expected_model_id="$(awk '{print $2}' <<<"${model_line}")"
+        expected_model_size="$(awk '{print $3 $4}' <<<"${model_line}")"
+      fi
+      loaded_model_count="$(awk 'NR > 1 && NF {count++} END {print count+0}' <<<"${loaded_models}")"
+    else
+      ollama_inventory_status='error'
+    fi
+  fi
+
+  if [[ "${ollama_listener_probe_status}" == 'ok' ]]; then
+    if final_snapshot="$(stable_ollama_snapshot 2>/dev/null)"; then
+      if [[ "${final_snapshot}" != "${initial_snapshot}" ]]; then
+        invalidate_ollama_evidence state_changed
+      fi
+    else
+      final_probe_exit=$?
+      if ((final_probe_exit == 75)); then
+        invalidate_ollama_evidence identity_changed
+      else
+        invalidate_ollama_evidence error
+      fi
+    fi
+  fi
 }
 timedate_read() {
   [[ $# -eq 1 && ("${1-}" == 'NTPSynchronized' || "${1-}" == 'Timezone') ]] || return 64
@@ -264,6 +365,8 @@ expected_model_id='absent'
 expected_model_size='absent'
 loaded_model_count='unavailable'
 ollama_fixed_api_socket_owned='false'
+ollama_snapshot_pid='unavailable'
+ollama_snapshot_invocation='unavailable'
 
 if have ollama; then
   ollama_cli_path="$(command -v ollama)"
@@ -272,61 +375,7 @@ if have ollama; then
   [[ -n "${ollama_cli_version}" ]] || ollama_cli_version='unavailable'
 fi
 
-if have ss; then
-  if listener_lines="$(stable_owned_listener_addresses 2>/dev/null)"; then
-    ollama_listener_probe_status='ok'
-    if [[ -n "${listener_lines}" ]]; then
-      ollama_listener_addresses="$(paste -sd, <<<"${listener_lines}")"
-      ollama_binding='loopback_only'
-      while IFS= read -r listener; do
-        if [[ "${listener}" == '127.0.0.1:11434' ]]; then
-          ollama_fixed_api_socket_owned='true'
-        fi
-        if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
-          ollama_binding='unsafe_non_loopback'
-        fi
-      done <<<"${listener_lines}"
-    else
-      ollama_listener_addresses='none'
-      ollama_binding='not_listening'
-    fi
-  else
-    listener_probe_exit=$?
-    if ((listener_probe_exit == 75)); then
-      ollama_listener_probe_status='identity_changed'
-    fi
-  fi
-fi
-
-if [[ "${ollama_binding}" == 'loopback_only' ]]; then
-  if [[ "${ollama_fixed_api_socket_owned}" != 'true' ]]; then
-    ollama_api_probe_status='ownership_mismatch'
-  elif have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
-    if [[ "${api_json}" =~ \"version\"[[:space:]]*:[[:space:]]*\"([0-9A-Za-z._+-]+)\" ]]; then
-      ollama_api_version="${BASH_REMATCH[1]}"
-      ollama_api_probe_status='ok'
-    else
-      ollama_api_probe_status='error'
-    fi
-  else
-    ollama_api_probe_status='error'
-  fi
-fi
-
-if have ollama && [[ "${ollama_api_version}" != 'unavailable' ]]; then
-  if model_list="$(ollama_local list 2>/dev/null)" && loaded_models="$(ollama_local ps 2>/dev/null)"; then
-    ollama_inventory_status='ok'
-    model_line="$(awk -v wanted="${expected_model}" '$1 == wanted {print; exit}' <<<"${model_list}")"
-    if [[ -n "${model_line}" ]]; then
-      expected_model_present='true'
-      expected_model_id="$(awk '{print $2}' <<<"${model_line}")"
-      expected_model_size="$(awk '{print $3 $4}' <<<"${model_line}")"
-    fi
-    loaded_model_count="$(awk 'NR > 1 && NF {count++} END {print count+0}' <<<"${loaded_models}")"
-  else
-    ollama_inventory_status='error'
-  fi
-fi
+collect_ollama_endpoint_evidence
 
 k3s_service_active="$(systemctl_read is-active k3s 2>/dev/null || true)"
 [[ -n "${k3s_service_active}" ]] || k3s_service_active='unknown'
@@ -496,10 +545,10 @@ done
 [[ "${values[18]}" == 'ok' || "${values[18]}" == 'unavailable' || "${values[18]}" == 'error' ]] || fail 'invalid GPU probe status'
 [[ "${values[21]}" == 'active' || "${values[21]}" == 'inactive' || "${values[21]}" == 'failed' || "${values[21]}" == 'activating' || "${values[21]}" == 'deactivating' || "${values[21]}" == 'reloading' || "${values[21]}" == 'unknown' ]] || fail 'invalid Ollama service state'
 [[ "${values[22]}" == 'enabled' || "${values[22]}" == 'disabled' || "${values[22]}" == 'static' || "${values[22]}" == 'indirect' || "${values[22]}" == 'masked' || "${values[22]}" == 'generated' || "${values[22]}" == 'unknown' ]] || fail 'invalid Ollama enablement state'
-[[ "${values[25]}" == 'ok' || "${values[25]}" == 'error' || "${values[25]}" == 'identity_changed' ]] || fail 'invalid Ollama listener probe status'
+[[ "${values[25]}" == 'ok' || "${values[25]}" == 'error' || "${values[25]}" == 'identity_changed' || "${values[25]}" == 'state_changed' ]] || fail 'invalid Ollama listener probe status'
 [[ "${values[26]}" == 'loopback_only' || "${values[26]}" == 'not_listening' || "${values[26]}" == 'unsafe_non_loopback' || "${values[26]}" == 'probe_error' ]] || fail 'invalid Ollama binding classification'
-[[ "${values[28]}" == 'ok' || "${values[28]}" == 'not_queried' || "${values[28]}" == 'error' || "${values[28]}" == 'ownership_mismatch' ]] || fail 'invalid Ollama API probe status'
-[[ "${values[29]}" == 'ok' || "${values[29]}" == 'not_queried' || "${values[29]}" == 'error' ]] || fail 'invalid Ollama inventory status'
+[[ "${values[28]}" == 'ok' || "${values[28]}" == 'not_queried' || "${values[28]}" == 'error' || "${values[28]}" == 'ownership_mismatch' || "${values[28]}" == 'invalidated' ]] || fail 'invalid Ollama API probe status'
+[[ "${values[29]}" == 'ok' || "${values[29]}" == 'not_queried' || "${values[29]}" == 'error' || "${values[29]}" == 'invalidated' ]] || fail 'invalid Ollama inventory status'
 [[ "${values[30]}" == "${expected_model}" ]] || fail 'remote report changed the expected model'
 is_bool "${values[31]}" || fail 'invalid expected-model presence state'
 if [[ "${values[29]}" == 'ok' ]]; then
@@ -557,6 +606,16 @@ if [[ "${values[28]}" == 'ownership_mismatch' ]]; then
   [[ "${values[26]}" == 'loopback_only' && "${fixed_api_listener_present:-false}" == 'false' ]] || \
     fail 'Ollama API ownership mismatch contradicts the process-owned listener evidence'
 fi
+if [[ "${values[25]}" == 'state_changed' ]]; then
+  [[ "${values[28]}" == 'invalidated' && "${values[29]}" == 'invalidated' ]] || \
+    fail 'changed Ollama state did not invalidate API and inventory evidence'
+fi
+if [[ "${values[28]}" == 'invalidated' || "${values[29]}" == 'invalidated' ]]; then
+  [[ "${values[25]}" == 'state_changed' || "${values[25]}" == 'identity_changed' ]] || \
+    fail 'stable Ollama state reported invalidated endpoint evidence'
+  [[ "${values[28]}" == 'invalidated' && "${values[29]}" == 'invalidated' ]] || \
+    fail 'Ollama endpoint evidence was only partially invalidated'
+fi
 [[ "${values[28]}" != 'not_queried' || "${values[26]}" != 'loopback_only' ]] || fail 'loopback-only Ollama listener was not probed'
 if [[ "${values[31]}" == 'true' ]]; then
   [[ "${values[29]}" == 'ok' && "${values[32]}" != 'absent' && "${values[33]}" != 'absent' ]] || fail 'present expected model lacks successful inventory evidence'
@@ -565,6 +624,8 @@ else
 fi
 if [[ "${values[29]}" == 'ok' || "${values[29]}" == 'error' ]]; then
   [[ "${values[28]}" == 'ok' && "${values[19]}" != 'missing' ]] || fail 'Ollama inventory did not follow a successful fixed-endpoint API probe'
+elif [[ "${values[29]}" == 'invalidated' ]]; then
+  [[ "${values[28]}" == 'invalidated' && "${values[31]}" == 'false' ]] || fail 'invalidated Ollama inventory retained endpoint or model evidence'
 else
   [[ "${values[31]}" == 'false' ]] || fail 'unqueried Ollama inventory reported the expected model present'
 fi
@@ -628,7 +689,7 @@ else
   cat "${report_file}"
 fi
 
-[[ "${values[25]}" == 'ok' ]] || fail 'Ollama listener identity changed or its probe failed; exposure safety is unverified'
+[[ "${values[25]}" == 'ok' ]] || fail 'Ollama listener or service state changed or its probe failed; exposure safety is unverified'
 [[ "${values[26]}" != 'unsafe_non_loopback' ]] || fail 'Ollama is exposed beyond loopback; live execution is blocked'
 [[ "${values[28]}" != 'error' ]] || fail 'Ollama API probe failed; readiness is unverified'
 [[ "${values[28]}" != 'ownership_mismatch' ]] || fail 'the fixed Ollama API socket is not owned by the inspected service; readiness is unverified'

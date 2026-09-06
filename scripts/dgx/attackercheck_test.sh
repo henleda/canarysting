@@ -8,6 +8,14 @@ fixture_root="$(mktemp -d)"
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
 mkdir -p "${fixture_root}/bin"
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 cat >"${fixture_root}/bin/ssh" <<'FAKE_SSH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -104,6 +112,11 @@ grep -Fqx 'live_scenario_ready=false' <<<"${safe_output}"
 grep -Fqx 'm2c1_inspection=PASS' <<<"${safe_output}"
 
 bash -n "${remote_body}"
+readonly approved_remote_body_sha256='162d72cb1554a809e8c69da7723b395c29290a12e45fc84013b5717895406826'
+[[ "$(sha256_file "${remote_body}")" == "${approved_remote_body_sha256}" ]] || {
+  echo 'FAIL: captured remote program differs from the exact reviewed body' >&2
+  exit 1
+}
 grep -Fq 'ServerAliveInterval=5' "${ssh_args}"
 grep -Fq 'ServerAliveCountMax=3' "${ssh_args}"
 grep -Fq 'timeout --signal=TERM --kill-after=5s 45s bash -s' "${ssh_args}"
@@ -115,13 +128,15 @@ grep -Fq 'ollama_local list' "${remote_body}"
 grep -Fq 'ollama_local ps' "${remote_body}"
 grep -Fq 'systemctl_read show ollama -p MainPID --value' "${remote_body}"
 grep -Fq 'systemctl_read show ollama -p InvocationID --value' "${remote_body}"
-grep -Fq 'stable_owned_listener_addresses' "${remote_body}"
+grep -Fq 'stable_ollama_snapshot' "${remote_body}"
+grep -Fq 'collect_ollama_endpoint_evidence' "${remote_body}"
+grep -Fq 'invalidate_ollama_evidence state_changed' "${remote_body}"
 grep -Fq 'timeout --signal=TERM --kill-after=2s 8s sudo -n ss -H -lntp' "${remote_body}"
 grep -Fq 'index($0, "pid=" wanted ",") {print $4}' "${remote_body}"
 grep -Fq "target_lab_status='unconfigured'" "${remote_body}"
 
 extract_sensitive_calls() {
-  LC_ALL=C grep -E '(^|[^[:alnum:]_])(systemctl_read|kctl|ollama_local|curl_local|listener_inventory|owned_listener_addresses|stable_owned_listener_addresses|timedate_read|gpu_inventory|systemctl|kubectl|ollama|curl|ss|timedatectl|nvidia-smi|bpftool|cilium|iptables|nft|sudo|env|timeout)([^[:alnum:]_]|$)' "$1"
+  LC_ALL=C grep -E '(^|[^[:alnum:]_])(systemctl_read|kctl|ollama_local|curl_local|listener_inventory|owned_listener_addresses|stable_ollama_snapshot|collect_ollama_endpoint_evidence|timedate_read|gpu_inventory|systemctl|kubectl|ollama|curl|ss|timedatectl|nvidia-smi|bpftool|cilium|iptables|nft|sudo|env|timeout)([^[:alnum:]_]|$)' "$1"
 }
 
 sensitive_calls="${fixture_root}/sensitive-calls.actual"
@@ -148,7 +163,7 @@ listener_inventory() {
   timeout --signal=TERM --kill-after=2s 8s sudo -n ss -H -lntp
 owned_listener_addresses() {
   listener_inventory "${service_pid}" | \
-stable_owned_listener_addresses() {
+stable_ollama_snapshot() {
   active_before="$(systemctl_read is-active ollama 2>/dev/null)" || return 75
   pid_before="$(systemctl_read show ollama -p MainPID --value 2>/dev/null)" || return 75
   invocation_before="$(systemctl_read show ollama -p InvocationID --value 2>/dev/null)" || return 75
@@ -156,6 +171,13 @@ stable_owned_listener_addresses() {
   active_after="$(systemctl_read is-active ollama 2>/dev/null)" || return 75
   pid_after="$(systemctl_read show ollama -p MainPID --value 2>/dev/null)" || return 75
   invocation_after="$(systemctl_read show ollama -p InvocationID --value 2>/dev/null)" || return 75
+collect_ollama_endpoint_evidence() {
+  if ! have ss; then
+  if initial_snapshot="$(stable_ollama_snapshot 2>/dev/null)"; then
+    elif have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
+  if have ollama && [[ "${ollama_api_version}" != 'unavailable' ]]; then
+    if model_list="$(ollama_local list 2>/dev/null)" && loaded_models="$(ollama_local ps 2>/dev/null)"; then
+    if final_snapshot="$(stable_ollama_snapshot 2>/dev/null)"; then
 timedate_read() {
   timeout --signal=TERM --kill-after=2s 8s timedatectl show -p "$1" --value
 gpu_inventory() {
@@ -175,11 +197,7 @@ ollama_service_user="$(systemctl_read show ollama -p User --value 2>/dev/null ||
 if have ollama; then
   ollama_cli_path="$(command -v ollama)"
   ollama_version_output="$(ollama_local --version 2>/dev/null || true)"
-if have ss; then
-  if listener_lines="$(stable_owned_listener_addresses 2>/dev/null)"; then
-  elif have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
-if have ollama && [[ "${ollama_api_version}" != 'unavailable' ]]; then
-  if model_list="$(ollama_local list 2>/dev/null)" && loaded_models="$(ollama_local ps 2>/dev/null)"; then
+collect_ollama_endpoint_evidence
 k3s_service_active="$(systemctl_read is-active k3s 2>/dev/null || true)"
   node_ready="$(kctl get node spark-5343 -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}' 2>/dev/null || true)"
   cilium_daemonset_ready="$(daemonset_ready cilium)"
@@ -207,6 +225,13 @@ if ! LC_ALL=C grep -Eq '(^|[;&|()[:space:]/])(rm|mv|cp|install|mkdir|touch|trunc
   echo 'FAIL: remote mutation guard accepted a direct state-changing command' >&2
   exit 1
 fi
+unlisted_executor_remote="${fixture_root}/remote-unlisted-executor.sh"
+cp "${remote_body}" "${unlisted_executor_remote}"
+printf '%s\n' 'python3 -c '\''open("/tmp/canarysting-forbidden-mutation","w").write("x")'\''' >>"${unlisted_executor_remote}"
+[[ "$(sha256_file "${unlisted_executor_remote}")" != "${approved_remote_body_sha256}" ]] || {
+  echo 'FAIL: exact reviewed-body guard accepted an unlisted mutating executor' >&2
+  exit 1
+}
 
 extract_remote_function() {
   local function_name="$1" destination="$2"
@@ -310,8 +335,8 @@ alternate_port_listeners="$(
   exit 1
 }
 
-stable_listener_function="${fixture_root}/stable_owned_listener_addresses.sh"
-extract_remote_function stable_owned_listener_addresses "${stable_listener_function}"
+stable_listener_function="${fixture_root}/stable_ollama_snapshot.sh"
+extract_remote_function stable_ollama_snapshot "${stable_listener_function}"
 pid_turnover_marker="${fixture_root}/pid-turnover.marker"
 set +e
 turnover_output="$({
@@ -333,12 +358,65 @@ turnover_output="$({
     fi
   }
   owned_listener_addresses() { printf '%s\n' '127.0.0.1:11434'; }
-  stable_owned_listener_addresses
+  stable_ollama_snapshot
 })"
 turnover_status=$?
 set -e
 [[ -z "${turnover_output}" && "${turnover_status}" == '75' ]] || {
   echo 'FAIL: Ollama PID turnover did not invalidate the listener snapshot' >&2
+  exit 1
+}
+
+invalidate_function="${fixture_root}/invalidate_ollama_evidence.sh"
+collect_endpoint_function="${fixture_root}/collect_ollama_endpoint_evidence.sh"
+extract_remote_function invalidate_ollama_evidence "${invalidate_function}"
+extract_remote_function collect_ollama_endpoint_evidence "${collect_endpoint_function}"
+query_window_marker="${fixture_root}/query-window.marker"
+query_turnover_output="$({
+  source "${invalidate_function}"
+  source "${collect_endpoint_function}"
+  expected_model='qwen3-coder:30b-a3b-q8_0'
+  ollama_listener_addresses='unavailable'
+  ollama_listener_probe_status='error'
+  ollama_binding='probe_error'
+  ollama_api_version='unavailable'
+  ollama_api_probe_status='not_queried'
+  ollama_inventory_status='not_queried'
+  expected_model_present='false'
+  expected_model_id='absent'
+  expected_model_size='absent'
+  loaded_model_count='unavailable'
+  ollama_fixed_api_socket_owned='false'
+  ollama_snapshot_pid='unavailable'
+  ollama_snapshot_invocation='unavailable'
+  have() { [[ "$1" == 'ss' || "$1" == 'curl' || "$1" == 'ollama' ]]; }
+  stable_ollama_snapshot() {
+    if [[ -e "${query_window_marker}" ]]; then
+      printf '%s\n' '5252|fedcba9876543210fedcba9876543210|0.0.0.0:22434,127.0.0.1:11434'
+    else
+      printf '%s\n' '4242|0123456789abcdef0123456789abcdef|127.0.0.1:11434'
+    fi
+  }
+  curl_local() {
+    : >"${query_window_marker}"
+    printf '%s\n' '{"version":"0.11.10"}'
+  }
+  ollama_local() {
+    if [[ "$1" == 'list' ]]; then
+      printf '%s\n' 'NAME ID SIZE' 'qwen3-coder:30b-a3b-q8_0 abc123 32 GB'
+    elif [[ "$1" == 'ps' ]]; then
+      printf '%s\n' 'NAME ID SIZE PROCESSOR UNTIL'
+    else
+      return 64
+    fi
+  }
+  collect_ollama_endpoint_evidence
+  printf '%s\n' "${ollama_listener_probe_status}" "${ollama_binding}" \
+    "${ollama_api_probe_status}" "${ollama_inventory_status}" \
+    "${expected_model_present}" "${loaded_model_count}"
+})"
+[[ "${query_turnover_output}" == $'state_changed\nprobe_error\ninvalidated\ninvalidated\nfalse\nunavailable' ]] || {
+  echo 'FAIL: Ollama turnover during API/model queries did not invalidate the full evidence window' >&2
   exit 1
 }
 
@@ -480,7 +558,29 @@ if PATH="${fixture_root}/bin:${PATH}" CANARYSTING_ATTACKERCHECK_FIXTURE="${ident
   echo 'FAIL: Ollama service identity turnover was accepted' >&2
   exit 1
 fi
-grep -Fq 'listener identity changed' "${fixture_root}/identity-changed.err"
+grep -Fq 'listener or service state changed' "${fixture_root}/identity-changed.err"
+
+state_changed_fixture="${fixture_root}/state-changed.report"
+awk '
+  /^ollama_listener_addresses=/ {$0="ollama_listener_addresses=unavailable"}
+  /^ollama_listener_probe_status=/ {$0="ollama_listener_probe_status=state_changed"}
+  /^ollama_binding=/ {$0="ollama_binding=probe_error"}
+  /^ollama_api_version=/ {$0="ollama_api_version=unavailable"}
+  /^ollama_api_probe_status=/ {$0="ollama_api_probe_status=invalidated"}
+  /^ollama_inventory_status=/ {$0="ollama_inventory_status=invalidated"}
+  /^expected_model_present=/ {$0="expected_model_present=false"}
+  /^expected_model_id=/ {$0="expected_model_id=absent"}
+  /^expected_model_size=/ {$0="expected_model_size=absent"}
+  /^loaded_model_count=/ {$0="loaded_model_count=unavailable"}
+  /^execution_blockers=/ {$0="execution_blockers=ollama_listener_probe_failed,ollama_binding_probe_error,ollama_api_unavailable,ollama_api_invalidated,expected_model_absent,ollama_inventory_invalidated,target_lab_unconfigured,canarysting_runtime_unconfigured,bounded_attacker_harness_unimplemented"}
+  /^safety_status=/ {$0="safety_status=safety_unverified"}
+  {print}
+' "${safe_fixture}" >"${state_changed_fixture}"
+if PATH="${fixture_root}/bin:${PATH}" CANARYSTING_ATTACKERCHECK_FIXTURE="${state_changed_fixture}" "${script_dir}/attackercheck.sh" >/dev/null 2>"${fixture_root}/state-changed.err"; then
+  echo 'FAIL: Ollama state change across the API/model window was accepted' >&2
+  exit 1
+fi
+grep -Fq 'service state changed' "${fixture_root}/state-changed.err"
 
 contradictory_fixture="${fixture_root}/contradictory.report"
 awk '/^ollama_listener_addresses=/ {$0="ollama_listener_addresses=0.0.0.0:22434"} {print}' "${safe_fixture}" >"${contradictory_fixture}"
