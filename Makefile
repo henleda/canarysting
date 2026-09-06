@@ -134,6 +134,7 @@ dgx-harness-check:
 	scripts/dgx/dgxstackspike_test.sh
 	scripts/dgx/correlationspike_test.sh
 	scripts/dgx/tracespike_test.sh
+	scripts/dgx/attackercheck_test.sh
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh
 	scripts/dgx/pr_test.sh
@@ -238,7 +239,7 @@ check-dgx:
 ## check-dgx-smoke: run one risk-selected DGX profile with one preflight/build/transfer (requires explicit values)
 .PHONY: check-dgx-smoke
 check-dgx-smoke:
-	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|cookie|enforcement|kernel-full|stack|correlation|trace> is required"; exit 2; }
+	@test -n "$(DGX_PROFILE)" || { echo "check-dgx-smoke: DGX_PROFILE=<preflight|attacker-check|cookie|enforcement|kernel-full|stack|correlation|trace> is required"; exit 2; }
 	@test -n "$(RUN_ID)" || { echo "check-dgx-smoke: RUN_ID=<bounded-run-id> is required"; exit 2; }
 	scripts/dgx/pr.sh --profile "$(DGX_PROFILE)" --run-id "$(RUN_ID)"
 

@@ -14,12 +14,15 @@ usage() {
 Usage:
   scripts/dgx/pr.sh --profile PROFILE --run-id ID [--dry-run]
 
-Profiles: preflight, cookie, enforcement, kernel-full, stack, correlation, trace.
+Profiles: preflight, attacker-check, cookie, enforcement, kernel-full, stack,
+correlation, trace.
 
-The coordinator performs one read-only DGX preflight, one compatible local
-artifact build, and one transfer. Mutable state remains isolated by run ID.
-Every selected scenario still performs stage verification, after-state checks,
-and exact cleanup. Unsupported Kubernetes or live-Qwen profiles fail closed.
+The coordinator performs one read-only DGX preflight. Scenario profiles then
+perform one compatible local artifact build and transfer; attacker-check runs
+only the fixed read-only lab inspection. Mutable state remains isolated by run
+ID. Every selected scenario still performs stage verification, after-state
+checks, and exact cleanup. Unsupported Kubernetes or live-Qwen profiles fail
+closed.
 USAGE
 }
 
@@ -51,26 +54,35 @@ while (($#)); do
 done
 
 [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid run ID'
+read_only_check=''
+target_count=0
+scenario_count=0
 case "${profile}" in
   preflight) targets=(); scenarios=() ;;
-  cookie) targets=(cookiespike); scenarios=(cookiespike) ;;
-  enforcement) targets=(enforcespike); scenarios=(enforcespike) ;;
-  kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike) ;;
-  stack) targets=(dgxstackspike); scenarios=(dgxstackspike) ;;
-  correlation) targets=(correlationspike); scenarios=(correlationspike) ;;
-  trace) targets=(tracespike); scenarios=(tracespike) ;;
+  attacker-check) targets=(); scenarios=(); read_only_check='attackercheck' ;;
+  cookie) targets=(cookiespike); scenarios=(cookiespike); target_count=1; scenario_count=1 ;;
+  enforcement) targets=(enforcespike); scenarios=(enforcespike); target_count=1; scenario_count=1 ;;
+  kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike); target_count=2; scenario_count=2 ;;
+  stack) targets=(dgxstackspike); scenarios=(dgxstackspike); target_count=1; scenario_count=1 ;;
+  correlation) targets=(correlationspike); scenarios=(correlationspike); target_count=1; scenario_count=1 ;;
+  trace) targets=(tracespike); scenarios=(tracespike); target_count=1; scenario_count=1 ;;
   dgx-kubernetes|dgx-attacker-smoke|campaign)
     fail "profile ${profile} is not implemented by the bounded DGX harness; refusing to substitute weaker coverage"
     ;;
-  *) fail 'profile must be preflight, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
+  *) fail 'profile must be preflight, attacker-check, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
 esac
 
-printf 'profile=%s\nrun_id=%s\npreflight_count=1\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \
-  "${profile}" "${run_id}" "$(( ${#targets[@]} > 0 ? 1 : 0 ))" "$(( ${#targets[@]} > 0 ? 1 : 0 ))"
+printf 'profile=%s\nrun_id=%s\npreflight_count=1\nread_only_check_count=%s\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \
+  "${profile}" "${run_id}" "$(( ${#read_only_check} > 0 ? 1 : 0 ))" "$(( target_count > 0 ? 1 : 0 ))" "$(( target_count > 0 ? 1 : 0 ))"
 if ((dry_run)); then
-  for scenario in "${scenarios[@]}"; do
-    "${script_dir}/${scenario}.sh" --run-id "${run_id}" --dry-run
-  done
+  if [[ -n "${read_only_check}" ]]; then
+    "${script_dir}/${read_only_check}.sh" --dry-run
+  fi
+  if ((scenario_count > 0)); then
+    for scenario in "${scenarios[@]}"; do
+      "${script_dir}/${scenario}.sh" --run-id "${run_id}" --dry-run
+    done
+  fi
   printf 'DRY RUN: DGX was not accessed\n'
   exit 0
 fi
@@ -84,7 +96,7 @@ cleanup() {
   local status=$?
   trap - EXIT INT TERM
   if ((cleanup_required)); then
-    for ((index=${#scenarios[@]}-1; index>=0; index--)); do
+    for ((index=scenario_count-1; index>=0; index--)); do
       CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
         "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup || status=1
     done
@@ -99,8 +111,15 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 "${script_dir}/preflight-proof.sh" --create --run-id "${run_id}" --proof-file "${proof_file}"
-if ((${#targets[@]} == 0)); then
-  printf 'PASS: preflight-only profile completed\n'
+if [[ -n "${read_only_check}" ]]; then
+  "${script_dir}/${read_only_check}.sh"
+fi
+if ((target_count == 0)); then
+  if [[ -n "${read_only_check}" ]]; then
+    printf 'PASS: read-only DGX profile completed\n'
+  else
+    printf 'PASS: preflight-only profile completed\n'
+  fi
   exit 0
 fi
 build_args=(--output-dir "${artifact_dir}")

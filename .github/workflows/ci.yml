@@ -194,6 +194,7 @@ jobs:
               dgx-kernel) selected='kernel-full' ;;
               dgx-enforcement) selected='enforcement' ;;
               dgx-trace) selected='trace' ;;
+              dgx-attacker-check) selected='attacker-check' ;;
               dgx-harness) selected='preflight' ;;
               *)
                 echo "No implemented bounded DGX profile for ${required}; refusing weaker substitution" >&2
