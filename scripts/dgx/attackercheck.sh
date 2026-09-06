@@ -80,7 +80,7 @@ systemctl_read() {
   elif [[ $# -eq 2 && "${1-}" == 'is-enabled' && "${2-}" == 'ollama' ]]; then
     :
   elif [[ $# -eq 5 && "${1-}" == 'show' && "${2-}" == 'ollama' && "${3-}" == '-p' && \
-    ("${4-}" == 'User' || "${4-}" == 'MainPID') && "${5-}" == '--value' ]]; then
+    ("${4-}" == 'User' || "${4-}" == 'MainPID' || "${4-}" == 'InvocationID') && "${5-}" == '--value' ]]; then
     :
   else
     return 64
@@ -115,8 +115,9 @@ curl_local() {
   [[ $# -eq 1 && "${1-}" == 'http://127.0.0.1:11434/api/version' ]] || return 64
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY \
     -u http_proxy -u https_proxy -u all_proxy -u no_proxy \
+    -u CURL_HOME -u XDG_CONFIG_HOME \
     timeout --signal=TERM --kill-after=2s 8s \
-    curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
+    curl -q --fail --silent --show-error --connect-timeout 2 --max-time 5 \
       --noproxy '*' --proto '=http' "$@"
 }
 listener_inventory() {
@@ -128,6 +129,26 @@ owned_listener_addresses() {
   [[ $# -eq 1 && "${service_pid}" =~ ^[1-9][0-9]*$ ]] || return 64
   listener_inventory "${service_pid}" | \
     awk -v wanted="${service_pid}" 'index($0, "pid=" wanted ",") {print $4}' | sort -u
+}
+stable_owned_listener_addresses() {
+  [[ $# -eq 0 ]] || return 64
+  local active_before pid_before invocation_before listener_lines active_after pid_after invocation_after
+
+  active_before="$(systemctl_read is-active ollama 2>/dev/null)" || return 75
+  pid_before="$(systemctl_read show ollama -p MainPID --value 2>/dev/null)" || return 75
+  invocation_before="$(systemctl_read show ollama -p InvocationID --value 2>/dev/null)" || return 75
+  [[ "${active_before}" == 'active' && "${pid_before}" =~ ^[1-9][0-9]*$ && \
+    "${invocation_before}" =~ ^[0-9A-Fa-f]{32}$ ]] || return 75
+
+  listener_lines="$(owned_listener_addresses "${pid_before}")" || return 74
+
+  active_after="$(systemctl_read is-active ollama 2>/dev/null)" || return 75
+  pid_after="$(systemctl_read show ollama -p MainPID --value 2>/dev/null)" || return 75
+  invocation_after="$(systemctl_read show ollama -p InvocationID --value 2>/dev/null)" || return 75
+  [[ "${active_after}" == 'active' && "${pid_after}" == "${pid_before}" && \
+    "${invocation_after}" == "${invocation_before}" ]] || return 75
+
+  printf '%s' "${listener_lines}"
 }
 timedate_read() {
   [[ $# -eq 1 && ("${1-}" == 'NTPSynchronized' || "${1-}" == 'Timezone') ]] || return 64
@@ -229,7 +250,6 @@ ollama_cli_version='unavailable'
 ollama_service_active="$(systemctl_read is-active ollama 2>/dev/null || true)"
 ollama_service_enabled="$(systemctl_read is-enabled ollama 2>/dev/null || true)"
 ollama_service_user="$(systemctl_read show ollama -p User --value 2>/dev/null || true)"
-ollama_service_main_pid="$(systemctl_read show ollama -p MainPID --value 2>/dev/null || true)"
 [[ -n "${ollama_service_active}" ]] || ollama_service_active='unknown'
 [[ -n "${ollama_service_enabled}" ]] || ollama_service_enabled='unknown'
 [[ -n "${ollama_service_user}" ]] || ollama_service_user='unknown'
@@ -243,6 +263,7 @@ expected_model_present='false'
 expected_model_id='absent'
 expected_model_size='absent'
 loaded_model_count='unavailable'
+ollama_fixed_api_socket_owned='false'
 
 if have ollama; then
   ollama_cli_path="$(command -v ollama)"
@@ -251,25 +272,36 @@ if have ollama; then
   [[ -n "${ollama_cli_version}" ]] || ollama_cli_version='unavailable'
 fi
 
-if have ss && [[ "${ollama_service_main_pid}" =~ ^[1-9][0-9]*$ ]] && \
-  listener_lines="$(owned_listener_addresses "${ollama_service_main_pid}" 2>/dev/null)"; then
-  ollama_listener_probe_status='ok'
-  if [[ -n "${listener_lines}" ]]; then
-    ollama_listener_addresses="$(paste -sd, <<<"${listener_lines}")"
-    ollama_binding='loopback_only'
-    while IFS= read -r listener; do
-      if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
-        ollama_binding='unsafe_non_loopback'
-      fi
-    done <<<"${listener_lines}"
+if have ss; then
+  if listener_lines="$(stable_owned_listener_addresses 2>/dev/null)"; then
+    ollama_listener_probe_status='ok'
+    if [[ -n "${listener_lines}" ]]; then
+      ollama_listener_addresses="$(paste -sd, <<<"${listener_lines}")"
+      ollama_binding='loopback_only'
+      while IFS= read -r listener; do
+        if [[ "${listener}" == '127.0.0.1:11434' ]]; then
+          ollama_fixed_api_socket_owned='true'
+        fi
+        if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
+          ollama_binding='unsafe_non_loopback'
+        fi
+      done <<<"${listener_lines}"
+    else
+      ollama_listener_addresses='none'
+      ollama_binding='not_listening'
+    fi
   else
-    ollama_listener_addresses='none'
-    ollama_binding='not_listening'
+    listener_probe_exit=$?
+    if ((listener_probe_exit == 75)); then
+      ollama_listener_probe_status='identity_changed'
+    fi
   fi
 fi
 
 if [[ "${ollama_binding}" == 'loopback_only' ]]; then
-  if have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
+  if [[ "${ollama_fixed_api_socket_owned}" != 'true' ]]; then
+    ollama_api_probe_status='ownership_mismatch'
+  elif have curl && api_json="$(curl_local http://127.0.0.1:11434/api/version 2>/dev/null)"; then
     if [[ "${api_json}" =~ \"version\"[[:space:]]*:[[:space:]]*\"([0-9A-Za-z._+-]+)\" ]]; then
       ollama_api_version="${BASH_REMATCH[1]}"
       ollama_api_probe_status='ok'
@@ -348,10 +380,10 @@ execution_blockers="${blockers}"
 live_scenario_ready='false'
 
 case "${ollama_listener_probe_status}:${ollama_binding}" in
-  error:*) safety_status='safety_unverified' ;;
   ok:unsafe_non_loopback) safety_status='unsafe_exposure' ;;
   ok:loopback_only) safety_status='safe' ;;
-  *) safety_status='safe_not_ready' ;;
+  ok:*) safety_status='safe_not_ready' ;;
+  *) safety_status='safety_unverified' ;;
 esac
 
 printf 'report_version=2\n'
@@ -464,9 +496,9 @@ done
 [[ "${values[18]}" == 'ok' || "${values[18]}" == 'unavailable' || "${values[18]}" == 'error' ]] || fail 'invalid GPU probe status'
 [[ "${values[21]}" == 'active' || "${values[21]}" == 'inactive' || "${values[21]}" == 'failed' || "${values[21]}" == 'activating' || "${values[21]}" == 'deactivating' || "${values[21]}" == 'reloading' || "${values[21]}" == 'unknown' ]] || fail 'invalid Ollama service state'
 [[ "${values[22]}" == 'enabled' || "${values[22]}" == 'disabled' || "${values[22]}" == 'static' || "${values[22]}" == 'indirect' || "${values[22]}" == 'masked' || "${values[22]}" == 'generated' || "${values[22]}" == 'unknown' ]] || fail 'invalid Ollama enablement state'
-[[ "${values[25]}" == 'ok' || "${values[25]}" == 'error' ]] || fail 'invalid Ollama listener probe status'
+[[ "${values[25]}" == 'ok' || "${values[25]}" == 'error' || "${values[25]}" == 'identity_changed' ]] || fail 'invalid Ollama listener probe status'
 [[ "${values[26]}" == 'loopback_only' || "${values[26]}" == 'not_listening' || "${values[26]}" == 'unsafe_non_loopback' || "${values[26]}" == 'probe_error' ]] || fail 'invalid Ollama binding classification'
-[[ "${values[28]}" == 'ok' || "${values[28]}" == 'not_queried' || "${values[28]}" == 'error' ]] || fail 'invalid Ollama API probe status'
+[[ "${values[28]}" == 'ok' || "${values[28]}" == 'not_queried' || "${values[28]}" == 'error' || "${values[28]}" == 'ownership_mismatch' ]] || fail 'invalid Ollama API probe status'
 [[ "${values[29]}" == 'ok' || "${values[29]}" == 'not_queried' || "${values[29]}" == 'error' ]] || fail 'invalid Ollama inventory status'
 [[ "${values[30]}" == "${expected_model}" ]] || fail 'remote report changed the expected model'
 is_bool "${values[31]}" || fail 'invalid expected-model presence state'
@@ -485,7 +517,7 @@ done
 [[ "${values[43]}" == 'false' ]] || fail 'M2C.1 must never authorize a live scenario'
 [[ "${values[45]}" == 'safe' || "${values[45]}" == 'safe_not_ready' || "${values[45]}" == 'unsafe_exposure' || "${values[45]}" == 'safety_unverified' ]] || fail 'invalid safety status'
 
-if [[ "${values[25]}" == 'error' ]]; then
+if [[ "${values[25]}" != 'ok' ]]; then
   [[ "${values[24]}" == 'unavailable' && "${values[26]}" == 'probe_error' ]] || fail 'failed listener probe reported a derived listener classification'
 else
   [[ "${values[24]}" != 'unavailable' && "${values[26]}" != 'probe_error' ]] || fail 'successful listener probe reported unavailable results'
@@ -494,11 +526,15 @@ if [[ "${values[26]}" == 'not_listening' ]]; then
   [[ "${values[24]}" == 'none' ]] || fail 'not-listening classification contains listener addresses'
 elif [[ "${values[26]}" == 'loopback_only' ]]; then
   [[ "${values[24]}" != 'none' && "${values[24]}" != 'unavailable' ]] || fail 'loopback classification has no listener'
+  fixed_api_listener_present='false'
   old_ifs="${IFS}"
   IFS=','
   read -r -a listeners <<<"${values[24]}"
   IFS="${old_ifs}"
   for listener in "${listeners[@]}"; do
+    if [[ "${listener}" == '127.0.0.1:11434' ]]; then
+      fixed_api_listener_present='true'
+    fi
     if [[ ! "${listener}" =~ ^127\.0\.0\.1:[0-9]+$ && ! "${listener}" =~ ^\[::1\]:[0-9]+$ ]]; then
       fail "non-loopback Ollama listener ${listener} was classified as safe"
     fi
@@ -507,10 +543,19 @@ fi
 if [[ "${values[26]}" == 'unsafe_non_loopback' ]]; then
   [[ "${values[24]}" != 'none' && "${values[24]}" != 'unavailable' ]] || fail 'unsafe listener classification has no listener'
 fi
+if [[ "${values[28]}" == 'ok' || "${values[28]}" == 'error' ]]; then
+  [[ "${values[26]}" == 'loopback_only' && "${fixed_api_listener_present:-false}" == 'true' ]] || \
+    fail 'attempted Ollama API probe lacks service-owned fixed-endpoint evidence'
+fi
 if [[ "${values[28]}" == 'ok' ]]; then
-  [[ "${values[26]}" == 'loopback_only' && "${values[27]}" != 'unavailable' ]] || fail 'successful Ollama API probe lacks loopback version evidence'
+  [[ "${values[26]}" == 'loopback_only' && "${fixed_api_listener_present:-false}" == 'true' && \
+    "${values[27]}" != 'unavailable' ]] || fail 'successful Ollama API probe lacks service-owned fixed-endpoint evidence'
 else
   [[ "${values[27]}" == 'unavailable' ]] || fail 'unsuccessful Ollama API probe reported a version'
+fi
+if [[ "${values[28]}" == 'ownership_mismatch' ]]; then
+  [[ "${values[26]}" == 'loopback_only' && "${fixed_api_listener_present:-false}" == 'false' ]] || \
+    fail 'Ollama API ownership mismatch contradicts the process-owned listener evidence'
 fi
 [[ "${values[28]}" != 'not_queried' || "${values[26]}" != 'loopback_only' ]] || fail 'loopback-only Ollama listener was not probed'
 if [[ "${values[31]}" == 'true' ]]; then
@@ -535,7 +580,7 @@ fi
 [[ "${values[42]}" == "${expected_telemetry}" ]] || fail 'telemetry state contradicts its readiness evidence'
 
 expected_safety='safe_not_ready'
-if [[ "${values[25]}" == 'error' ]]; then
+if [[ "${values[25]}" != 'ok' ]]; then
   expected_safety='safety_unverified'
 elif [[ "${values[26]}" == 'unsafe_non_loopback' ]]; then
   expected_safety='unsafe_exposure'
@@ -583,9 +628,10 @@ else
   cat "${report_file}"
 fi
 
-[[ "${values[25]}" != 'error' ]] || fail 'Ollama listener probe failed; exposure safety is unverified'
+[[ "${values[25]}" == 'ok' ]] || fail 'Ollama listener identity changed or its probe failed; exposure safety is unverified'
 [[ "${values[26]}" != 'unsafe_non_loopback' ]] || fail 'Ollama is exposed beyond loopback; live execution is blocked'
 [[ "${values[28]}" != 'error' ]] || fail 'Ollama API probe failed; readiness is unverified'
+[[ "${values[28]}" != 'ownership_mismatch' ]] || fail 'the fixed Ollama API socket is not owned by the inspected service; readiness is unverified'
 [[ "${values[29]}" != 'error' ]] || fail 'Ollama inventory failed; readiness is unverified'
 [[ "${values[18]}" != 'error' ]] || fail 'GPU inventory failed; readiness is unverified'
 printf 'm2c1_inspection=PASS\n'
