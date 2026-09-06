@@ -1,0 +1,609 @@
+{
+  "schema_version": 1,
+  "corpus_id": "corpus:sha256:c5a629eae4bdb09c3bae58a9d29359882e1d920a680a320d0ed912ad55aba39b",
+  "scenario": {
+    "envelope": {
+      "schema_version": 1,
+      "record_id": "scenario:m2c2-http-ground-truth:v1",
+      "record_kind": "SCENARIO",
+      "data_class": "SYNTHETIC_GROUND_TRUTH",
+      "sensitivity": "INTERNAL",
+      "synthetic": true,
+      "lab_domain": "canaryattacker-development",
+      "scope": {
+        "domain": "canaryattacker-development",
+        "tenant_id": "tenant-canaryattacker-lab",
+        "scope_id": "scope-lab-a",
+        "deployment_boundary": "dgx-correlation-lab",
+        "residency_cell_id": "dgx-spark-local",
+        "key_namespace": "keyspace-canaryattacker-lab",
+        "registry_namespace": "registry-canaryattacker-evaluation"
+      },
+      "scenario_id": "m2c2-http-ground-truth",
+      "scenario_version": 1,
+      "run_id": "",
+      "recorded_at": "2026-09-06T20:00:00Z",
+      "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+      "expires_at": null,
+      "corpus_review_due": "2027-09-06T20:00:00Z",
+      "lifecycle_owner": "canaryattacker-development-laboratory",
+      "lifecycle_policy_version": "synthetic-ground-truth-v1",
+      "residency_policy_ref": "residency-dgx-local-v1",
+      "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+      "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+      "per_tenant_model_use": "DISABLED",
+      "cross_tenant_model_use": "DISABLED",
+      "estimated_storage_bytes": 8192,
+      "estimate_basis": "ASSUMED",
+      "lineage": []
+    },
+    "semantic_sha256": "cad4e262ab637bdccb687b5c3ed5106b30106a9fec79ba0c892b0f9947080931",
+    "name": "Bounded HTTP ground truth",
+    "objective": "Produce deterministic intent and action truth for one harmless lab target.",
+    "safety": "HARMLESS_LAB_ONLY",
+    "execution_mode": "ORDERED",
+    "required_fixtures": [
+      "fixture:sha256:82442cc2646d39ce6bfea5006f78f43ffd64c4922aa1ffdf3cca77a0a6fab7d5",
+      "fixture:sha256:a2583ebd69ffd23bdd2aaea23f4ee97661d260e11c9ea23834ad06c286d904b9"
+    ],
+    "targets": [
+      {
+        "alias": "lab-api",
+        "reference": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+        "fixture_ref": "fixture:sha256:82442cc2646d39ce6bfea5006f78f43ffd64c4922aa1ffdf3cca77a0a6fab7d5"
+      }
+    ],
+    "tool_constraints": [
+      {
+        "tool": "http_request",
+        "allowed_operations": [
+          "credential-check",
+          "enumerate-root",
+          "inspect-status"
+        ],
+        "max_actions": 3,
+        "max_request_bytes": 1024,
+        "max_response_bytes": 1024
+      }
+    ],
+    "steps": [
+      {
+        "id": "step-a",
+        "sequence": 1,
+        "objective": "Enumerate the harmless laboratory root endpoint.",
+        "allowed_actions": [
+          {
+            "tool": "http_request",
+            "target_alias": "lab-api",
+            "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+            "operation": "enumerate-root",
+            "input_fixture_ref": "",
+            "credential_fixture_ref": ""
+          }
+        ]
+      },
+      {
+        "id": "step-b",
+        "sequence": 2,
+        "objective": "Attempt the disposable fixture credential against the approved endpoint.",
+        "allowed_actions": [
+          {
+            "tool": "http_request",
+            "target_alias": "lab-api",
+            "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+            "operation": "credential-check",
+            "input_fixture_ref": "",
+            "credential_fixture_ref": "fixture:sha256:a2583ebd69ffd23bdd2aaea23f4ee97661d260e11c9ea23834ad06c286d904b9"
+          }
+        ]
+      },
+      {
+        "id": "step-c",
+        "sequence": 3,
+        "objective": "Confirm policy denial for an unregistered tool.",
+        "allowed_actions": [
+          {
+            "tool": "http_request",
+            "target_alias": "lab-api",
+            "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+            "operation": "inspect-status",
+            "input_fixture_ref": "",
+            "credential_fixture_ref": ""
+          }
+        ]
+      }
+    ],
+    "budgets": {
+      "max_actions": 4,
+      "max_duration_ms": 120000,
+      "max_concurrency": 1,
+      "max_request_bytes": 1024,
+      "max_response_bytes": 4096,
+      "max_model_tokens": 8192
+    },
+    "expected_telemetry": [
+      "canarysting",
+      "cilium",
+      "ebpf",
+      "envoy",
+      "hubble"
+    ]
+  },
+  "run": {
+    "run_id": "run-m2c2-fixture-001",
+    "seed": 42,
+    "intents": [
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "intent:sha256:9c636358e0de318f4876c196f3d23e0af1db37a0cbcefe0e7c567bc73561d6b4",
+          "record_kind": "ATTACKER_INTENT",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:01.001Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 4096,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "SCENARIO",
+              "id": "scenario:m2c2-http-ground-truth:v1",
+              "schema_version": 1
+            }
+          ]
+        },
+        "ordinal": 1,
+        "step_id": "step-a",
+        "objective": "Enumerate the harmless laboratory root endpoint.",
+        "model_identity": {
+          "attacker_id": "canaryattacker-qwen-local",
+          "provider": "ollama",
+          "model": "qwen3-coder:30b-a3b-q8_0",
+          "model_version": "7b438a19895a",
+          "planner_version": "planner-v1"
+        },
+        "proposed_action": {
+          "tool": "http_request",
+          "target_alias": "lab-api",
+          "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+          "operation": "enumerate-root",
+          "input_fixture_ref": "",
+          "credential_fixture_ref": ""
+        },
+        "policy_decision": {
+          "outcome": "APPROVED",
+          "policy_version": "tool-policy-v1",
+          "reason_code": "allowlist-match",
+          "approved_action": {
+            "tool": "http_request",
+            "target_alias": "lab-api",
+            "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+            "operation": "enumerate-root",
+            "input_fixture_ref": "",
+            "credential_fixture_ref": ""
+          }
+        },
+        "emitted_at": "2026-09-06T20:00:01Z",
+        "committed_at": "2026-09-06T20:00:01.001Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "planner_output_ref": "planner:sha256:4d721f8c4c690393d540141b77d7f06ddff0461d6c46fc8469e2206f36905aa4",
+        "applicable_budgets": {
+          "max_actions": 4,
+          "max_duration_ms": 120000,
+          "max_concurrency": 1,
+          "max_request_bytes": 1024,
+          "max_response_bytes": 4096,
+          "max_model_tokens": 8192
+        }
+      },
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "intent:sha256:6cafb4eb8873eeaf5e9f69319d64703be321f154dc519e15f6012d70c820573a",
+          "record_kind": "ATTACKER_INTENT",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:02.001Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 4096,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "SCENARIO",
+              "id": "scenario:m2c2-http-ground-truth:v1",
+              "schema_version": 1
+            }
+          ]
+        },
+        "ordinal": 2,
+        "step_id": "step-b",
+        "objective": "Attempt the disposable fixture credential against the approved endpoint.",
+        "model_identity": {
+          "attacker_id": "canaryattacker-qwen-local",
+          "provider": "ollama",
+          "model": "qwen3-coder:30b-a3b-q8_0",
+          "model_version": "7b438a19895a",
+          "planner_version": "planner-v1"
+        },
+        "proposed_action": {
+          "tool": "http_request",
+          "target_alias": "lab-api",
+          "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+          "operation": "credential-check",
+          "input_fixture_ref": "",
+          "credential_fixture_ref": "fixture:sha256:a2583ebd69ffd23bdd2aaea23f4ee97661d260e11c9ea23834ad06c286d904b9"
+        },
+        "policy_decision": {
+          "outcome": "APPROVED",
+          "policy_version": "tool-policy-v1",
+          "reason_code": "allowlist-match",
+          "approved_action": {
+            "tool": "http_request",
+            "target_alias": "lab-api",
+            "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+            "operation": "credential-check",
+            "input_fixture_ref": "",
+            "credential_fixture_ref": "fixture:sha256:a2583ebd69ffd23bdd2aaea23f4ee97661d260e11c9ea23834ad06c286d904b9"
+          }
+        },
+        "emitted_at": "2026-09-06T20:00:02Z",
+        "committed_at": "2026-09-06T20:00:02.001Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "planner_output_ref": "planner:sha256:b20f4d31060c43b55d6dcb11242987ceb60190aabf8c456bb14afd7c1f9c2c1b",
+        "applicable_budgets": {
+          "max_actions": 4,
+          "max_duration_ms": 120000,
+          "max_concurrency": 1,
+          "max_request_bytes": 1024,
+          "max_response_bytes": 4096,
+          "max_model_tokens": 8192
+        }
+      },
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "intent:sha256:dc88530e7153a44d0c4a562526677b2a915e6491e8e52c9b64c106fc38aa70f1",
+          "record_kind": "ATTACKER_INTENT",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:03.001Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 4096,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "SCENARIO",
+              "id": "scenario:m2c2-http-ground-truth:v1",
+              "schema_version": 1
+            }
+          ]
+        },
+        "ordinal": 3,
+        "step_id": "step-c",
+        "objective": "Confirm policy denial for an unregistered tool.",
+        "model_identity": {
+          "attacker_id": "canaryattacker-qwen-local",
+          "provider": "ollama",
+          "model": "qwen3-coder:30b-a3b-q8_0",
+          "model_version": "7b438a19895a",
+          "planner_version": "planner-v1"
+        },
+        "proposed_action": {
+          "tool": "shell",
+          "target_alias": "outside-policy",
+          "target_ref": "labtarget:sha256:44ea7440eb34ddab6a9642834bc645b02432657f6f34cf473fa20fc7d5277d74",
+          "operation": "execute-command",
+          "input_fixture_ref": "fixture:sha256:9470748ab35f2731b19a5f4520013db222d1f21254a367d99193a75266ff8839",
+          "credential_fixture_ref": ""
+        },
+        "policy_decision": {
+          "outcome": "DENIED",
+          "policy_version": "tool-policy-v1",
+          "reason_code": "tool-not-registered",
+          "approved_action": null
+        },
+        "emitted_at": "2026-09-06T20:00:03Z",
+        "committed_at": "2026-09-06T20:00:03.001Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "planner_output_ref": "planner:sha256:404bdfdfe37648ee952099efbd6bd020b7fb82bb4be92c826e0aa6ce48a0d0e4",
+        "applicable_budgets": {
+          "max_actions": 4,
+          "max_duration_ms": 120000,
+          "max_concurrency": 1,
+          "max_request_bytes": 1024,
+          "max_response_bytes": 4096,
+          "max_model_tokens": 8192
+        }
+      }
+    ],
+    "actions": [
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "action:sha256:9aaabe25b8563ccb5e0bde15b458b764f099ae03963dc404c97df7142cfdcfc7",
+          "record_kind": "ATTACKER_ACTION",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:01.013Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 4096,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "ATTACKER_INTENT",
+              "id": "intent:sha256:9c636358e0de318f4876c196f3d23e0af1db37a0cbcefe0e7c567bc73561d6b4",
+              "schema_version": 1
+            }
+          ]
+        },
+        "parent_intent_id": "intent:sha256:9c636358e0de318f4876c196f3d23e0af1db37a0cbcefe0e7c567bc73561d6b4",
+        "status": "SUCCEEDED",
+        "action": {
+          "tool": "http_request",
+          "target_alias": "lab-api",
+          "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+          "operation": "enumerate-root",
+          "input_fixture_ref": "",
+          "credential_fixture_ref": ""
+        },
+        "attempted": true,
+        "started_at": "2026-09-06T20:00:01.002Z",
+        "ended_at": "2026-09-06T20:00:01.012Z",
+        "recorded_at": "2026-09-06T20:00:01.013Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "error_code": "",
+        "executor_version": "executor-v1",
+        "tool_policy_version": "tool-policy-v1",
+        "response_metadata": {
+          "status_code": 200,
+          "bytes": 128,
+          "sha256": "886d90edf0167de747744212474f49ed6c4c3ca65f64feff5fd9840a1d6b554d"
+        },
+        "evidence_refs": [
+          "evidence:sha256:1c8f2c3d7906045c9f49537782712b0552121268d87f6f51052c2739147c60e1",
+          "evidence:sha256:a9e85d0fca9d99df4cbf5c86c67fbc98a1bc9cc7a37dc08c108e5b222c6a8bd0"
+        ],
+        "network_refs": [
+          "network:sha256:730e938abe361240c534ba7bd28251b3a345f3b937e9c97e509878c6a031d037"
+        ]
+      },
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "action:sha256:f547685032d94d3ccca89c9726c5c2f70fb90628a68ef489d147318d5cd1062f",
+          "record_kind": "ATTACKER_ACTION",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:02.013Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 4096,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "ATTACKER_INTENT",
+              "id": "intent:sha256:6cafb4eb8873eeaf5e9f69319d64703be321f154dc519e15f6012d70c820573a",
+              "schema_version": 1
+            }
+          ]
+        },
+        "parent_intent_id": "intent:sha256:6cafb4eb8873eeaf5e9f69319d64703be321f154dc519e15f6012d70c820573a",
+        "status": "FAILED",
+        "action": {
+          "tool": "http_request",
+          "target_alias": "lab-api",
+          "target_ref": "labtarget:sha256:136922615e583c1b7a331e3000ace416d335ba58778c273c27d524b4b20da69e",
+          "operation": "credential-check",
+          "input_fixture_ref": "",
+          "credential_fixture_ref": "fixture:sha256:a2583ebd69ffd23bdd2aaea23f4ee97661d260e11c9ea23834ad06c286d904b9"
+        },
+        "attempted": true,
+        "started_at": "2026-09-06T20:00:02.002Z",
+        "ended_at": "2026-09-06T20:00:02.012Z",
+        "recorded_at": "2026-09-06T20:00:02.013Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "error_code": "fixture_rejected",
+        "executor_version": "executor-v1",
+        "tool_policy_version": "tool-policy-v1",
+        "response_metadata": {
+          "status_code": 401,
+          "bytes": 16,
+          "sha256": "b98c4b9c9bb06301061fa2dbbfafa9dd574d9e7bb10a09f3bab1ecf9bd2db079"
+        },
+        "evidence_refs": [
+          "evidence:sha256:1c8f2c3d7906045c9f49537782712b0552121268d87f6f51052c2739147c60e1",
+          "evidence:sha256:a9e85d0fca9d99df4cbf5c86c67fbc98a1bc9cc7a37dc08c108e5b222c6a8bd0"
+        ],
+        "network_refs": [
+          "network:sha256:730e938abe361240c534ba7bd28251b3a345f3b937e9c97e509878c6a031d037"
+        ]
+      },
+      {
+        "envelope": {
+          "schema_version": 1,
+          "record_id": "action:sha256:38990db77ea5b3f8d1dd88eb6fe28de4b31028cac4571b9e6fa6f4d654291bd6",
+          "record_kind": "ATTACKER_ACTION",
+          "data_class": "SYNTHETIC_GROUND_TRUTH",
+          "sensitivity": "INTERNAL",
+          "synthetic": true,
+          "lab_domain": "canaryattacker-development",
+          "scope": {
+            "domain": "canaryattacker-development",
+            "tenant_id": "tenant-canaryattacker-lab",
+            "scope_id": "scope-lab-a",
+            "deployment_boundary": "dgx-correlation-lab",
+            "residency_cell_id": "dgx-spark-local",
+            "key_namespace": "keyspace-canaryattacker-lab",
+            "registry_namespace": "registry-canaryattacker-evaluation"
+          },
+          "scenario_id": "m2c2-http-ground-truth",
+          "scenario_version": 1,
+          "run_id": "run-m2c2-fixture-001",
+          "recorded_at": "2026-09-06T20:00:03.002Z",
+          "retention_policy": "INDEFINITE_VERSIONED_CORPUS",
+          "expires_at": null,
+          "corpus_review_due": "2027-09-06T20:00:00Z",
+          "lifecycle_owner": "canaryattacker-development-laboratory",
+          "lifecycle_policy_version": "synthetic-ground-truth-v1",
+          "residency_policy_ref": "residency-dgx-local-v1",
+          "encryption_key_ref": "keyref:sha256:da540fdb6f13b950bf2e4cb324d53b7fd4d179c78ddd9b1778297144386f99ab",
+          "operational_policy_ref": "canaryattacker-lab-evaluation-only-v1",
+          "per_tenant_model_use": "DISABLED",
+          "cross_tenant_model_use": "DISABLED",
+          "estimated_storage_bytes": 2048,
+          "estimate_basis": "ASSUMED",
+          "lineage": [
+            {
+              "kind": "ATTACKER_INTENT",
+              "id": "intent:sha256:dc88530e7153a44d0c4a562526677b2a915e6491e8e52c9b64c106fc38aa70f1",
+              "schema_version": 1
+            }
+          ]
+        },
+        "parent_intent_id": "intent:sha256:dc88530e7153a44d0c4a562526677b2a915e6491e8e52c9b64c106fc38aa70f1",
+        "status": "DENIED",
+        "action": {
+          "tool": "shell",
+          "target_alias": "outside-policy",
+          "target_ref": "labtarget:sha256:44ea7440eb34ddab6a9642834bc645b02432657f6f34cf473fa20fc7d5277d74",
+          "operation": "execute-command",
+          "input_fixture_ref": "fixture:sha256:9470748ab35f2731b19a5f4520013db222d1f21254a367d99193a75266ff8839",
+          "credential_fixture_ref": ""
+        },
+        "attempted": false,
+        "started_at": null,
+        "ended_at": null,
+        "recorded_at": "2026-09-06T20:00:03.002Z",
+        "clock_source": "ntp-synchronized-system-clock",
+        "clock_uncertainty_ms": 5,
+        "error_code": "policy_denied",
+        "executor_version": "",
+        "tool_policy_version": "tool-policy-v1",
+        "response_metadata": null,
+        "evidence_refs": [
+          "evidence:sha256:867df43ecbe7d9a85f035594e7aa735dbe32a5ea63fd3d31431a3666f5f1b5bd"
+        ],
+        "network_refs": []
+      }
+    ]
+  }
+}

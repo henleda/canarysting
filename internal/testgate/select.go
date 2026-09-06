@@ -225,7 +225,7 @@ func selectAdversarial(selected map[string]bool, all map[string]Check, files []s
 }
 
 func isSecurityPath(file string) bool {
-	for _, prefix := range []string{"internal/contract/", "internal/engine/", "internal/sting/", "internal/identity/", "internal/operator/", "adapters/", "deploy/", "cmd/llm-attacker/", "internal/llm/attacker/", "bpf/"} {
+	for _, prefix := range []string{"internal/contract/", "internal/engine/", "internal/sting/", "internal/identity/", "internal/operator/", "internal/canaryattacker/", "adapters/", "deploy/", "cmd/llm-attacker/", "internal/llm/attacker/", "bpf/"} {
 		if strings.HasPrefix(file, prefix) {
 			return true
 		}

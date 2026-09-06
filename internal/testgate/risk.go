@@ -130,6 +130,8 @@ func classifyPath(path string) (RiskLevel, string, bool) {
 	switch {
 	case path == "":
 		return RiskHigh, "empty or unknown path defaults to HIGH", true
+	case strings.HasPrefix(path, "internal/canaryattacker/"):
+		return RiskHigh, "synthetic adversary contract and ground-truth isolation boundary", true
 	case strings.HasPrefix(path, "bpf/"), strings.HasPrefix(path, "scripts/dgx/"), strings.HasPrefix(path, "cmd/tracespike/"),
 		strings.HasPrefix(path, "internal/sting/containment/"), strings.HasPrefix(path, "bpf/sockops/"),
 		strings.HasPrefix(path, "internal/llm/attacker/"), strings.HasPrefix(path, "cmd/llm-attacker/"):
