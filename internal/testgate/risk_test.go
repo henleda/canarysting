@@ -15,6 +15,7 @@ func TestRiskClassificationRepresentativePaths(t *testing.T) {
 		{name: "low", files: []string{"docs/README.md"}, want: RiskLow},
 		{name: "standard", files: []string{"internal/dashboard/views.go"}, want: RiskStandard},
 		{name: "high", files: []string{"internal/engine/engine.go"}, want: RiskHigh},
+		{name: "canaryattacker-ground-truth", files: []string{"internal/canaryattacker/groundtruth/records.go"}, want: RiskHigh},
 		{name: "critical", files: []string{"bpf/enforce/enforce.bpf.c"}, want: RiskCritical, profile: "dgx-kernel"},
 		{name: "unknown", files: []string{"unmapped/new-format.xyz"}, want: RiskHigh},
 	}
@@ -31,6 +32,16 @@ func TestRiskClassificationRepresentativePaths(t *testing.T) {
 				t.Fatalf("missing remote profile %s: %+v", test.profile, report)
 			}
 		})
+	}
+}
+
+func TestCanaryAttackerGroundTruthIsHighRiskWithoutRemoteRuntime(t *testing.T) {
+	report, err := ClassifyRisk([]string{"internal/canaryattacker/groundtruth/records.go"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Effective != RiskHigh || report.RequiresDGX || report.RequiresLiveQwen || len(report.RemoteProfiles) != 0 {
+		t.Fatalf("ground-truth risk=%+v, want HIGH local-only", report)
 	}
 }
 
@@ -157,6 +168,12 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSelected(t, high, "security-invariants", "go-test-race", "adversarial:fixture")
+
+	groundTruth, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"internal/canaryattacker/groundtruth/records.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, groundTruth, "security-invariants", "go-test-race", "adversarial:fixture")
 
 	critical, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"bpf/enforce/enforce.bpf.c"})
 	if err != nil {

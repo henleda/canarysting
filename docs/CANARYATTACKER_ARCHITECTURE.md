@@ -1,6 +1,6 @@
 # CanaryAttacker Architecture
 
-Status: conceptual architecture for a future DGX lab harness. No attacker runtime is created or changed by this document.
+Status: approved architecture with the M2C.1 passive DGX readiness inspector and the M2C.2 scenario/ground-truth contract implemented. The bounded executor and live Qwen loop remain future work; the contract adds no attacker runtime or authority.
 
 ## Purpose
 
@@ -17,6 +17,8 @@ CanaryAttacker is not a general penetration-testing agent and is not production 
 The repository already contains `internal/llm/attacker`, `internal/llm/anthropic`, `cmd/llm-attacker`, and staged-range fixtures. They demonstrate useful safety patterns: a fixed target, one structured HTTP tool, bounded response reads, hard turn/token/dollar budgets, cancellation, scripted mode, deterministic cassette replay, and separation from engine/Sting imports.
 
 That implementation is Anthropic/demo-specific, uses a narrow result ledger, and does not emit the proposed scenario-level `AttackerIntent` and `AttackerAction` records. The Qwen harness should reuse appropriate generic safety mechanisms rather than duplicate them, but it should not rename or redesign the working demo merely to fit the CanaryAttacker name.
+
+`internal/canaryattacker/groundtruth` is the standard-library-only M2C.2 contract leaf. It defines schema-v1 scenarios, stable explicit scenario/step identifiers, canonical opaque target and fixture references, whole-millisecond hard budgets, pre-action intent, approved/denied policy decisions, post-action success/failure/denial truth, direct lineage, and deterministic strict JSON that rejects duplicate or unknown object fields. Scenario, intent, and action records serialize independently under their exact parent so an executor can durably record intent before attempting the action; the canonical fixed-seed corpus bundles the same records for replay. The package deliberately does not import or wrap the Anthropic demo runtime: it reuses its reviewed safety shape—external bounds, deterministic replay, cancellation-ready records, and separation from the decision engine—without coupling the new contract to a provider or executor.
 
 ## Components
 
@@ -154,6 +156,8 @@ Emitted after attempted execution:
 
 Intent and action are separate: a model may intend something the policy denies, a tool may fail, or execution may differ from the proposed request after normalization.
 
+The schema-v1 constructor enforces exactly one action record per intent, strict intent-before-action time, contiguous intent ordinals, ordered scenario steps where configured, aggregate scenario-definition limits, global action/duration/concurrency/request/response/model-token bounds, per-tool action/request/response ceilings, per-record evidence/reference limits, and exact run/scope/parent isolation. JSON input is capped at 32 MiB before decoding. Denied proposals remain non-attempted actions without executor, network, response, or fabricated timing facts. A separate semantic SHA-256 binds the content behind the stable human-facing scenario/version ID; canonical intent and action identifiers bind their complete semantics and exact reviewed scenario; the corpus identifier also binds the fixed seed and ordered records. The committed golden fixture covers successful, failed, and policy-denied outcomes without invoking a model or network target.
+
 ## Trust and evidence handling
 
 Attacker records are **declared lab ground truth about the harness**, not proof of what the network or workload observed. CanaryView stores them in a distinct ground-truth source class and compares them with independent telemetry. The model's prose and interpretation are untrusted inputs. A scenario label never manufactures a Cilium, Envoy, kernel, or CanarySting observation.
@@ -201,7 +205,7 @@ PR validation is split from live campaign generation:
 - **Targeted live smoke (Level 2 HIGH/CRITICAL)** is limited to one or two fixed approved-lab scenarios when attacker tools, trigger behavior, deployment, or response behavior changes. It requires strict timeout, fixed tool policy, before/after evidence, and cleanup.
 - **Full live campaign (Level 4)** is scheduled weekly/on demand and measures trace, identity, correlation, response, resource, cleanup, and repeatability. It is not an ordinary PR blocker.
 
-The repository currently implements deterministic legacy replay and bounded cookie/enforcement DGX profiles, not the live Qwen planner. The Level 4 CI entry is deliberately fail-closed until the re-baselined M2D work supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
+The repository currently implements deterministic legacy replay, bounded cookie/enforcement DGX profiles, the passive M2C.1 readiness inspector, and the schema-v1 M2C.2 ground-truth corpus contract—not the bounded executor or live Qwen planner. The Level 4 CI entry is deliberately fail-closed until the re-baselined M2C/M2D work supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
 
 Re-baselined M2D first verifies Ollama/Qwen, defines scenarios/contracts/tools, implements bounded execution, and proves cleanup, then runs scenarios against the DGX stack, correlates observations, and publishes evidence-backed metrics. The preserved detailed M2C/M2D rows in `docs/DEVELOPMENT_PLAN.md` jointly decompose that work. Initial execution remains small and deterministic; model-adaptive variation is added only after the fixed scenarios and safety denials are reliable.
 

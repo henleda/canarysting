@@ -1,6 +1,6 @@
 # CanaryView Canonical Data Model
 
-Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary, schema-v3 canonical model, M2A.4 bounded observation-store proof seam, M2B.4 lifecycle-bearing trace-projection proof seam, and M2B.5 read-only operator projection recorded. Persistence technology and runtime integration remain deferred.
+Status: approved conceptual specification (M2A.0.4, 2026-09-01) with the M2A.1 package/reuse boundary, schema-v3 canonical model, M2A.4 bounded observation-store proof seam, M2B.4 lifecycle-bearing trace-projection proof seam, M2B.5 read-only operator projection, and the separate M2C.2 synthetic ground-truth contract recorded. Persistence technology and runtime integration remain deferred.
 
 ## Purpose
 
@@ -494,6 +494,10 @@ CanarySting activity—placement, observation, touch, verdict, response, contain
 `AttackerAction` is emitted after execution and includes the corresponding intent/scenario step, action/tool, target, start/end time, result, latency, bounded response metadata, error, and executor evidence.
 
 These are declared lab ground truth about harness intent/execution—not trusted network telemetry. CanaryView compares them with independent Cilium/Hubble, Envoy, kernel, Kubernetes, and CanarySting observations to measure trace completeness, precision/recall, identity accuracy, false joins, missing observations, and time alignment.
+
+M2C.2 implements these records in the separate standard-library-only `internal/canaryattacker/groundtruth` leaf rather than widening schema-v3 `Observation`. Its schema-v1 envelope fixes `SYNTHETIC_GROUND_TRUTH`, Internal sensitivity, the CanaryAttacker lab domain, exact scope/run/scenario identity, no expiry with an explicit review date, separate residency/key/registry namespaces, both model-use grants disabled, an assumed/measured/benchmarked storage estimate, and direct scenario → intent → action lineage. A semantic SHA-256 makes content drift visible behind the stable explicit scenario/version ID. Scenario, intent, and action serialize independently under their exact parent, while the corpus bundles the same records for fixed-seed replay. Targets, payloads, planner output, credentials, network facts, and executor evidence are represented only by type-prefixed SHA-256 references; free-form scenario/objective text rejects credential-, locator-, address-, and control-like content. Strict canonical JSON rejects duplicate or unknown fields, trailing values, classification changes, cross-scope parents, semantic identity mismatches, and input larger than 32 MiB before decoding.
+
+This is a corpus contract and repository fixture, not a CanaryView collector, production observation, persistence backend, or trusted source assertion. Raw corpus JSON cannot decode as schema-v3 production observation data. Even an explicit synthetic schema-v3 projection remains `synthetic=true` and is rejected by `ProductionObservationStore`, while import guards keep CanaryView, CanarySting decision/enforcement packages, adapters, and eBPF independent of the ground-truth package.
 
 ## Human and agent interfaces
 
