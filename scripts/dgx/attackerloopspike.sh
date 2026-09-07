@@ -34,7 +34,7 @@ validate_run_id() {
   [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] ||
     fail 'run ID must be 1-48 lowercase alphanumeric/hyphen characters and begin/end alphanumeric'
 }
-validate_model_report() {
+validate_model_identity_report() {
   local report="$1"
   grep -Fqx 'ollama_listener_probe_status=ok' <<<"${report}" || return 1
   grep -Fqx 'ollama_binding=loopback_only' <<<"${report}" || return 1
@@ -43,9 +43,13 @@ validate_model_report() {
   grep -Fqx "expected_model=${expected_model}" <<<"${report}" || return 1
   grep -Fqx 'expected_model_present=true' <<<"${report}" || return 1
   grep -Fqx "expected_model_id=${expected_model_id}" <<<"${report}" || return 1
-  grep -Fqx 'loaded_model_count=0' <<<"${report}" || return 1
   grep -Fqx 'safety_status=safe' <<<"${report}" || return 1
   grep -Fqx 'm2c1_inspection=PASS' <<<"${report}" || return 1
+}
+validate_model_report() {
+  local report="$1"
+  validate_model_identity_report "${report}" || return 1
+  grep -Fqx 'loaded_model_count=0' <<<"${report}" || return 1
 }
 
 run_id=''
@@ -81,11 +85,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   exit 0
 fi
 
-if [[ "${mode}" == 'cleanup' ]]; then
-  exec "${cleanup_script}" --run-id "${run_id}"
-fi
-
-for required in ssh grep "${copy_script}" "${check_script}" "${attackercheck_script}"; do
+for required in ssh grep "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
   else
@@ -94,15 +94,29 @@ for required in ssh grep "${copy_script}" "${check_script}" "${attackercheck_scr
 done
 
 pre_model_report="$("${attackercheck_script}")"
-validate_model_report "${pre_model_report}" || fail 'pre-run Ollama identity, binding, inventory, or unloaded-state check failed'
-printf 'pre_model_check=PASS\n'
-if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
-  "${preflight_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
+cleanup_stage_state=''
+if [[ "${mode}" == 'cleanup' ]]; then
+  validate_model_identity_report "${pre_model_report}" || fail 'cleanup Ollama identity, binding, or inventory check failed'
+  cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"
+  cleanup_stage_state="$(grep -E '^stage=(validated|absent)$' <<<"${cleanup_inventory}")"
+  [[ "${cleanup_stage_state}" == 'stage=validated' || "${cleanup_stage_state}" == 'stage=absent' ]] ||
+    fail 'cleanup inspection did not return one exact stage state'
+  if [[ "${cleanup_stage_state}" == 'stage=absent' ]]; then
+    validate_model_report "${pre_model_report}" || fail 'run stage is absent while a model remains loaded'
+  fi
 else
-  CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
+  validate_model_report "${pre_model_report}" || fail 'pre-run Ollama identity, binding, inventory, or unloaded-state check failed'
+  printf 'pre_model_check=PASS\n'
+  if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
+    "${preflight_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
+  else
+    CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
+  fi
+  "${copy_script}" --verify-only --run-id "${run_id}"
 fi
-"${copy_script}" --verify-only --run-id "${run_id}"
 
+remote_status=0
+if [[ "${mode}" != 'cleanup' || "${cleanup_stage_state}" == 'stage=validated' ]]; then
 set +e
 ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" <<'REMOTE'
 set -euo pipefail
@@ -113,7 +127,7 @@ mode="$2"
 expected_model="$3"
 expected_model_id="$4"
 [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid remote run ID'
-[[ "${mode}" == 'run' || "${mode}" == 'inspect' ]] || fail 'invalid remote mode'
+[[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
 [[ "${expected_model}" == 'qwen3-coder:30b-a3b-q8_0' && "${expected_model_id}" == '7b438a19895a' ]] || fail 'unexpected model identity'
 [[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected proof host'
 for tool in awk chmod date env find hostname mkdir mv sed sha256sum sort stat timeout tr uname wc; do
@@ -159,6 +173,12 @@ cleanup_after_signal() {
 if [[ "${mode}" == 'run' ]]; then
   trap cleanup_model EXIT
   trap cleanup_after_signal INT TERM
+fi
+if [[ "${mode}" == 'cleanup' ]]; then
+  cleanup_model
+  [[ "${model_cleanup}" == 'PASS' ]] || fail 'fixed-model cleanup failed'
+  printf 'PASS: fixed model unloaded before run-stage cleanup\n'
+  exit 0
 fi
 
 manifest_value() {
@@ -299,10 +319,15 @@ printf 'evidence=%s\n' "${evidence}"
 REMOTE
 remote_status=$?
 set -e
+fi
 
 post_model_report="$("${attackercheck_script}")"
 validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, inventory, or unloaded-state check failed'
 printf 'post_model_check=PASS\n'
+[[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"
+if [[ "${mode}" == 'cleanup' ]]; then
+  "${cleanup_script}" --run-id "${run_id}"
+  exit 0
+fi
 CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
 printf 'post_attacker_loop_check=PASS\n'
-[[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"

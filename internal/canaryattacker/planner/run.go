@@ -1,7 +1,6 @@
 package planner
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -41,11 +40,16 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			return result, nil
 		}
 		remainingTokens := budgets.MaxModelTokens() - usedTokens
+		contextTokens, outputTokens, ok := turnTokenLimits(remainingTokens)
+		if !ok {
+			result.StopReason = StopTokenBudget
+			return result, nil
+		}
 		request := TurnRequest{
 			Model: c.model.Model(), Instruction: fixedInstruction,
 			Tools: c.toolsForStep(stepIndex), Observations: append([]Observation(nil), observations...),
-			MaxOutputTokens: min64(remainingTokens, AbsoluteMaxOutputTokens),
-			ContextTokens:   min64(budgets.MaxModelTokens(), AbsoluteMaxContextTokens),
+			MaxOutputTokens: outputTokens,
+			ContextTokens:   contextTokens,
 			MaxProposals:    1,
 			Seed:            c.seed,
 		}
@@ -156,7 +160,20 @@ func (c *Coordinator) selectAction(stepIndex int, proposal Proposal, first bool)
 }
 
 func emptyArguments(raw json.RawMessage) bool {
-	return bytes.Equal(bytes.TrimSpace(raw), []byte("{}"))
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return false
+	}
+	return object != nil && len(object) == 0
+}
+
+func turnTokenLimits(remaining uint64) (contextTokens, outputTokens uint64, ok bool) {
+	if remaining < 2 {
+		return 0, 0, false
+	}
+	outputTokens = min64(remaining/2, AbsoluteMaxOutputTokens)
+	contextTokens = min64(remaining-outputTokens, AbsoluteMaxContextTokens)
+	return contextTokens, outputTokens, contextTokens > 0 && outputTokens > 0
 }
 
 func rejectedAction(step groundtruth.Step) (groundtruth.ActionSpec, error) {

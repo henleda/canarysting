@@ -90,6 +90,47 @@ func TestExternalTokenBudgetStopsBeforeProposalExecution(t *testing.T) {
 	}
 }
 
+func TestEveryTurnAllowanceFitsRemainingCumulativeTokenBudget(t *testing.T) {
+	values := testValues(t, 2, 4, 1000)
+	client := &fakeClient{responses: []TurnResponse{
+		validResponse(values.model.Model(), 400, 100, Proposal{Name: "action_001", Arguments: json.RawMessage(`{}`)}),
+		validResponse(values.model.Model(), 100, 20, Proposal{Name: "action_002", Arguments: json.RawMessage(`{}`)}),
+	}}
+	coordinator := newCoordinator(t, values, client, &fakeExecutor{}, 2)
+	result, err := coordinator.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopScenarioComplete {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	requests := client.snapshot()
+	responses := client.responseSnapshot()
+	if len(requests) != 2 || len(responses) != 2 {
+		t.Fatalf("model request/response counts = %d/%d, want 2/2", len(requests), len(responses))
+	}
+	remaining := uint64(1000)
+	for index, request := range requests {
+		if request.ContextTokens+request.MaxOutputTokens > remaining {
+			t.Fatalf("turn %d allowances %d+%d exceed remaining budget %d", index+1, request.ContextTokens, request.MaxOutputTokens, remaining)
+		}
+		remaining -= responses[index].PromptTokens + responses[index].OutputTokens
+	}
+}
+
+func TestEmptyArgumentsAcceptsAnyEmptyJSONObjectEncoding(t *testing.T) {
+	for _, raw := range []string{`{}`, `{ }`, "{\n\t}"} {
+		if !emptyArguments(json.RawMessage(raw)) {
+			t.Fatalf("semantically empty object %q was rejected", raw)
+		}
+	}
+	for _, raw := range []string{`null`, `[]`, `{"value":1}`, `{`, `{ "value": 1, "value": 2 }`} {
+		if emptyArguments(json.RawMessage(raw)) {
+			t.Fatalf("non-empty or invalid argument value %q was accepted", raw)
+		}
+	}
+}
+
 func TestCancellationStopsModelLoopWithoutAnotherCall(t *testing.T) {
 	values := testValues(t, 1, 2, 1000)
 	client := &cancelClient{started: make(chan struct{})}
@@ -246,6 +287,7 @@ type fakeClient struct {
 	mu        sync.Mutex
 	responses []TurnResponse
 	requests  []TurnRequest
+	returned  []TurnResponse
 }
 
 func (c *fakeClient) Complete(_ context.Context, request TurnRequest) (TurnResponse, error) {
@@ -257,6 +299,7 @@ func (c *fakeClient) Complete(_ context.Context, request TurnRequest) (TurnRespo
 	}
 	response := c.responses[0]
 	c.responses = c.responses[1:]
+	c.returned = append(c.returned, response)
 	return response, nil
 }
 
@@ -264,6 +307,12 @@ func (c *fakeClient) snapshot() []TurnRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]TurnRequest(nil), c.requests...)
+}
+
+func (c *fakeClient) responseSnapshot() []TurnResponse {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]TurnResponse(nil), c.returned...)
 }
 
 type fakeExecutor struct {

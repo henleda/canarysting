@@ -54,17 +54,26 @@ if grep -E '(^|[[:space:]])(sudo|kubectl|bpftool|systemctl|iptables|nft|docker|c
 fi
 
 report_definition="$(awk '/^validate_model_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+identity_report_definition="$(awk '/^validate_model_identity_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 schema_definition="$(awk '/^validate_result_schema\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
-[[ -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" ]] || fail 'proof validators are not independently testable'
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" ]] || fail 'proof validators are not independently testable'
 
 valid_report=$'ollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
-bash -c "${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
+bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
 bad_report="${valid_report/loaded_model_count=0/loaded_model_count=1}"
-if bash -c "${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${bad_report}"; then
+if bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${bad_report}"; then
   fail 'model report accepted an already-loaded model'
 fi
+bash -c "${identity_report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_identity_report "$1"' -- "${bad_report}" || fail 'cleanup identity validator rejected an otherwise safe loaded-model report'
+
+cleanup_inspect_line="$(grep -nF 'cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"' "${proof_script}" | cut -d: -f1)"
+remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${proof_script}" | cut -d: -f1)"
+post_check_line="$(grep -nF 'validate_model_report "${post_model_report}"' "${proof_script}" | cut -d: -f1)"
+generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${proof_script}" | tail -n1 | cut -d: -f1)"
+[[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
+((cleanup_inspect_line < remote_cleanup_line && remote_cleanup_line < post_check_line && post_check_line < generic_cleanup_line)) || fail 'cleanup can remove the stage before fixed-model unload and verification'
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXXXX")"
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
