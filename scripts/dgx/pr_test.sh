@@ -69,6 +69,16 @@ grep -Fqx 'artifact_build_count=0' <<<"${attacker_check_output}"
 grep -Fqx 'artifact_transfer_count=0' <<<"${attacker_check_output}"
 grep -Fq 'attacker-lab inspection contract passed; DGX was not accessed' <<<"${attacker_check_output}"
 
+cleanup_policy_definition="$(awk '/^should_run_generic_cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+[[ -n "${cleanup_policy_definition}" ]] || { echo 'FAIL: DGX cleanup policy is not independently testable' >&2; exit 1; }
+bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 0'
+if bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 1'; then
+  echo 'FAIL: attacker-loop cleanup failure permits generic stage deletion' >&2
+  exit 1
+fi
+bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup kernel-full 1'
+grep -Fq 'if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then' "${script_dir}/pr.sh"
+
 grep -Fq '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh"
 summary_line="$(grep -nF '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh" | cut -d: -f1)"
 work_root_line="$(grep -nF 'work_root="$(mktemp -d' "${script_dir}/pr.sh" | cut -d: -f1)"

@@ -167,6 +167,31 @@ func TestResponseParserDoesNotEchoUntrustedFieldNames(t *testing.T) {
 	}
 }
 
+func TestResponseParserRejectsCaseAliasedFields(t *testing.T) {
+	request := turnRequest()
+	valid := validAPIResponse(request.Model, "action_001", "{}")
+	for name, body := range map[string]string{
+		"case-fold collision": strings.Replace(valid, "\"arguments\":{}", "\"arguments\":{\"target\":\"elsewhere\"},\"Arguments\":{}", 1),
+		"noncanonical alias":  strings.Replace(valid, "\"arguments\":{}", "\"Arguments\":{}", 1),
+		"root alias":          strings.Replace(valid, "\"model\":\"", "\"Model\":\"", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseResponse([]byte(body), request); err == nil {
+				t.Fatalf("case-aliased response accepted: %s", body)
+			}
+		})
+	}
+
+	argumentsRemainOpaque := strings.Replace(valid, "\"arguments\":{}", "\"arguments\":{\"Target\":\"elsewhere\"}", 1)
+	response, err := parseResponse([]byte(argumentsRemainOpaque), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Proposals) != 1 || string(response.Proposals[0].Arguments) != "{\"Target\":\"elsewhere\"}" {
+		t.Fatalf("nonempty opaque arguments = %s", response.Proposals[0].Arguments)
+	}
+}
+
 func TestCancelledRequestStopsPrompt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 		<-request.Context().Done()
@@ -223,6 +248,22 @@ func TestUnloadRejectsNonJSONResponse(t *testing.T) {
 	}
 	if err := client.Unload(context.Background(), "qwen3-coder:30b-a3b-q8_0"); err == nil || !strings.Contains(err.Error(), "content type") {
 		t.Fatalf("non-JSON unload response error = %v", err)
+	}
+}
+
+func TestUnloadRejectsCaseAliasedFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte("{\"model\":\"qwen3-coder:30b-a3b-q8_0\",\"created_at\":\"" +
+			time.Now().UTC().Format(time.RFC3339Nano) + "\",\"response\":\"\",\"done\":false,\"Done\":true,\"done_reason\":\"unload\"}"))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Unload(context.Background(), "qwen3-coder:30b-a3b-q8_0"); err == nil {
+		t.Fatal("case-aliased unload response was accepted")
 	}
 }
 

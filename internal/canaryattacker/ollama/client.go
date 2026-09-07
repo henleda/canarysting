@@ -239,6 +239,9 @@ func (c *Client) Unload(ctx context.Context, model string) error {
 	if err := rejectDuplicateKeys(responseBody); err != nil {
 		return fmt.Errorf("Ollama unload response JSON is invalid")
 	}
+	if err := rejectNonCanonicalUnloadKeys(responseBody); err != nil {
+		return fmt.Errorf("Ollama unload response schema is invalid")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.DisallowUnknownFields()
 	var response unloadResponse
@@ -301,6 +304,9 @@ func buildRequest(request planner.TurnRequest) (apiRequest, error) {
 func parseResponse(body []byte, request planner.TurnRequest) (planner.TurnResponse, error) {
 	if err := rejectDuplicateKeys(body); err != nil {
 		return planner.TurnResponse{}, fmt.Errorf("Ollama response JSON is invalid")
+	}
+	if err := rejectNonCanonicalChatKeys(body); err != nil {
+		return planner.TurnResponse{}, fmt.Errorf("Ollama response schema is invalid")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()

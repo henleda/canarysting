@@ -101,16 +101,27 @@ work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 artifact_dir="${work_root}/artifacts"
 proof_file="${work_root}/preflight.proof"
 cleanup_required=0
+should_run_generic_cleanup() {
+  local selected_profile="$1" scenario_cleanup_failed="$2"
+  [[ "${selected_profile}" != 'attacker-loop' || "${scenario_cleanup_failed}" -eq 0 ]]
+}
 cleanup() {
-  local status=$?
+  local status=$? scenario_cleanup_failed=0
   trap - EXIT INT TERM
   if ((cleanup_required)); then
     for ((index=scenario_count-1; index>=0; index--)); do
-      CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-        "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup || status=1
+      if ! CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+        "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup; then
+        status=1
+        scenario_cleanup_failed=1
+      fi
     done
-    CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-      "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
+    if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then
+      CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+        "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
+    else
+      printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
+    fi
   fi
   if [[ -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
     rm -rf -- "${work_root}"
