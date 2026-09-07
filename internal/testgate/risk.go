@@ -66,6 +66,8 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			report.FrontendAffected = true
 		}
 		switch {
+		case strings.HasPrefix(path, "internal/canaryattacker/executor/"), strings.HasPrefix(path, "cmd/attackerexecutorspike/"):
+			profiles["dgx-attacker-executor"] = true
 		case strings.HasPrefix(path, "cmd/tracespike/"):
 			profiles["dgx-trace"] = true
 		case strings.HasPrefix(path, "bpf/"):
@@ -77,6 +79,8 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			profiles["dgx-enforcement"] = true
 		case strings.HasPrefix(path, "scripts/dgx/"):
 			switch {
+			case strings.Contains(path, "attackerexecutorspike"):
+				profiles["dgx-attacker-executor"] = true
 			case strings.Contains(path, "tracespike"):
 				profiles["dgx-trace"] = true
 			case strings.Contains(path, "attackercheck"):
@@ -130,6 +134,8 @@ func classifyPath(path string) (RiskLevel, string, bool) {
 	switch {
 	case path == "":
 		return RiskHigh, "empty or unknown path defaults to HIGH", true
+	case strings.HasPrefix(path, "internal/canaryattacker/executor/"), strings.HasPrefix(path, "cmd/attackerexecutorspike/"):
+		return RiskCritical, "bounded attacker execution authority and network safety boundary", true
 	case strings.HasPrefix(path, "internal/canaryattacker/"):
 		return RiskHigh, "synthetic adversary contract and ground-truth isolation boundary", true
 	case strings.HasPrefix(path, "bpf/"), strings.HasPrefix(path, "scripts/dgx/"), strings.HasPrefix(path, "cmd/tracespike/"),
