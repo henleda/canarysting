@@ -270,7 +270,8 @@ func sanitizedTransportError(ctx context.Context, operation string) error {
 func buildRequest(request planner.TurnRequest) (apiRequest, error) {
 	if request.Model == "" || request.Instruction == "" || len(request.Instruction) > 1024 ||
 		request.MaxOutputTokens == 0 || request.MaxOutputTokens > planner.AbsoluteMaxOutputTokens ||
-		request.ContextTokens == 0 || request.ContextTokens > planner.AbsoluteMaxContextTokens || request.MaxProposals == 0 {
+		request.ContextTokens == 0 || request.ContextTokens > planner.AbsoluteMaxContextTokens ||
+		request.MaxProposals == 0 || request.MaxProposals > planner.AbsoluteMaxCatalogActions {
 		return apiRequest{}, fmt.Errorf("Ollama turn request is incomplete or exceeds planner bounds")
 	}
 	if len(request.Tools) == 0 || len(request.Tools) > 256 || len(request.Observations) > 256 {

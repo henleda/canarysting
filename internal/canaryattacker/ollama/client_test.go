@@ -174,6 +174,28 @@ func TestResponseParserFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResponseParserPreservesSurplusCallsWithinAuditBudget(t *testing.T) {
+	request := turnRequest()
+	request.MaxProposals = 2
+	body := strings.Replace(
+		validAPIResponse(request.Model, "action_001", `{}`),
+		`"tool_calls":[`,
+		`"tool_calls":[{"id":"call_surplus","function":{"name":"action_001","arguments":{}}},`,
+		1,
+	)
+	response, err := parseResponse([]byte(body), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Proposals) != 2 {
+		t.Fatalf("parsed proposals = %d, want 2", len(response.Proposals))
+	}
+	request.MaxProposals = 1
+	if _, err := parseResponse([]byte(body), request); err == nil {
+		t.Fatal("response beyond the remaining audit budget was accepted")
+	}
+}
+
 func TestResponseParserDoesNotEchoUntrustedFieldNames(t *testing.T) {
 	request := turnRequest()
 	marker := "attacker-controlled-secret-marker"

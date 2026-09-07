@@ -50,7 +50,7 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			Tools: c.toolsForStep(stepIndex), Observations: append([]Observation(nil), observations...),
 			MaxOutputTokens: outputTokens,
 			ContextTokens:   contextTokens,
-			MaxProposals:    1,
+			MaxProposals:    budgets.MaxActions() - result.ProposalsLogged,
 			Seed:            c.seed,
 		}
 		response, err := c.client.Complete(runCtx, request)
@@ -79,11 +79,9 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			return result, nil
 		}
 
+		activeStep := stepIndex
+		acceptedThisTurn := false
 		for proposalIndex, proposal := range response.Proposals {
-			activeStep := stepIndex
-			if activeStep >= len(steps) {
-				activeStep = len(steps) - 1
-			}
 			selected, accepted := c.selectAction(activeStep, proposal, proposalIndex == 0)
 			if !accepted {
 				var rejectErr error
@@ -115,8 +113,11 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			}
 			observations = append(observations, observation(observationName, execution.Result))
 			if accepted {
-				stepIndex++
+				acceptedThisTurn = true
 			}
+		}
+		if acceptedThisTurn {
+			stepIndex++
 		}
 		if runCtx.Err() != nil {
 			result.StopReason = StopCancelled

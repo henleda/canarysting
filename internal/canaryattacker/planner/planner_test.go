@@ -77,6 +77,35 @@ func TestEveryAcceptedProposalProducesAnAuditedExecutorInvocation(t *testing.T) 
 	}
 }
 
+func TestSurplusToolCallsAreAuditedWithoutAdditionalExecution(t *testing.T) {
+	values := testValues(t, 2, 4, 1000)
+	client := &fakeClient{responses: []TurnResponse{
+		validResponse(values.model.Model(), 100, 20,
+			Proposal{Name: "action_001", Arguments: json.RawMessage(`{}`)},
+			Proposal{Name: "action_001", Arguments: json.RawMessage(`{}`)},
+		),
+	}}
+	execution := &fakeExecutor{}
+	coordinator := newCoordinator(t, values, client, execution, 1)
+	result, err := coordinator.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopMaxTurns || result.ProposalsLogged != 2 || result.Approved != 1 || result.Denied != 1 {
+		t.Fatalf("unexpected surplus-call result: %+v", result)
+	}
+	invocations := execution.snapshot()
+	if len(invocations) != 2 || invocations[0].StepID != "step-1" || invocations[1].StepID != "step-1" ||
+		invocations[0].ProposedAction.Operation() != "operation-1" ||
+		invocations[1].ProposedAction.Tool() != "planner_rejected" || invocations[1].ProposedAction.Operation() != "proposal_rejected" {
+		t.Fatalf("surplus call escaped same-step audited denial: %+v", invocations)
+	}
+	requests := client.snapshot()
+	if len(requests) != 1 || requests[0].MaxProposals != 4 {
+		t.Fatalf("proposal audit allowance = %+v", requests)
+	}
+}
+
 func TestExternalTokenBudgetStopsBeforeProposalExecution(t *testing.T) {
 	values := testValues(t, 1, 2, 100)
 	client := &fakeClient{responses: []TurnResponse{validResponse(values.model.Model(), 90, 20,
