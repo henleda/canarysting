@@ -14,8 +14,8 @@ usage() {
 Usage:
   scripts/dgx/pr.sh --profile PROFILE --run-id ID [--dry-run]
 
-Profiles: preflight, attacker-check, cookie, enforcement, kernel-full, stack,
-correlation, trace.
+Profiles: preflight, attacker-check, attacker-executor, cookie, enforcement,
+kernel-full, stack, correlation, trace.
 
 The coordinator performs one DGX preflight before artifact-backed scenarios.
 The attacker-check profile instead runs only its fixed passive inspection and
@@ -61,6 +61,7 @@ scenario_count=0
 case "${profile}" in
   preflight) targets=(); scenarios=() ;;
   attacker-check) targets=(); scenarios=(); read_only_check='attackercheck'; preflight_count=0 ;;
+  attacker-executor) targets=(attackerexecutorspike); scenarios=(attackerexecutorspike); target_count=1; scenario_count=1 ;;
   cookie) targets=(cookiespike); scenarios=(cookiespike); target_count=1; scenario_count=1 ;;
   enforcement) targets=(enforcespike); scenarios=(enforcespike); target_count=1; scenario_count=1 ;;
   kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike); target_count=2; scenario_count=2 ;;
@@ -70,7 +71,7 @@ case "${profile}" in
   dgx-kubernetes|dgx-attacker-smoke|campaign)
     fail "profile ${profile} is not implemented by the bounded DGX harness; refusing to substitute weaker coverage"
     ;;
-  *) fail 'profile must be preflight, attacker-check, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
+  *) fail 'profile must be preflight, attacker-check, attacker-executor, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
 esac
 
 printf 'profile=%s\nrun_id=%s\npreflight_count=%s\nread_only_check_count=%s\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \

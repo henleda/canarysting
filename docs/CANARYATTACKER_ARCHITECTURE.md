@@ -1,6 +1,6 @@
 # CanaryAttacker Architecture
 
-Status: approved architecture with the M2C.1 passive DGX readiness inspector and the M2C.2 scenario/ground-truth contract implemented. The bounded executor and live Qwen loop remain future work; the contract adds no attacker runtime or authority.
+Status: approved architecture with the M2C.1 passive DGX readiness inspector, M2C.2 scenario/ground-truth contract, and M2C.3 closed bounded executor implemented. The live Qwen loop and real scenario fixtures remain future work. The executor adds narrowly reviewed private-laboratory network authority but no model, shell, filesystem, container, Kubernetes, or host-control authority.
 
 ## Purpose
 
@@ -19,6 +19,8 @@ The repository already contains `internal/llm/attacker`, `internal/llm/anthropic
 That implementation is Anthropic/demo-specific, uses a narrow result ledger, and does not emit the proposed scenario-level `AttackerIntent` and `AttackerAction` records. The Qwen harness should reuse appropriate generic safety mechanisms rather than duplicate them, but it should not rename or redesign the working demo merely to fit the CanaryAttacker name.
 
 `internal/canaryattacker/groundtruth` is the standard-library-only M2C.2 contract leaf. It defines schema-v1 scenarios, stable explicit scenario/step identifiers, canonical opaque target and fixture references, whole-millisecond hard budgets, pre-action intent, approved/denied policy decisions, post-action success/failure/denial truth, direct lineage, and deterministic strict JSON that rejects duplicate or unknown object fields. Scenario, intent, and action records serialize independently under their exact parent so an executor can durably record intent before attempting the action; the canonical fixed-seed corpus bundles the same records for replay. The package deliberately does not import or wrap the Anthropic demo runtime: it reuses its reviewed safety shape—external bounds, deterministic replay, cancellation-ready records, and separation from the decision engine—without coupling the new contract to a provider or executor.
+
+`internal/canaryattacker/executor` is the provider-neutral M2C.3 execution boundary. An immutable policy registers exact target aliases/references/fixture identities, canonical scheme/host/port bindings, private or loopback address sets, opaque payload/credential fixtures, and concrete operations for exactly seven tools. A run accepts only a scenario whose target, operation, fixture, and budgets fit that policy. It commits a ground-truth intent before resolver or dialer access; ledger failure closes the run. Denials, failures, timeouts, and cancellations produce ground-truth actions without leaking raw targets, addresses, payloads, credentials, response bodies, or headers into the audit record. Response content remains bounded in run memory and is exposed only through the reviewed `inspect_response` result.
 
 ## Components
 
@@ -86,6 +88,8 @@ The initial reviewable tool interface may include:
 Additional tools require explicit architecture and safety review. The local model never receives arbitrary shell, SSH, Kubernetes API, Docker, filesystem, process-control, raw socket, package-manager, or unrestricted network tools merely because it is acting as an attacker.
 
 Tool arguments are structured and schema-validated. The executor—not the model—owns target resolution, credentials, network restrictions, timeouts, budgets, and auditing.
+
+The implemented executor disables ambient proxy selection, resolves each network action through an exact private-address binding, dials the pinned address rather than a model-provided locator, re-resolves after HTTP responses, and rejects any changed address set. Redirect responses are recorded as failures and never followed. `follow_link` accepts only a bounded link captured from a prior response and revalidates it to the identical scheme, canonical host, and explicit port before a request. HTTP is limited to reviewed GET/HEAD operations plus reviewed GET/POST fixture-credential operations; TCP sends no payload; DNS is limited to A/AAAA. Absolute compile-time ceilings cap actions, duration, action timeout, completion reserve, concurrency, request rate, request/response/stored bytes, response headers, resolved addresses, captured links, enumeration paths, targets, fixtures, and operations. Scenario and per-tool limits may only tighten those ceilings.
 
 ## Safety boundaries
 
@@ -205,8 +209,8 @@ PR validation is split from live campaign generation:
 - **Targeted live smoke (Level 2 HIGH/CRITICAL)** is limited to one or two fixed approved-lab scenarios when attacker tools, trigger behavior, deployment, or response behavior changes. It requires strict timeout, fixed tool policy, before/after evidence, and cleanup.
 - **Full live campaign (Level 4)** is scheduled weekly/on demand and measures trace, identity, correlation, response, resource, cleanup, and repeatability. It is not an ordinary PR blocker.
 
-The repository currently implements deterministic legacy replay, bounded cookie/enforcement DGX profiles, the passive M2C.1 readiness inspector, and the schema-v1 M2C.2 ground-truth corpus contract—not the bounded executor or live Qwen planner. The Level 4 CI entry is deliberately fail-closed until the re-baselined M2C/M2D work supplies the reviewed Qwen tool/runtime contract; scheduling that blocked boundary must not be described as successful campaign coverage.
+The repository currently implements deterministic legacy replay, bounded cookie/enforcement DGX profiles, the passive M2C.1 readiness inspector, the schema-v1 M2C.2 ground-truth corpus contract, and the M2C.3 bounded executor plus its unprivileged loopback DGX proof. It does not yet implement the live Qwen planner or real Kubernetes scenario fixtures. The Level 4 CI entry is deliberately fail-closed until the remaining M2C/M2D work supplies that reviewed loop and scenario boundary; scheduling the blocked boundary must not be described as successful campaign coverage.
 
 Re-baselined M2D first verifies Ollama/Qwen, defines scenarios/contracts/tools, implements bounded execution, and proves cleanup, then runs scenarios against the DGX stack, correlates observations, and publishes evidence-backed metrics. The preserved detailed M2C/M2D rows in `docs/DEVELOPMENT_PLAN.md` jointly decompose that work. Initial execution remains small and deterministic; model-adaptive variation is added only after the fixed scenarios and safety denials are reliable.
 
-Open decisions include Ollama API/model version pinning, process/container isolation, outbound network enforcement, fixture credential delivery, scenario schema location, clock synchronization, evidence-retention limits, and how generic safety code is extracted from the existing attacker without disrupting its working behavior.
+Open decisions include Ollama API/model version pinning, planner process isolation, exact M2C.5 fixture ownership, clock synchronization against independent telemetry, and how generic model-client safety code is extracted from the existing attacker without disrupting its working behavior. The executor's additional-tool review boundary, direct-dial policy, fixture credential resolution, and validation-evidence retention are closed for M2C.3 and may be changed only through explicit architecture and safety review.

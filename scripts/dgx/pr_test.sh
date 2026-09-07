@@ -47,6 +47,13 @@ grep -Fqx 'profile=trace' <<<"${trace_output}"
 grep -Fqx 'artifact_build_count=1' <<<"${trace_output}"
 grep -Fq 'trace proof contract passed; DGX was not accessed' <<<"${trace_output}"
 
+attacker_executor_output="$("${script_dir}/pr.sh" --profile attacker-executor --run-id ci-attacker-executor --dry-run)"
+grep -Fqx 'profile=attacker-executor' <<<"${attacker_executor_output}"
+grep -Fqx 'preflight_count=1' <<<"${attacker_executor_output}"
+grep -Fqx 'artifact_build_count=1' <<<"${attacker_executor_output}"
+grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_executor_output}"
+grep -Fq 'bounded attacker executor proof contract passed; DGX was not accessed' <<<"${attacker_executor_output}"
+
 attacker_check_output="$("${script_dir}/pr.sh" --profile attacker-check --run-id ci-attacker-check --dry-run)"
 grep -Fqx 'profile=attacker-check' <<<"${attacker_check_output}"
 grep -Fqx 'preflight_count=0' <<<"${attacker_check_output}"

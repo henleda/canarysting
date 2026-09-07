@@ -36,6 +36,7 @@ target_record() {
     dgxstackspike) printf 'test\tdgxstackspike\t./cmd/dgxstackspike\n' ;;
     correlationspike) printf 'test\tcorrelationspike\t./cmd/correlationspike\n' ;;
     tracespike) printf 'test\ttracespike\t./cmd/tracespike\n' ;;
+    attackerexecutorspike) printf 'test\tattackerexecutorspike\t./cmd/attackerexecutorspike\n' ;;
     *) return 1 ;;
   esac
 }
@@ -90,6 +91,7 @@ readonly -a all_targets=(
   dgxstackspike
   correlationspike
   tracespike
+  attackerexecutorspike
 )
 
 output_dir=""

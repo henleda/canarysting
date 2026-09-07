@@ -88,6 +88,9 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			}
 		case strings.HasSuffix(file, ".go"), file == "go.mod", file == "go.sum":
 			addAvailable(selected, all, "affected-go-build", "affected-go-test", "go-vet", "security-invariants")
+			if isAttackerExecutorPath(file) {
+				addAvailable(selected, all, "attacker-executor-invariants")
+			}
 			if isSecurityPath(file) {
 				addAvailable(selected, all, "selfcheck-sting", "selfcheck-envoy")
 				selectAdversarial(selected, all, files)
@@ -128,6 +131,9 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 	}
 	for _, file := range files {
 		switch {
+		case isAttackerExecutorPath(file):
+			addAvailable(selected, all, "attacker-executor-invariants")
+			selectAdversarial(selected, all, files)
 		case isFrontendPath(file):
 			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")
 		case strings.HasPrefix(file, "bpf/"):
@@ -140,6 +146,11 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 		}
 	}
 	return selected
+}
+
+func isAttackerExecutorPath(path string) bool {
+	return strings.HasPrefix(path, "internal/canaryattacker/executor/") ||
+		strings.HasPrefix(path, "cmd/attackerexecutorspike/")
 }
 
 // isFrontendPath includes the Go-backed trace path used by Playwright. A
