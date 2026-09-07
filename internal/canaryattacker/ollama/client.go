@@ -348,15 +348,23 @@ func parseResponse(body []byte, request planner.TurnRequest) (planner.TurnRespon
 }
 
 func validActionName(value string) bool {
-	if len(value) != len("action_000") || !strings.HasPrefix(value, "action_") {
+	if !strings.HasPrefix(value, "action_") {
 		return false
 	}
-	for _, character := range value[len("action_"):] {
+	digits := value[len("action_"):]
+	if len(digits) != 3 && len(digits) != 4 {
+		return false
+	}
+	if len(digits) == 4 && digits[0] == '0' {
+		return false
+	}
+	for _, character := range digits {
 		if character < '0' || character > '9' {
 			return false
 		}
 	}
-	return true
+	ordinal, err := strconv.ParseUint(digits, 10, 16)
+	return err == nil && ordinal > 0 && ordinal <= planner.AbsoluteMaxCatalogActions
 }
 
 func isJSONObject(raw []byte) bool {

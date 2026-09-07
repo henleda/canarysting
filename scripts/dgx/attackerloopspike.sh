@@ -79,9 +79,23 @@ model_lock_directory=''
 model_lock_fifo=''
 model_lock_report_file=''
 model_lock_hold_open='false'
+remote_proof_pid=''
+model_lock_lost_during_execution='false'
+terminate_remote_proof() {
+  local proof_status=0
+  if [[ -n "${remote_proof_pid}" ]]; then
+    if kill -0 "${remote_proof_pid}" 2>/dev/null; then
+      kill -TERM "${remote_proof_pid}" 2>/dev/null || true
+    fi
+    wait "${remote_proof_pid}" || proof_status=$?
+    remote_proof_pid=''
+  fi
+  return "${proof_status}"
+}
 release_model_lock() {
   local lock_status=0
   trap - EXIT INT TERM
+  terminate_remote_proof >/dev/null 2>&1 || true
   if [[ "${model_lock_hold_open}" == 'true' ]]; then
     exec 9>&-
     model_lock_hold_open='false'
@@ -103,6 +117,21 @@ release_model_lock() {
 }
 assert_model_lock_held() {
   [[ -n "${model_lock_pid}" ]] && kill -0 "${model_lock_pid}" 2>/dev/null
+}
+wait_for_remote_proof() {
+  local proof_status=0
+  [[ -n "${remote_proof_pid}" ]] || return 1
+  while kill -0 "${remote_proof_pid}" 2>/dev/null; do
+    if ! assert_model_lock_held; then
+      model_lock_lost_during_execution='true'
+      terminate_remote_proof >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 0.1
+  done
+  wait "${remote_proof_pid}" || proof_status=$?
+  remote_proof_pid=''
+  return "${proof_status}"
 }
 acquire_model_lock() {
   local remote_model_lock_program remote_model_lock_command model_lock_report='' attempt
@@ -187,7 +216,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   exit 0
 fi
 
-for required in chmod grep mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
+for required in chmod grep kill mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
   else
@@ -195,6 +224,15 @@ for required in chmod grep mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${
   fi
 done
 
+run_preflight() {
+  if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
+    "${preflight_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
+  else
+    CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
+  fi
+}
+
+run_preflight
 acquire_model_lock
 assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before inspection'
 pre_model_report="$("${attackercheck_script}")"
@@ -210,11 +248,6 @@ if [[ "${mode}" == 'cleanup' ]]; then
 else
   validate_model_report "${pre_model_report}" || fail 'pre-run Ollama identity, binding, inventory, or unloaded-state check failed'
   printf 'pre_model_check=PASS\n'
-  if [[ -n "${CANARYSTING_DGX_PREFLIGHT_PROOF:-}" ]]; then
-    "${preflight_script}" --verify --run-id "${run_id}" --proof-file "${CANARYSTING_DGX_PREFLIGHT_PROOF}"
-  else
-    CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"
-  fi
   "${copy_script}" --verify-only --run-id "${run_id}"
 fi
 
@@ -222,7 +255,7 @@ assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost befor
 remote_status=0
 if [[ "${mode}" != 'cleanup' || "${cleanup_stage_state}" == 'stage=validated' ]]; then
 set +e
-ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" <<'REMOTE'
+ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" <<'REMOTE' &
 set -euo pipefail
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -270,13 +303,13 @@ cleanup_model() {
   fi
 }
 cleanup_after_signal() {
-  trap - EXIT INT TERM
+  trap - EXIT HUP INT TERM
   cleanup_model
   exit 130
 }
 if [[ "${mode}" == 'run' ]]; then
   trap cleanup_model EXIT
-  trap cleanup_after_signal INT TERM
+  trap cleanup_after_signal HUP INT TERM
 fi
 if [[ "${mode}" == 'cleanup' ]]; then
   cleanup_model
@@ -393,7 +426,7 @@ set +e
 exit_code=$?
 set -e
 cleanup_model
-trap - EXIT INT TERM
+trap - EXIT HUP INT TERM
 finished_epoch="$(date -u +%s)"
 finished_utc="$(date -u -d "@${finished_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 expires_utc="$(date -u -d "@$((finished_epoch + 86400))" +%Y-%m-%dT%H:%M:%SZ)"
@@ -421,10 +454,13 @@ validate_evidence
 printf 'PASS: DGX bounded Ollama planner proof completed\n'
 printf 'evidence=%s\n' "${evidence}"
 REMOTE
+remote_proof_pid=$!
+wait_for_remote_proof
 remote_status=$?
 set -e
 fi
 
+[[ "${model_lock_lost_during_execution}" == 'false' ]] || fail 'DGX host-global Ollama model lock was lost during execution'
 assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before post-run inspection'
 post_model_report="$("${attackercheck_script}")"
 validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, inventory, or unloaded-state check failed'

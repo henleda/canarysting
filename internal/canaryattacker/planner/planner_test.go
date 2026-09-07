@@ -194,6 +194,26 @@ func TestConstructorRequiresPinnedPlannerVersion(t *testing.T) {
 	}
 }
 
+func TestActionHandlesCoverWholeScenarioAggregateBound(t *testing.T) {
+	for ordinal := 1; ordinal <= AbsoluteMaxCatalogActions; ordinal++ {
+		handle, err := actionHandle(ordinal)
+		if err != nil {
+			t.Fatalf("valid action ordinal %d was rejected: %v", ordinal, err)
+		}
+		if ordinal == 1 && handle != "action_001" {
+			t.Fatalf("first action handle = %q", handle)
+		}
+		if ordinal == AbsoluteMaxCatalogActions && handle != "action_1024" {
+			t.Fatalf("last action handle = %q", handle)
+		}
+	}
+	for _, ordinal := range []int{0, AbsoluteMaxCatalogActions + 1} {
+		if _, err := actionHandle(ordinal); err == nil {
+			t.Fatalf("out-of-range action ordinal %d was accepted", ordinal)
+		}
+	}
+}
+
 type testFixture struct {
 	scenario groundtruth.Scenario
 	model    groundtruth.ModelIdentity

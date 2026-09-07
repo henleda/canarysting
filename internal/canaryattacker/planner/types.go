@@ -19,6 +19,9 @@ const (
 	AbsoluteMaxContextTokens    = 32768
 	AbsoluteMaxObservationBytes = 16 << 10
 	AbsoluteMaxProposalBytes    = 4 << 10
+	// AbsoluteMaxCatalogActions matches the ground-truth scenario aggregate
+	// bound. Opaque action handles must cover this entire reviewed surface.
+	AbsoluteMaxCatalogActions = 1024
 )
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -153,8 +156,12 @@ func New(config Config) (*Coordinator, error) {
 	ordinal := 1
 	for stepIndex, step := range steps {
 		for _, action := range step.AllowedActions() {
+			name, err := actionHandle(ordinal)
+			if err != nil {
+				return nil, err
+			}
 			catalog = append(catalog, catalogAction{
-				name: fmt.Sprintf("action_%03d", ordinal), stepIndex: stepIndex, step: step, action: action,
+				name: name, stepIndex: stepIndex, step: step, action: action,
 			})
 			ordinal++
 		}
@@ -163,6 +170,13 @@ func New(config Config) (*Coordinator, error) {
 		scenario: config.Scenario, model: config.Model, client: config.Client,
 		executor: config.Executor, maxTurns: config.MaxTurns, seed: config.Seed, catalog: catalog,
 	}, nil
+}
+
+func actionHandle(ordinal int) (string, error) {
+	if ordinal < 1 || ordinal > AbsoluteMaxCatalogActions {
+		return "", fmt.Errorf("scenario action catalog exceeds the planner limit of %d", AbsoluteMaxCatalogActions)
+	}
+	return fmt.Sprintf("action_%03d", ordinal), nil
 }
 
 func validateResponse(response TurnResponse, request TurnRequest) error {

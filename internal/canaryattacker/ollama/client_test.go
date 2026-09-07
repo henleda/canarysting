@@ -54,6 +54,22 @@ func TestClientUsesOnlyPinnedLoopbackChatContract(t *testing.T) {
 	}
 }
 
+func TestRequestAcceptsEveryPlannerActionHandle(t *testing.T) {
+	request := turnRequest()
+	for ordinal := 1; ordinal <= planner.AbsoluteMaxCatalogActions; ordinal++ {
+		request.Tools[0].Name = fmt.Sprintf("action_%03d", ordinal)
+		if _, err := buildRequest(request); err != nil {
+			t.Fatalf("valid planner handle %q was rejected: %v", request.Tools[0].Name, err)
+		}
+	}
+	for _, handle := range []string{"action_000", "action_0001", "action_1025", "action_01", "action_ab1"} {
+		request.Tools[0].Name = handle
+		if _, err := buildRequest(request); err == nil {
+			t.Fatalf("invalid planner handle %q was accepted", handle)
+		}
+	}
+}
+
 func TestClientRejectsNonLoopbackAndAmbiguousEndpoints(t *testing.T) {
 	for _, endpoint := range []string{
 		"https://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434",

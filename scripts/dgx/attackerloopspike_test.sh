@@ -46,8 +46,9 @@ for marker in \
   'reason=scenario_complete deterministic=true' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC' \
   '"${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model' \
-  'trap cleanup_after_signal INT TERM' \
+  'trap cleanup_after_signal HUP INT TERM' \
   'if ! flock -n 9; then' \
+  'wait_for_remote_proof' \
   'assert_model_lock_held || fail' \
   'expires - finished == 86400'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
@@ -62,7 +63,10 @@ schema_definition="$(awk '/^validate_result_schema\(\) \{/ { capture=1 } capture
 value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 cleanup_stage_definition="$(awk '/^cleanup_stage_from_inventory\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
-[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" ]] || fail 'proof validators are not independently testable'
+terminate_proof_definition="$(awk '/^terminate_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+assert_lock_definition="$(awk '/^assert_model_lock_held\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+wait_proof_definition="$(awk '/^wait_for_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" ]] || fail 'proof validators are not independently testable'
 
 valid_report=$'ollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
 bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
@@ -97,10 +101,34 @@ generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${p
 ((cleanup_inspect_line < remote_cleanup_line && remote_cleanup_line < post_check_line && post_check_line < generic_cleanup_line)) || fail 'cleanup can remove the stage before fixed-model unload and verification'
 
 lock_acquire_line="$(grep -nFx 'acquire_model_lock' "${proof_script}" | cut -d: -f1)"
+preflight_line="$(grep -nFx 'run_preflight' "${proof_script}" | cut -d: -f1)"
 pre_model_line="$(grep -nF 'pre_model_report="$("${attackercheck_script}")"' "${proof_script}" | cut -d: -f1)"
 lock_release_line="$(grep -nF 'release_model_lock || fail' "${proof_script}" | cut -d: -f1)"
-[[ "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
-((lock_acquire_line < pre_model_line && post_check_line < lock_release_line)) || fail 'host-global model lock does not span precheck through unload/postcheck'
+[[ "${preflight_line}" =~ ^[0-9]+$ && "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
+((preflight_line < lock_acquire_line && lock_acquire_line < pre_model_line && post_check_line < lock_release_line)) || fail 'preflight and host-global model lock ordering is unsafe'
+
+monitor_definitions="${terminate_proof_definition}"$'\n'"${assert_lock_definition}"$'\n'"${wait_proof_definition}"
+bash -c "${monitor_definitions}"$'\n''
+model_lock_lost_during_execution=false
+sleep 2 & model_lock_pid=$!
+sleep 0.2 & remote_proof_pid=$!
+wait_for_remote_proof
+proof_status=$?
+kill -TERM "${model_lock_pid}" 2>/dev/null || true
+wait "${model_lock_pid}" 2>/dev/null || true
+[[ "${proof_status}" -eq 0 && "${model_lock_lost_during_execution}" == false && -z "${remote_proof_pid}" ]]
+' || fail 'proof monitor rejected a continuously held model lock'
+bash -c "${monitor_definitions}"$'\n''
+model_lock_lost_during_execution=false
+sleep 0.1 & model_lock_pid=$!
+sleep 5 & remote_proof_pid=$!
+original_proof_pid="${remote_proof_pid}"
+wait_for_remote_proof
+proof_status=$?
+wait "${model_lock_pid}" 2>/dev/null || true
+[[ "${proof_status}" -ne 0 && "${model_lock_lost_during_execution}" == true && -z "${remote_proof_pid}" ]]
+! kill -0 "${original_proof_pid}" 2>/dev/null
+' || fail 'proof monitor did not terminate execution when the model lock was lost'
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXXXX")"
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
