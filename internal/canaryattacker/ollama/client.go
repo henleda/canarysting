@@ -181,7 +181,7 @@ func (c *Client) Complete(ctx context.Context, request planner.TurnRequest) (pla
 	defer httpResponse.Body.Close()
 	limited, err := io.ReadAll(io.LimitReader(httpResponse.Body, AbsoluteMaxResponseBytes+1))
 	if err != nil {
-		return planner.TurnResponse{}, fmt.Errorf("read Ollama response: %w", err)
+		return planner.TurnResponse{}, sanitizedTransportError(ctx, "read Ollama response")
 	}
 	if len(limited) > AbsoluteMaxResponseBytes {
 		return planner.TurnResponse{}, fmt.Errorf("Ollama response exceeds %d bytes", AbsoluteMaxResponseBytes)
@@ -224,7 +224,7 @@ func (c *Client) Unload(ctx context.Context, model string) error {
 	defer httpResponse.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, AbsoluteMaxResponseBytes+1))
 	if err != nil {
-		return fmt.Errorf("read Ollama unload response: %w", err)
+		return sanitizedTransportError(ctx, "read Ollama unload response")
 	}
 	if httpResponse.StatusCode >= http.StatusMultipleChoices && httpResponse.StatusCode < http.StatusBadRequest {
 		return fmt.Errorf("Ollama unload redirect response is forbidden")

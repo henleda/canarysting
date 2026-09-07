@@ -96,6 +96,48 @@ func TestClientSanitizesTransportErrors(t *testing.T) {
 	}
 }
 
+func TestClientSanitizesResponseBodyReadErrors(t *testing.T) {
+	marker := "response-controlled-body-read-marker"
+	tests := map[string]struct {
+		call      func(*Client) error
+		wantError string
+	}{
+		"complete": {
+			call: func(client *Client) error {
+				_, err := client.Complete(context.Background(), turnRequest())
+				return err
+			},
+			wantError: "read Ollama response failed",
+		},
+		"unload": {
+			call: func(client *Client) error {
+				return client.Unload(context.Background(), "qwen3-coder:30b-a3b-q8_0")
+			},
+			wantError: "read Ollama unload response failed",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, err := New("http://127.0.0.1:11434")
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       errorReadCloser{err: fmt.Errorf("%s", marker)},
+					Request:    request,
+				}, nil
+			})
+			err = test.call(client)
+			if err == nil || strings.Contains(err.Error(), marker) || err.Error() != test.wantError {
+				t.Fatalf("body read error = %v", err)
+			}
+		})
+	}
+}
+
 func TestResponseParserFailsClosed(t *testing.T) {
 	request := turnRequest()
 	valid := validAPIResponse(request.Model, "action_001", `{}`)
@@ -203,4 +245,16 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type errorReadCloser struct {
+	err error
+}
+
+func (reader errorReadCloser) Read([]byte) (int, error) {
+	return 0, reader.err
+}
+
+func (errorReadCloser) Close() error {
+	return nil
 }
