@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,16 +67,32 @@ func TestClientRejectsNonLoopbackAndAmbiguousEndpoints(t *testing.T) {
 }
 
 func TestClientRejectsRedirects(t *testing.T) {
+	marker := "response-controlled-location-marker"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		http.Redirect(writer, request, "/elsewhere", http.StatusFound)
+		http.Redirect(writer, request, "/"+marker, http.StatusFound)
 	}))
 	defer server.Close()
 	client, err := New(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Complete(context.Background(), turnRequest()); err == nil || !strings.Contains(err.Error(), "redirect") {
+	if _, err := client.Complete(context.Background(), turnRequest()); err == nil || !strings.Contains(err.Error(), "redirect") || strings.Contains(err.Error(), marker) {
 		t.Fatalf("redirect error = %v", err)
+	}
+}
+
+func TestClientSanitizesTransportErrors(t *testing.T) {
+	client, err := New("http://127.0.0.1:11434")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errMarker := "response-controlled-transport-marker"
+	client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("%s", errMarker)
+	})
+	_, err = client.Complete(context.Background(), turnRequest())
+	if err == nil || strings.Contains(err.Error(), errMarker) || err.Error() != "call fixed-loopback Ollama failed" {
+		t.Fatalf("transport error = %v", err)
 	}
 }
 
@@ -180,4 +197,10 @@ func validAPIResponse(model, toolName, arguments string) string {
 		`","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_fixture","function":{"name":"` + toolName +
 		`","arguments":` + arguments + `}}]},"done":true,"done_reason":"stop","total_duration":1,"load_duration":1,` +
 		`"prompt_eval_count":10,"prompt_eval_duration":1,"eval_count":5,"eval_duration":1}`
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }

@@ -51,6 +51,108 @@ validate_model_report() {
   validate_model_identity_report "${report}" || return 1
   grep -Fqx 'loaded_model_count=0' <<<"${report}" || return 1
 }
+cleanup_stage_from_inventory() {
+  local inventory="$1" root_count=0 stage_count=0 stage_state='' line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      root=absent) root_count=$((root_count + 1)) ;;
+      stage=validated|stage=absent)
+        stage_count=$((stage_count + 1))
+        stage_state="${line}"
+        ;;
+      stage=*) return 1 ;;
+    esac
+  done <<<"${inventory}"
+  if ((root_count == 1 && stage_count == 0)); then
+    printf 'stage=absent\n'
+    return 0
+  fi
+  if ((root_count == 0 && stage_count == 1)); then
+    printf '%s\n' "${stage_state}"
+    return 0
+  fi
+  return 1
+}
+
+model_lock_pid=''
+model_lock_directory=''
+model_lock_fifo=''
+model_lock_report_file=''
+model_lock_hold_open='false'
+release_model_lock() {
+  local lock_status=0
+  trap - EXIT INT TERM
+  if [[ "${model_lock_hold_open}" == 'true' ]]; then
+    exec 9>&-
+    model_lock_hold_open='false'
+  fi
+  if [[ -n "${model_lock_pid}" ]]; then
+    wait "${model_lock_pid}" || lock_status=$?
+    model_lock_pid=''
+  fi
+  if [[ -n "${model_lock_fifo}" || -n "${model_lock_report_file}" ]]; then
+    rm -f -- "${model_lock_fifo}" "${model_lock_report_file}"
+    model_lock_fifo=''
+    model_lock_report_file=''
+  fi
+  if [[ -n "${model_lock_directory}" ]]; then
+    rmdir "${model_lock_directory}"
+    model_lock_directory=''
+  fi
+  return "${lock_status}"
+}
+assert_model_lock_held() {
+  [[ -n "${model_lock_pid}" ]] && kill -0 "${model_lock_pid}" 2>/dev/null
+}
+acquire_model_lock() {
+  local remote_model_lock_program remote_model_lock_command model_lock_report='' attempt
+  remote_model_lock_program=$'set -euo pipefail\n'
+  remote_model_lock_program+=$'[[ "$(hostname)" == "spark-5343" && "$(uname -m)" == "aarch64" ]] || exit 70\n'
+  remote_model_lock_program+=$'for tool in cat flock hostname id stat uname; do command -v "${tool}" >/dev/null 2>&1 || exit 71; done\n'
+  remote_model_lock_program+=$'lock_root="/run/user/$(id -u)"\n'
+  remote_model_lock_program+=$'[[ -d "${lock_root}" && ! -L "${lock_root}" && -O "${lock_root}" && -w "${lock_root}" ]] || exit 72\n'
+  remote_model_lock_program+=$'lock_file="${lock_root}/canarysting-ollama-qwen.lock"\n'
+  remote_model_lock_program+=$'[[ ! -L "${lock_file}" ]] || exit 73\n'
+  remote_model_lock_program+=$'exec 9>>"${lock_file}"\n'
+  remote_model_lock_program+=$'[[ -f "${lock_file}" && ! -L "${lock_file}" && -O "${lock_file}" ]] || exit 74\n'
+  remote_model_lock_program+=$'chmod 0600 "${lock_file}"\n'
+  remote_model_lock_program+=$'if ! flock -n 9; then printf "model_lock=busy\\n"; exit 75; fi\n'
+  remote_model_lock_program+=$'printf "model_lock=acquired\\n"\n'
+  remote_model_lock_program+=$'cat >/dev/null\n'
+  printf -v remote_model_lock_command 'bash -c %q' "${remote_model_lock_program}"
+  model_lock_directory="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-ollama-lock.XXXXXX")"
+  chmod 0700 "${model_lock_directory}"
+  model_lock_fifo="${model_lock_directory}/hold"
+  model_lock_report_file="${model_lock_directory}/report"
+  mkfifo -m 0600 "${model_lock_fifo}"
+  : >"${model_lock_report_file}"
+  chmod 0600 "${model_lock_report_file}"
+  exec 9<>"${model_lock_fifo}"
+  model_lock_hold_open='true'
+  (
+    exec 9>&-
+    ssh "${ssh_options[@]}" "${dgx_host}" "${remote_model_lock_command}" <"${model_lock_fifo}" >"${model_lock_report_file}"
+  ) &
+  model_lock_pid=$!
+  for ((attempt = 0; attempt < 200; attempt++)); do
+    if [[ -s "${model_lock_report_file}" ]]; then
+      IFS= read -r model_lock_report <"${model_lock_report_file}"
+      break
+    fi
+    kill -0 "${model_lock_pid}" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ -z "${model_lock_report}" ]]; then
+    release_model_lock >/dev/null 2>&1 || true
+    fail 'could not acquire the DGX host-global Ollama model lock'
+  fi
+  if [[ "${model_lock_report}" != 'model_lock=acquired' ]] || ! assert_model_lock_held; then
+    release_model_lock >/dev/null 2>&1 || true
+    fail 'the DGX host-global Ollama model lock is busy or unsafe'
+  fi
+  trap 'release_model_lock >/dev/null 2>&1 || true' EXIT
+  trap 'exit 130' INT TERM
+}
 
 run_id=''
 mode='run'
@@ -81,11 +183,11 @@ if [[ "${mode}" == 'dry-run' ]]; then
   printf 'host=%s\nrun_id=%s\nartifact=test/attackerloopspike\n' "${dgx_host}" "${run_id}"
   printf 'model=%s\nmodel_id=%s\nendpoint=http-loopback-fixed\n' "${expected_model}" "${expected_model_id}"
   printf 'mutation=run-owned-stage,evidence,transient-loopback-socket,transient-model-load\n'
-  printf 'privilege=unprivileged\nraw_model_output_emitted=false\ncleanup=exact-run-and-model-unload\n'
+  printf 'privilege=unprivileged\nmodel_lock=dgx-host-global-exclusive\nraw_model_output_emitted=false\ncleanup=exact-run-and-model-unload\n'
   exit 0
 fi
 
-for required in ssh grep "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
+for required in chmod grep mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
   else
@@ -93,14 +195,15 @@ for required in ssh grep "${copy_script}" "${check_script}" "${cleanup_script}" 
   fi
 done
 
+acquire_model_lock
+assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before inspection'
 pre_model_report="$("${attackercheck_script}")"
 cleanup_stage_state=''
 if [[ "${mode}" == 'cleanup' ]]; then
   validate_model_identity_report "${pre_model_report}" || fail 'cleanup Ollama identity, binding, or inventory check failed'
   cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"
-  cleanup_stage_state="$(grep -E '^stage=(validated|absent)$' <<<"${cleanup_inventory}")"
-  [[ "${cleanup_stage_state}" == 'stage=validated' || "${cleanup_stage_state}" == 'stage=absent' ]] ||
-    fail 'cleanup inspection did not return one exact stage state'
+  cleanup_stage_state="$(cleanup_stage_from_inventory "${cleanup_inventory}")" ||
+    fail 'cleanup inspection did not return one exact root/stage state'
   if [[ "${cleanup_stage_state}" == 'stage=absent' ]]; then
     validate_model_report "${pre_model_report}" || fail 'run stage is absent while a model remains loaded'
   fi
@@ -115,6 +218,7 @@ else
   "${copy_script}" --verify-only --run-id "${run_id}"
 fi
 
+assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before execution'
 remote_status=0
 if [[ "${mode}" != 'cleanup' || "${cleanup_stage_state}" == 'stage=validated' ]]; then
 set +e
@@ -321,10 +425,12 @@ remote_status=$?
 set -e
 fi
 
+assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before post-run inspection'
 post_model_report="$("${attackercheck_script}")"
 validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, inventory, or unloaded-state check failed'
 printf 'post_model_check=PASS\n'
 [[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"
+release_model_lock || fail 'DGX host-global Ollama model lock session failed'
 if [[ "${mode}" == 'cleanup' ]]; then
   "${cleanup_script}" --run-id "${run_id}"
   exit 0

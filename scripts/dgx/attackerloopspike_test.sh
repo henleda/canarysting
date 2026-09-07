@@ -26,6 +26,7 @@ output="$(${proof_script} --run-id m2c4-contract --dry-run)"
 [[ "${output}" == *'artifact=test/attackerloopspike'* ]] || fail 'dry run omitted its fixed artifact'
 [[ "${output}" == *'model=qwen3-coder:30b-a3b-q8_0'* && "${output}" == *'model_id=7b438a19895a'* ]] || fail 'dry run omitted pinned model provenance'
 [[ "${output}" == *'endpoint=http-loopback-fixed'* && "${output}" == *'privilege=unprivileged'* ]] || fail 'dry run omitted network or privilege boundary'
+[[ "${output}" == *'model_lock=dgx-host-global-exclusive'* ]] || fail 'dry run omitted shared-model serialization boundary'
 [[ "${output}" == *'raw_model_output_emitted=false'* && "${output}" == *'cleanup=exact-run-and-model-unload'* ]] || fail 'dry run omitted minimization or cleanup boundary'
 
 expect_failure missing_run_id '--run-id is required' "${proof_script}" --dry-run
@@ -46,6 +47,8 @@ for marker in \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC' \
   '"${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model' \
   'trap cleanup_after_signal INT TERM' \
+  'if ! flock -n 9; then' \
+  'assert_model_lock_held || fail' \
   'expires - finished == 86400'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
 done
@@ -58,7 +61,8 @@ identity_report_definition="$(awk '/^validate_model_identity_report\(\) \{/ { ca
 schema_definition="$(awk '/^validate_result_schema\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
-[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" ]] || fail 'proof validators are not independently testable'
+cleanup_stage_definition="$(awk '/^cleanup_stage_from_inventory\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" ]] || fail 'proof validators are not independently testable'
 
 valid_report=$'ollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
 bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
@@ -68,12 +72,35 @@ if bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expec
 fi
 bash -c "${identity_report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_identity_report "$1"' -- "${bad_report}" || fail 'cleanup identity validator rejected an otherwise safe loaded-model report'
 
+for inventory in \
+  $'mode=inspect\nrun_id=m2c4-clean\nroot=absent\npostcondition=all-candidates-absent' \
+  $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=absent\nevidence=absent\nmutation=none' \
+  $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=validated\nevidence=validated\nmutation=none'; do
+  cleanup_state="$(bash -c "${cleanup_stage_definition}"$'\n''cleanup_stage_from_inventory "$1"' -- "${inventory}")" || fail 'valid cleanup inventory was rejected'
+  if [[ "${inventory}" == *'stage=validated'* ]]; then
+    [[ "${cleanup_state}" == 'stage=validated' ]] || fail 'validated stage state was not preserved'
+  else
+    [[ "${cleanup_state}" == 'stage=absent' ]] || fail 'absent root/stage was not treated as clean'
+  fi
+done
+for inventory in $'root=absent\nstage=absent' $'stage=absent\nstage=validated' $'stage=unsafe'; do
+  if bash -c "${cleanup_stage_definition}"$'\n''cleanup_stage_from_inventory "$1"' -- "${inventory}" >/dev/null; then
+    fail 'ambiguous or unsafe cleanup inventory was accepted'
+  fi
+done
+
 cleanup_inspect_line="$(grep -nF 'cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"' "${proof_script}" | cut -d: -f1)"
 remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${proof_script}" | cut -d: -f1)"
 post_check_line="$(grep -nF 'validate_model_report "${post_model_report}"' "${proof_script}" | cut -d: -f1)"
 generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${proof_script}" | tail -n1 | cut -d: -f1)"
 [[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
 ((cleanup_inspect_line < remote_cleanup_line && remote_cleanup_line < post_check_line && post_check_line < generic_cleanup_line)) || fail 'cleanup can remove the stage before fixed-model unload and verification'
+
+lock_acquire_line="$(grep -nFx 'acquire_model_lock' "${proof_script}" | cut -d: -f1)"
+pre_model_line="$(grep -nF 'pre_model_report="$("${attackercheck_script}")"' "${proof_script}" | cut -d: -f1)"
+lock_release_line="$(grep -nF 'release_model_lock || fail' "${proof_script}" | cut -d: -f1)"
+[[ "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
+((lock_acquire_line < pre_model_line && post_check_line < lock_release_line)) || fail 'host-global model lock does not span precheck through unload/postcheck'
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXXXX")"
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM

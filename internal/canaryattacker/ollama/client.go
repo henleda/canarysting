@@ -60,7 +60,10 @@ func New(endpoint string) (*Client, error) {
 		http: &http.Client{
 			Transport: transport, Timeout: requestTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return fmt.Errorf("Ollama redirects are forbidden")
+				// Returning ErrUseLastResponse refuses the redirect without
+				// allowing net/http to copy a response-controlled Location into
+				// the returned transport error.
+				return http.ErrUseLastResponse
 			},
 		},
 	}, nil
@@ -173,7 +176,7 @@ func (c *Client) Complete(ctx context.Context, request planner.TurnRequest) (pla
 	httpRequest.Header.Set("User-Agent", "canarysting-bounded-planner/1")
 	httpResponse, err := c.http.Do(httpRequest)
 	if err != nil {
-		return planner.TurnResponse{}, fmt.Errorf("call fixed-loopback Ollama: %w", err)
+		return planner.TurnResponse{}, sanitizedTransportError(ctx, "call fixed-loopback Ollama")
 	}
 	defer httpResponse.Body.Close()
 	limited, err := io.ReadAll(io.LimitReader(httpResponse.Body, AbsoluteMaxResponseBytes+1))
@@ -182,6 +185,9 @@ func (c *Client) Complete(ctx context.Context, request planner.TurnRequest) (pla
 	}
 	if len(limited) > AbsoluteMaxResponseBytes {
 		return planner.TurnResponse{}, fmt.Errorf("Ollama response exceeds %d bytes", AbsoluteMaxResponseBytes)
+	}
+	if httpResponse.StatusCode >= http.StatusMultipleChoices && httpResponse.StatusCode < http.StatusBadRequest {
+		return planner.TurnResponse{}, fmt.Errorf("Ollama redirect response is forbidden")
 	}
 	if httpResponse.StatusCode != http.StatusOK {
 		return planner.TurnResponse{}, fmt.Errorf("Ollama returned status %d", httpResponse.StatusCode)
@@ -213,12 +219,15 @@ func (c *Client) Unload(ctx context.Context, model string) error {
 	httpRequest.Header.Set("User-Agent", "canarysting-bounded-planner/1")
 	httpResponse, err := c.http.Do(httpRequest)
 	if err != nil {
-		return fmt.Errorf("call fixed-loopback Ollama unload: %w", err)
+		return sanitizedTransportError(ctx, "call fixed-loopback Ollama unload")
 	}
 	defer httpResponse.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(httpResponse.Body, AbsoluteMaxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read Ollama unload response: %w", err)
+	}
+	if httpResponse.StatusCode >= http.StatusMultipleChoices && httpResponse.StatusCode < http.StatusBadRequest {
+		return fmt.Errorf("Ollama unload redirect response is forbidden")
 	}
 	if len(responseBody) > AbsoluteMaxResponseBytes || httpResponse.StatusCode != http.StatusOK {
 		return fmt.Errorf("Ollama unload response is oversized or returned status %d", httpResponse.StatusCode)
@@ -246,6 +255,13 @@ func (c *Client) Unload(ctx context.Context, model string) error {
 		return fmt.Errorf("Ollama unload response timestamp is invalid")
 	}
 	return nil
+}
+
+func sanitizedTransportError(ctx context.Context, operation string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%s failed", operation)
 }
 
 func buildRequest(request planner.TurnRequest) (apiRequest, error) {
