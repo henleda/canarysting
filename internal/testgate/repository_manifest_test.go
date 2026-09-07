@@ -86,6 +86,9 @@ func TestPRDGXRunsEveryMappedProfile(t *testing.T) {
 	if !strings.Contains(job, "dgx-attacker-executor) selected='attacker-executor' ;;") {
 		t.Fatal("PR DGX job does not route bounded attacker execution to its exact coordinator profile")
 	}
+	if !strings.Contains(job, "dgx-attacker-loop) selected='attacker-loop' ;;") {
+		t.Fatal("PR DGX job does not route the bounded live-model loop to its exact coordinator profile")
+	}
 	for _, required := range []string{
 		`IFS=',' read -ra required_profiles`,
 		`for required in "${required_profiles[@]}"`,

@@ -197,6 +197,7 @@ jobs:
               dgx-trace) selected='trace' ;;
               dgx-attacker-check) selected='attacker-check' ;;
               dgx-attacker-executor) selected='attacker-executor' ;;
+              dgx-attacker-loop) selected='attacker-loop' ;;
               dgx-harness) selected='preflight' ;;
               *)
                 echo "No implemented bounded DGX profile for ${required}; refusing weaker substitution" >&2

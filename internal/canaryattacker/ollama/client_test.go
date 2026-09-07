@@ -1,0 +1,174 @@
+package ollama
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/canarysting/canarysting/internal/canaryattacker/planner"
+)
+
+func TestClientUsesOnlyPinnedLoopbackChatContract(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://203.0.113.1:9999")
+	t.Setenv("HTTPS_PROXY", "http://203.0.113.1:9999")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/chat" || request.URL.RawQuery != "" {
+			t.Errorf("unexpected request target: %s %s", request.Method, request.URL.String())
+		}
+		var payload apiRequest
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if payload.Model != "qwen3-coder:30b-a3b-q8_0" || payload.Stream || payload.Think || payload.KeepAlive != 0 ||
+			payload.Options.Temperature != 0 || payload.Options.Seed != 7 || payload.Options.NumPredict != 128 || payload.Options.NumContext != 1024 {
+			t.Errorf("unbounded request: %+v", payload)
+		}
+		if len(payload.Tools) != 1 || payload.Tools[0].Function.Name != "action_001" ||
+			payload.Tools[0].Function.Parameters.Type != "object" || payload.Tools[0].Function.Parameters.AdditionalProperties ||
+			len(payload.Tools[0].Function.Parameters.Properties) != 0 {
+			t.Errorf("tool schema is not closed: %+v", payload.Tools)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(validAPIResponse("qwen3-coder:30b-a3b-q8_0", "action_001", `{}`)))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Complete(context.Background(), turnRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Model != "qwen3-coder:30b-a3b-q8_0" || len(response.Proposals) != 1 ||
+		response.Proposals[0].Name != "action_001" || string(response.Proposals[0].Arguments) != `{}` || len(response.OutputSHA256) != 64 {
+		t.Fatalf("unexpected parsed response: %+v", response)
+	}
+}
+
+func TestClientRejectsNonLoopbackAndAmbiguousEndpoints(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434",
+		"http://127.0.0.2:11434", "http://user@127.0.0.1:11434", "http://127.0.0.1",
+		"http://127.0.0.1:11434/api", "http://127.0.0.1:11434?x=1",
+	} {
+		if _, err := New(endpoint); err == nil {
+			t.Fatalf("unsafe endpoint accepted: %s", endpoint)
+		}
+	}
+}
+
+func TestClientRejectsRedirects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, "/elsewhere", http.StatusFound)
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(context.Background(), turnRequest()); err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("redirect error = %v", err)
+	}
+}
+
+func TestResponseParserFailsClosed(t *testing.T) {
+	request := turnRequest()
+	valid := validAPIResponse(request.Model, "action_001", `{}`)
+	tests := map[string]string{
+		"duplicate key": strings.Replace(valid, `"done":true`, `"done":true,"done":true`, 1),
+		"unknown field": strings.Replace(valid, `"done":true`, `"unexpected":1,"done":true`, 1),
+		"wrong model":   strings.Replace(valid, request.Model, "other-model", 1),
+		"bad arguments": strings.Replace(valid, `"arguments":{}`, `"arguments":[]`, 1),
+		"thinking":      strings.Replace(valid, `"content":""`, `"content":"","thinking":"hidden"`, 1),
+		"trailing":      valid + `{}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseResponse([]byte(body), request); err == nil {
+				t.Fatalf("unsafe response accepted: %s", body)
+			}
+		})
+	}
+}
+
+func TestCancelledRequestStopsPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Complete(ctx, turnRequest())
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel error = %v", err)
+	}
+}
+
+func TestUnloadUsesFixedGenerateEndpointWithoutPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/generate" {
+			t.Errorf("unexpected unload request: %s %s", request.Method, request.URL.Path)
+		}
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode unload request: %v", err)
+		}
+		if len(payload) != 2 || string(payload["model"]) != `"qwen3-coder:30b-a3b-q8_0"` || string(payload["keep_alive"]) != "0" {
+			t.Errorf("unload request was not exact: %s", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"model":"qwen3-coder:30b-a3b-q8_0","created_at":"` +
+			time.Now().UTC().Format(time.RFC3339Nano) + `","response":"","done":true,"done_reason":"unload"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Unload(context.Background(), "qwen3-coder:30b-a3b-q8_0"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnloadRejectsNonJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/plain")
+		_, _ = writer.Write([]byte(`{"model":"qwen3-coder:30b-a3b-q8_0","created_at":"` +
+			time.Now().UTC().Format(time.RFC3339Nano) + `","response":"","done":true,"done_reason":"unload"}`))
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Unload(context.Background(), "qwen3-coder:30b-a3b-q8_0"); err == nil || !strings.Contains(err.Error(), "content type") {
+		t.Fatalf("non-JSON unload response error = %v", err)
+	}
+}
+
+func turnRequest() planner.TurnRequest {
+	return planner.TurnRequest{
+		Model: "qwen3-coder:30b-a3b-q8_0", Instruction: "Use one reviewed function only.",
+		Tools:           []planner.Tool{{Name: "action_001", Description: "Execute one reviewed synthetic action."}},
+		MaxOutputTokens: 128, ContextTokens: 1024, MaxProposals: 1, Seed: 7,
+	}
+}
+
+func validAPIResponse(model, toolName, arguments string) string {
+	return `{"model":"` + model + `","created_at":"` + time.Now().UTC().Format(time.RFC3339Nano) +
+		`","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_fixture","function":{"name":"` + toolName +
+		`","arguments":` + arguments + `}}]},"done":true,"done_reason":"stop","total_duration":1,"load_duration":1,` +
+		`"prompt_eval_count":10,"prompt_eval_duration":1,"eval_count":5,"eval_duration":1}`
+}

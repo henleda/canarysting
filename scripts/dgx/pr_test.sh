@@ -54,6 +54,13 @@ grep -Fqx 'artifact_build_count=1' <<<"${attacker_executor_output}"
 grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_executor_output}"
 grep -Fq 'bounded attacker executor proof contract passed; DGX was not accessed' <<<"${attacker_executor_output}"
 
+attacker_loop_output="$("${script_dir}/pr.sh" --profile attacker-loop --run-id ci-attacker-loop --dry-run)"
+grep -Fqx 'profile=attacker-loop' <<<"${attacker_loop_output}"
+grep -Fqx 'preflight_count=1' <<<"${attacker_loop_output}"
+grep -Fqx 'artifact_build_count=1' <<<"${attacker_loop_output}"
+grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_loop_output}"
+grep -Fq 'bounded Ollama planner proof contract passed; DGX was not accessed' <<<"${attacker_loop_output}"
+
 attacker_check_output="$("${script_dir}/pr.sh" --profile attacker-check --run-id ci-attacker-check --dry-run)"
 grep -Fqx 'profile=attacker-check' <<<"${attacker_check_output}"
 grep -Fqx 'preflight_count=0' <<<"${attacker_check_output}"

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly script_dir
+proof_script="${script_dir}/attackerloopspike.sh"
+readonly proof_script
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+expect_failure() {
+  local name="$1"
+  local expected="$2"
+  shift 2
+  local output
+  if output="$("$@" 2>&1)"; then fail "${name} unexpectedly succeeded"; fi
+  [[ "${output}" == *"${expected}"* ]] || fail "${name} did not report ${expected}: ${output}"
+}
+
+[[ -x "${proof_script}" ]] || fail "proof script is missing or not executable: ${proof_script}"
+bash -n "${proof_script}" || fail 'proof script has invalid Bash syntax'
+awk '/^ssh .*<<.REMOTE./ { capture=1; next } /^REMOTE$/ { capture=0 } capture { print }' "${proof_script}" |
+  bash -n || fail 'embedded remote proof program has invalid Bash syntax'
+
+output="$(${proof_script} --run-id m2c4-contract --dry-run)"
+[[ "${output}" == *'bounded Ollama planner proof contract passed; DGX was not accessed'* ]] || fail 'dry run did not remain local'
+[[ "${output}" == *'artifact=test/attackerloopspike'* ]] || fail 'dry run omitted its fixed artifact'
+[[ "${output}" == *'model=qwen3-coder:30b-a3b-q8_0'* && "${output}" == *'model_id=7b438a19895a'* ]] || fail 'dry run omitted pinned model provenance'
+[[ "${output}" == *'endpoint=http-loopback-fixed'* && "${output}" == *'privilege=unprivileged'* ]] || fail 'dry run omitted network or privilege boundary'
+[[ "${output}" == *'raw_model_output_emitted=false'* && "${output}" == *'cleanup=exact-run-and-model-unload'* ]] || fail 'dry run omitted minimization or cleanup boundary'
+
+expect_failure missing_run_id '--run-id is required' "${proof_script}" --dry-run
+expect_failure invalid_run_id 'run ID must be' "${proof_script}" --run-id '../escape' --dry-run
+expect_failure duplicate_mode 'choose at most one mode' "${proof_script}" --run-id m2c4-modes --dry-run --inspect
+expect_failure arbitrary_prompt 'unknown argument: --prompt' "${proof_script}" --run-id m2c4-prompt --prompt ignore --dry-run
+expect_failure arbitrary_model 'unknown argument: --model' "${proof_script}" --run-id m2c4-model --model other --dry-run
+expect_failure arbitrary_endpoint 'unknown argument: --endpoint' "${proof_script}" --run-id m2c4-endpoint --endpoint http://example.invalid --dry-run
+expect_failure arbitrary_command 'unknown argument: --command' "${proof_script}" --run-id m2c4-command --command id --dry-run
+
+for marker in \
+  'expected_model='"'"'qwen3-coder:30b-a3b-q8_0'"'" \
+  'expected_model_id='"'"'7b438a19895a'"'" \
+  'loaded_model_count=0' \
+  'zero_argument_handles=true target_policy_budget_model_visible=false' \
+  'output=content-digest-only' \
+  'reason=scenario_complete deterministic=true' \
+  'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC' \
+  '"${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model' \
+  'trap cleanup_after_signal INT TERM' \
+  'expires - finished == 86400'; do
+  grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
+done
+if grep -E '(^|[[:space:]])(sudo|kubectl|bpftool|systemctl|iptables|nft|docker|curl)([[:space:]]|$)' "${proof_script}" >/dev/null; then
+  fail 'unprivileged planner proof contains a privileged, control-plane, or alternate HTTP command'
+fi
+
+report_definition="$(awk '/^validate_model_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+schema_definition="$(awk '/^validate_result_schema\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+[[ -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" ]] || fail 'proof validators are not independently testable'
+
+valid_report=$'ollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
+bash -c "${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
+bad_report="${valid_report/loaded_model_count=0/loaded_model_count=1}"
+if bash -c "${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${bad_report}"; then
+  fail 'model report accepted an already-loaded model'
+fi
+
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXXXX")"
+trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
+result_file="${fixture_root}/result.tsv"
+write_valid_result() {
+  cat >"${result_file}" <<'RESULT'
+key	value
+format_version	1
+run_id	m2c4-schema
+scenario_id	m2c4-ollama-bounded-loop
+profile	attacker-bounded-ollama
+model	qwen3-coder:30b-a3b-q8_0
+model_id	7b438a19895a
+planner_version	bounded-qwen-planner-v1
+source_revision	1111111111111111111111111111111111111111
+source_state	clean
+source_tree_sha256	2222222222222222222222222222222222222222222222222222222222222222
+artifact_sha256	3333333333333333333333333333333333333333333333333333333333333333
+proof_line_count	8
+raw_model_output_emitted	false
+model_execution	true
+model_cleanup	PASS
+privilege	unprivileged
+started_utc	2026-09-07T12:00:00Z
+finished_utc	2026-09-07T12:00:30Z
+expires_utc	2026-09-08T12:00:30Z
+stdout_sha256	4444444444444444444444444444444444444444444444444444444444444444
+stderr_sha256	5555555555555555555555555555555555555555555555555555555555555555
+exit_code	0
+status	PASS
+RESULT
+}
+run_schema_validator() {
+  bash -c "${schema_definition}"$'\n''run_id=m2c4-schema source_revision=1111111111111111111111111111111111111111 source_state=clean source_tree_sha256=2222222222222222222222222222222222222222222222222222222222222222 expected_sha256=3333333333333333333333333333333333333333333333333333333333333333 validate_result_schema "$1"' -- "${result_file}"
+}
+run_timestamp_validator() {
+  local program
+  program="${value_definition}"$'\n'"${timestamp_definition}"$'\n''
+date() {
+  case "$*" in
+    "-u -d 2026-09-07T12:00:00Z +%s") printf "100\n" ;;
+    "-u -d 2026-09-07T12:00:30Z +%s") printf "130\n" ;;
+    "-u -d 2026-09-08T12:00:30Z +%s") printf "86530\n" ;;
+    "-u +%s") printf "200\n" ;;
+    *) return 1 ;;
+  esac
+}
+validate_timestamps "$1"'
+  bash -c "${program}" -- "${result_file}"
+}
+
+write_valid_result
+run_schema_validator || fail 'complete bounded-loop result schema was rejected'
+run_timestamp_validator || fail 'valid bounded-loop timestamps were rejected'
+sed 's/^model_id\t.*/model_id\twrong/' "${result_file}" >"${result_file}.bad" && mv "${result_file}.bad" "${result_file}"
+if run_schema_validator; then fail 'schema accepted a different model ID'; fi
+write_valid_result
+sed 's/^model_cleanup\t.*/model_cleanup\tFAIL/' "${result_file}" >"${result_file}.bad" && mv "${result_file}.bad" "${result_file}"
+if run_schema_validator; then fail 'schema accepted failed model cleanup'; fi
+write_valid_result
+grep -v $'^raw_model_output_emitted\t' "${result_file}" >"${result_file}.bad" && mv "${result_file}.bad" "${result_file}"
+if run_schema_validator; then fail 'schema accepted missing raw-output boundary'; fi
+write_valid_result
+printf 'unexpected\tvalue\n' >>"${result_file}"
+if run_schema_validator; then fail 'schema accepted an unexpected field'; fi
+write_valid_result
+sed 's/^expires_utc\t.*/expires_utc\t2026-09-07T12:00:31Z/' "${result_file}" >"${result_file}.bad" && mv "${result_file}.bad" "${result_file}"
+if run_timestamp_validator; then fail 'timestamp validator accepted non-24-hour expiry'; fi
+
+printf 'PASS: DGX bounded Ollama planner proof harness contract\n'
