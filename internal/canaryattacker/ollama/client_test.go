@@ -99,6 +99,15 @@ func TestResponseParserFailsClosed(t *testing.T) {
 	}
 }
 
+func TestResponseParserDoesNotEchoUntrustedFieldNames(t *testing.T) {
+	request := turnRequest()
+	marker := "attacker-controlled-secret-marker"
+	body := strings.Replace(validAPIResponse(request.Model, "action_001", `{}`), `"done":true`, `"`+marker+`":1,"done":true`, 1)
+	if _, err := parseResponse([]byte(body), request); err == nil || strings.Contains(err.Error(), marker) {
+		t.Fatalf("untrusted-field diagnostic = %v", err)
+	}
+}
+
 func TestCancelledRequestStopsPrompt(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
 		<-request.Context().Done()

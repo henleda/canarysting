@@ -34,7 +34,7 @@ type Client struct {
 func New(endpoint string) (*Client, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("parse Ollama endpoint: %w", err)
+		return nil, fmt.Errorf("Ollama endpoint is invalid")
 	}
 	if parsed.Scheme != "http" || parsed.Hostname() != "127.0.0.1" || parsed.User != nil ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
@@ -228,16 +228,16 @@ func (c *Client) Unload(ctx context.Context, model string) error {
 		return fmt.Errorf("Ollama unload response content type is not application/json")
 	}
 	if err := rejectDuplicateKeys(responseBody); err != nil {
-		return fmt.Errorf("decode Ollama unload response: %w", err)
+		return fmt.Errorf("Ollama unload response JSON is invalid")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.DisallowUnknownFields()
 	var response unloadResponse
 	if err := decoder.Decode(&response); err != nil {
-		return fmt.Errorf("decode Ollama unload response: %w", err)
+		return fmt.Errorf("Ollama unload response schema is invalid")
 	}
 	if err := requireEOF(decoder); err != nil {
-		return fmt.Errorf("decode Ollama unload response: %w", err)
+		return fmt.Errorf("Ollama unload response contains trailing data")
 	}
 	if response.Model != model || !response.Done || response.Response != "" || response.DoneReason != "unload" {
 		return fmt.Errorf("Ollama did not confirm exact model unload")
@@ -284,16 +284,16 @@ func buildRequest(request planner.TurnRequest) (apiRequest, error) {
 
 func parseResponse(body []byte, request planner.TurnRequest) (planner.TurnResponse, error) {
 	if err := rejectDuplicateKeys(body); err != nil {
-		return planner.TurnResponse{}, fmt.Errorf("decode Ollama response: %w", err)
+		return planner.TurnResponse{}, fmt.Errorf("Ollama response JSON is invalid")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var response apiResponse
 	if err := decoder.Decode(&response); err != nil {
-		return planner.TurnResponse{}, fmt.Errorf("decode Ollama response: %w", err)
+		return planner.TurnResponse{}, fmt.Errorf("Ollama response schema is invalid")
 	}
 	if err := requireEOF(decoder); err != nil {
-		return planner.TurnResponse{}, fmt.Errorf("decode Ollama response: %w", err)
+		return planner.TurnResponse{}, fmt.Errorf("Ollama response contains trailing data")
 	}
 	if response.Model != request.Model || response.Message.Role != "assistant" || !response.Done ||
 		response.PromptEvalCount == 0 || response.EvalCount == 0 || response.EvalCount > request.MaxOutputTokens {
