@@ -319,10 +319,54 @@ func TestPolicyRejectsPublicAndLinkLocalTargetsAndUnregisteredOperations(t *test
 	if _, err := NewPolicy(PolicyConfig{Limits: limits}); err == nil {
 		t.Fatal("empty policy was accepted")
 	}
-	for _, path := range []string{"/../escape", "/%2e%2e/escape", "/%252e%252e/escape", "/safe%2fescape"} {
+	for _, path := range []string{
+		"/../escape",
+		"/%2e%2e/escape",
+		"/%252e%252e/escape",
+		"/%2525252e%2525252e/escape",
+		"/%252525252525252e%252525252525252e/escape",
+		"/safe%2fescape",
+	} {
 		if err := validatePath(path); err == nil {
 			t.Fatalf("ambiguous or traversing path %q was accepted", path)
 		}
+	}
+	fixture := newFixture(t, fixtureURL, limits, nil, dialerFunc(func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("policy validation reached the network")
+		return nil, errors.New("unexpected dial")
+	}))
+	if _, err := fixture.policy.newOperation(OperationInput{
+		Action: fixture.actions[0], HTTPMethod: http.MethodGet, Path: "/%2525252e%2525252e/escape",
+	}); err == nil {
+		t.Fatal("fixed deeply encoded request path was accepted")
+	}
+}
+
+func TestDeeplyEncodedFollowLinkIsRejectedBeforeNetwork(t *testing.T) {
+	base := httpFixtureDialer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/first" {
+			writer.Header().Set("Link", "</%2525252e%2525252e/escape>; rel=next")
+		}
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	var dials atomic.Uint32
+	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, dialerFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials.Add(1)
+		return base.DialContext(ctx, network, address)
+	}))
+	run := fixture.newRun(t, &MemoryLedger{})
+	defer run.Close()
+	first, err := run.Execute(context.Background(), fixture.invocation(0, fixture.actions[0]))
+	if err != nil || first.Result.Status != groundtruth.ActionSucceeded {
+		t.Fatalf("source response = %+v, %v", first.Result, err)
+	}
+	before := dials.Load()
+	follow, err := run.Execute(context.Background(), fixture.invocation(4, fixture.actions[4]))
+	if err != nil || follow.Result.Status != groundtruth.ActionFailed || follow.Result.ErrorCode != "link_invalid" {
+		t.Fatalf("deep link result = %+v, %v", follow.Result, err)
+	}
+	if dials.Load() != before {
+		t.Fatal("deeply encoded follow link reached the network")
 	}
 }
 
@@ -370,6 +414,102 @@ func TestOrderedScenarioRejectsStepRegressionBeforeNetwork(t *testing.T) {
 	}
 	if dials.Load() != 0 {
 		t.Fatal("ordered step regression reached the network")
+	}
+}
+
+func TestLateCallerCancellationDoesNotRewriteCompletedAction(t *testing.T) {
+	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, httpFixtureDialer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
+	run := fixture.newRun(t, &MemoryLedger{})
+	defer run.Close()
+	operation := fixture.policy.operations[actionKey(fixture.actions[0])]
+	callerCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	completed := successfulHTTP(http.StatusOK, []byte("complete"), []string{"/next"}, nil)
+	completed = run.finalizeOperation(callerCtx, 1, operation, completed)
+	if completed.status != groundtruth.ActionSucceeded || completed.errorCode != "" {
+		t.Fatalf("late cancellation rewrote completed result: %+v", completed)
+	}
+	if stored, ok := run.loadResponse(1); !ok || string(stored.body) != "complete" {
+		t.Fatal("completed response was not published after final success")
+	}
+	cancelled := successfulHTTP(http.StatusOK, []byte("must-not-store"), nil, nil)
+	cancelled.status = groundtruth.ActionFailed
+	cancelled.errorCode = "caller_cancelled"
+	cancelled = run.finalizeOperation(callerCtx, 2, operation, cancelled)
+	if cancelled.status != groundtruth.ActionCancelled || cancelled.errorCode != "caller_cancelled" {
+		t.Fatalf("operation cancellation was not classified: %+v", cancelled)
+	}
+	if _, ok := run.loadResponse(2); ok {
+		t.Fatal("cancelled operation published a stored response")
+	}
+}
+
+func TestHTTPRequestLimitBoundsSerializedWireBytes(t *testing.T) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("ok"))
+	})
+	base := httpFixtureDialer(handler)
+	var written atomic.Uint64
+	limits := defaultLimits()
+	fixture := newFixture(t, fixtureURL, limits, nil, dialerFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+		connection, err := base.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &writeCountingConn{Conn: connection, written: &written}, nil
+	}))
+	run := fixture.newRun(t, &MemoryLedger{})
+	execution, err := run.Execute(context.Background(), fixture.invocation(0, fixture.actions[0]))
+	run.Close()
+	if err != nil || execution.Result.Status != groundtruth.ActionSucceeded {
+		t.Fatalf("bounded wire request = %+v, %v", execution.Result, err)
+	}
+	wireBytes := written.Load()
+	if wireBytes == 0 || wireBytes > limits.MaxRequestBytes {
+		t.Fatalf("emitted request bytes = %d, limit = %d", wireBytes, limits.MaxRequestBytes)
+	}
+
+	limits.MaxRequestBytes = wireBytes - 1
+	var rejectedDials atomic.Uint32
+	fixture = newFixture(t, fixtureURL, limits, nil, dialerFunc(func(context.Context, string, string) (net.Conn, error) {
+		rejectedDials.Add(1)
+		return nil, errors.New("unexpected dial")
+	}))
+	run = fixture.newRun(t, &MemoryLedger{})
+	execution, err = run.Execute(context.Background(), fixture.invocation(0, fixture.actions[0]))
+	run.Close()
+	if err != nil || execution.Result.ErrorCode != "request_limit_exceeded" || rejectedDials.Load() != 0 {
+		t.Fatalf("under-limit request = %+v, err=%v, dials=%d", execution.Result, err, rejectedDials.Load())
+	}
+
+	var enumerationRequests atomic.Uint32
+	var enumerationBytes atomic.Uint64
+	base = httpFixtureDialer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		enumerationRequests.Add(1)
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	limits = defaultLimits()
+	fixture = newFixture(t, fixtureURL, limits, nil, dialerFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+		connection, dialErr := base.DialContext(ctx, network, address)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		return &writeCountingConn{Conn: connection, written: &enumerationBytes}, nil
+	}))
+	run = fixture.newRun(t, &MemoryLedger{})
+	execution, err = run.Execute(context.Background(), fixture.invocation(3, fixture.actions[3]))
+	run.Close()
+	if err != nil || execution.Result.Status != groundtruth.ActionSucceeded || enumerationRequests.Load() != 2 {
+		t.Fatalf("baseline enumeration = %+v, err=%v, requests=%d", execution.Result, err, enumerationRequests.Load())
+	}
+	limits.MaxRequestBytes = enumerationBytes.Load() - 1
+	enumerationRequests.Store(0)
+	fixture = newFixture(t, fixtureURL, limits, nil, base)
+	run = fixture.newRun(t, &MemoryLedger{})
+	execution, err = run.Execute(context.Background(), fixture.invocation(3, fixture.actions[3]))
+	run.Close()
+	if err != nil || execution.Result.ErrorCode != "request_limit_exceeded" || enumerationRequests.Load() != 1 {
+		t.Fatalf("aggregate enumeration request limit = %+v, err=%v, requests=%d", execution.Result, err, enumerationRequests.Load())
 	}
 }
 
@@ -760,6 +900,17 @@ type dialerFunc func(context.Context, string, string) (net.Conn, error)
 
 func (function dialerFunc) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return function(ctx, network, address)
+}
+
+type writeCountingConn struct {
+	net.Conn
+	written *atomic.Uint64
+}
+
+func (c *writeCountingConn) Write(value []byte) (int, error) {
+	written, err := c.Conn.Write(value)
+	c.written.Add(uint64(written))
+	return written, err
 }
 
 func httpFixtureDialer(handler http.Handler) Dialer {

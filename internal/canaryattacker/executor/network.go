@@ -33,6 +33,7 @@ type execResult struct {
 	status         groundtruth.ActionStatus
 	errorCode      string
 	httpStatus     uint16
+	requestBytes   uint64
 	responseBytes  uint64
 	responseSHA256 string
 	networkRefs    []string
@@ -40,7 +41,7 @@ type execResult struct {
 	stored         *storedResponse
 }
 
-func (r *Run) executeOperation(ctx context.Context, ordinal uint32, operation Operation) execResult {
+func (r *Run) executeOperation(ctx context.Context, operation Operation) execResult {
 	target := r.executor.policy.targets[operation.action.TargetRef()]
 	var result execResult
 	switch operation.action.Tool() {
@@ -60,13 +61,6 @@ func (r *Run) executeOperation(ctx context.Context, ordinal uint32, operation Op
 		result = r.performInspect(operation)
 	default:
 		return execResult{status: groundtruth.ActionFailed, errorCode: "closed_catalog_violation"}
-	}
-	if result.stored != nil && result.status == groundtruth.ActionSucceeded {
-		result.stored.targetRef = operation.action.TargetRef()
-		if !r.storeResponse(ordinal, *result.stored) {
-			result.status = groundtruth.ActionFailed
-			result.errorCode = "stored_response_limit"
-		}
 	}
 	return result
 }
@@ -91,17 +85,15 @@ func (r *Run) performEnumeration(ctx context.Context, operation Operation, targe
 	var lastStatus uint16
 	requestLimit, responseLimit := r.actionByteLimits(operation.action.Tool())
 	for _, path := range operation.enumerationPaths {
-		requestBytes += uint64(len(http.MethodGet) + len(path))
-		if requestBytes > requestLimit {
-			return execResult{status: groundtruth.ActionFailed, errorCode: "request_limit_exceeded", networkRefs: refs}
-		}
+		remainingRequestBytes := requestLimit - requestBytes
 		remainingResponseBytes := responseLimit - responseBytes
-		part := r.httpRequestWithResponseLimit(ctx, operation, target, http.MethodGet, path, PayloadFixture{}, CredentialFixture{}, nil, remainingResponseBytes)
+		part := r.httpRequestWithLimits(ctx, operation, target, http.MethodGet, path, PayloadFixture{}, CredentialFixture{}, nil, remainingRequestBytes, remainingResponseBytes)
 		refs = append(refs, part.networkRefs...)
 		if part.status != groundtruth.ActionSucceeded {
 			part.networkRefs = refs
 			return part
 		}
+		requestBytes += part.requestBytes
 		responseBytes += part.responseBytes
 		if responseBytes > responseLimit {
 			return execResult{status: groundtruth.ActionFailed, errorCode: "response_limit_exceeded", networkRefs: refs}
@@ -204,8 +196,14 @@ func (r *Run) httpRequest(ctx context.Context, operation Operation, target Targe
 }
 
 func (r *Run) httpRequestWithResponseLimit(ctx context.Context, operation Operation, target TargetBinding, method, path string, payload PayloadFixture, credential CredentialFixture, headers http.Header, responseLimit uint64) execResult {
+	requestLimit, _ := r.actionByteLimits(operation.action.Tool())
+	return r.httpRequestWithLimits(ctx, operation, target, method, path, payload, credential, headers, requestLimit, responseLimit)
+}
+
+func (r *Run) httpRequestWithLimits(ctx context.Context, operation Operation, target TargetBinding, method, path string, payload PayloadFixture, credential CredentialFixture, headers http.Header, requestLimit, responseLimit uint64) execResult {
 	networkRefs := requestNetworkReference(operation, method, path)
-	requestLimit, configuredResponseLimit := r.actionByteLimits(operation.action.Tool())
+	configuredRequestLimit, configuredResponseLimit := r.actionByteLimits(operation.action.Tool())
+	requestLimit = min64(requestLimit, configuredRequestLimit)
 	responseLimit = min64(responseLimit, configuredResponseLimit)
 	requestURL := (&url.URL{Scheme: target.scheme, Host: targetAuthority(target), Path: "/"}).ResolveReference(&url.URL{Path: path}).String()
 	if parsed, parseErr := url.ParseRequestURI(path); parseErr == nil {
@@ -229,8 +227,13 @@ func (r *Run) httpRequestWithResponseLimit(ctx context.Context, operation Operat
 	} else if credential.kind == CredentialBearer {
 		request.Header.Set("Authorization", "Bearer "+string(credential.secret))
 	}
-	requestBytes := uint64(len(method)+len(path)+len(payload.body)) + headerBytes(request.Header)
-	if requestBytes > requestLimit {
+	request.Header.Set("User-Agent", "canarysting-attacker-executor/"+ExecutorVersion)
+	request.Close = true
+	requestBytes, err := serializedRequestBytes(request, requestLimit)
+	if err != nil {
+		if !errors.Is(err, errRequestWireLimit) {
+			return execResult{status: groundtruth.ActionFailed, errorCode: "request_invalid"}
+		}
 		return execResult{status: groundtruth.ActionFailed, errorCode: "request_limit_exceeded"}
 	}
 	before, err := r.resolveExact(ctx, target, "ip")
@@ -242,8 +245,10 @@ func (r *Run) httpRequestWithResponseLimit(ctx context.Context, operation Operat
 	}
 	transport := &http.Transport{
 		Proxy: nil, DisableCompression: true, DisableKeepAlives: true,
+		ForceAttemptHTTP2:      false,
 		MaxResponseHeaderBytes: int64(r.executor.policy.limits.MaxResponseHeaderBytes),
 		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.host},
+		TLSNextProto:           make(map[string]func(string, *tls.Conn) http.RoundTripper),
 		DialContext: func(dialCtx context.Context, network, _ string) (net.Conn, error) {
 			if network != "tcp" && network != "tcp4" && network != "tcp6" {
 				return nil, errors.New("network denied")
@@ -283,7 +288,41 @@ func (r *Run) httpRequestWithResponseLimit(ctx context.Context, operation Operat
 		return execResult{status: groundtruth.ActionFailed, errorCode: "dns_rebinding_denied", networkRefs: networkRefs}
 	}
 	links := captureLinks(response.Header.Values("Link"))
-	return successfulHTTP(uint16(response.StatusCode), body, links, networkRefs)
+	result := successfulHTTP(uint16(response.StatusCode), body, links, networkRefs)
+	result.requestBytes = requestBytes
+	return result
+}
+
+var errRequestWireLimit = errors.New("serialized request exceeds byte limit")
+
+type requestByteCounter struct {
+	limit   uint64
+	written uint64
+}
+
+func (w *requestByteCounter) Write(value []byte) (int, error) {
+	if w.written > w.limit || uint64(len(value)) > w.limit-w.written {
+		return 0, errRequestWireLimit
+	}
+	w.written += uint64(len(value))
+	return len(value), nil
+}
+
+func serializedRequestBytes(request *http.Request, limit uint64) (uint64, error) {
+	clone := request.Clone(request.Context())
+	if request.GetBody != nil {
+		body, err := request.GetBody()
+		if err != nil {
+			return 0, err
+		}
+		clone.Body = body
+		defer body.Close()
+	}
+	counter := &requestByteCounter{limit: limit}
+	if err := clone.Write(counter); err != nil {
+		return 0, err
+	}
+	return counter.written, nil
 }
 
 func successfulHTTP(status uint16, body []byte, links, refs []string) execResult {

@@ -219,17 +219,33 @@ func (r *Run) Execute(ctx context.Context, invocation Invocation) (Execution, er
 	}
 	executionCtx, cancel := context.WithTimeout(r.executionCtx, actionDuration)
 	stopCallerCancellation := context.AfterFunc(ctx, cancel)
-	result := r.executeOperation(executionCtx, ordinal, *operation)
+	result := r.executeOperation(executionCtx, *operation)
 	stopCallerCancellation()
 	cancel()
-	if errors.Is(ctx.Err(), context.Canceled) {
-		result.status, result.errorCode = groundtruth.ActionCancelled, "caller_cancelled"
-	} else if errors.Is(r.executionCtx.Err(), context.Canceled) {
-		result.status, result.errorCode = groundtruth.ActionCancelled, "run_cancelled"
+	result = r.finalizeOperation(ctx, ordinal, *operation, result)
+	return r.recordAttempt(intent, *operation, startedAt, result)
+}
+
+func (r *Run) finalizeOperation(callerCtx context.Context, ordinal uint32, operation Operation, result execResult) execResult {
+	if result.errorCode == "caller_cancelled" {
+		result.status = groundtruth.ActionCancelled
+		if errors.Is(callerCtx.Err(), context.Canceled) {
+			result.errorCode = "caller_cancelled"
+		} else if errors.Is(r.executionCtx.Err(), context.Canceled) {
+			result.errorCode = "run_cancelled"
+		}
 	} else if result.errorCode == "deadline_exceeded" {
 		result.status, result.errorCode = groundtruth.ActionCancelled, "action_timeout"
 	}
-	return r.recordAttempt(intent, *operation, startedAt, result)
+	if result.stored != nil && result.status == groundtruth.ActionSucceeded {
+		result.stored.targetRef = operation.action.TargetRef()
+		if !r.storeResponse(ordinal, *result.stored) {
+			result.status = groundtruth.ActionFailed
+			result.errorCode = "stored_response_limit"
+			result.stored = nil
+		}
+	}
+	return result
 }
 
 func (r *Run) authorize(invocation Invocation) (uint32, *Operation, string, error) {

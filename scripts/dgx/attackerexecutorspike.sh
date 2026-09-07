@@ -142,7 +142,7 @@ validate_fixed_output() {
     NR == 3 { good=good && ($0 == "PROOF allowlist=PASS http_dns_tcp=loopback_only exact_target=true ambient_proxy=false") }
     NR == 4 { good=good && ($0 == "PROOF structured_tools=PASS enumeration=true follow_link=true fixture_credential=true inspect_response=true") }
     NR == 5 { good=good && ($0 == "PROOF redirect_rebinding=PASS redirects_followed=false dns_set_change_denied=true") }
-    NR == 6 { good=good && ($0 == "PROOF bounds=PASS action_time_rate_concurrency_request_response_memory=true cancellation=audited") }
+    NR == 6 { good=good && ($0 == "PROOF exercised_bounds=PASS actions=true response=true pre_cancellation=audited") }
     NR == 7 { good=good && ($0 == "PROOF denied=PASS shell_kubernetes_docker_filesystem_control_plane=false audited=true") }
     NR == 8 { good=good && ($0 == "PROOF cleanup=PASS listener_closed=true persistent_state=false") }
     NR > 8 { good=0 }

@@ -261,17 +261,23 @@ func validatePath(path string) error {
 	}
 	for _, segment := range strings.Split(parsed.EscapedPath(), "/") {
 		decoded := segment
-		for pass := 0; pass < 3; pass++ {
+		for pass := 0; pass <= len(segment); pass++ {
 			next, err := url.PathUnescape(decoded)
 			if err != nil {
 				return fmt.Errorf("HTTP path contains an invalid escape")
 			}
-			decoded = next
-			if decoded == "." || decoded == ".." || strings.ContainsAny(decoded, "/\\") {
+			if next == "." || next == ".." || strings.ContainsAny(next, "/\\") {
 				return fmt.Errorf("HTTP path cannot contain traversal or encoded separators")
 			}
-			if next == segment && pass == 0 {
+			if next == decoded {
 				break
+			}
+			if len(next) >= len(decoded) {
+				return fmt.Errorf("HTTP path escape decoding made no bounded progress")
+			}
+			decoded = next
+			if pass == len(segment) {
+				return fmt.Errorf("HTTP path escape decoding exceeded its input bound")
 			}
 		}
 	}

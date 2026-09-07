@@ -44,7 +44,7 @@ func main() {
 		"PROOF allowlist=PASS http_dns_tcp=loopback_only exact_target=true ambient_proxy=false",
 		"PROOF structured_tools=PASS enumeration=true follow_link=true fixture_credential=true inspect_response=true",
 		"PROOF redirect_rebinding=PASS redirects_followed=false dns_set_change_denied=true",
-		"PROOF bounds=PASS action_time_rate_concurrency_request_response_memory=true cancellation=audited",
+		"PROOF exercised_bounds=PASS actions=true response=true pre_cancellation=audited",
 		"PROOF denied=PASS shell_kubernetes_docker_filesystem_control_plane=false audited=true",
 		"PROOF cleanup=PASS listener_closed=true persistent_state=false",
 	} {

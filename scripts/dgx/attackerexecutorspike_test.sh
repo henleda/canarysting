@@ -38,12 +38,16 @@ for marker in \
   'intent_before_resolve_and_dial=true failures_terminal=true' \
   'http_dns_tcp=loopback_only exact_target=true ambient_proxy=false' \
   'redirects_followed=false dns_set_change_denied=true' \
+  'exercised_bounds=PASS actions=true response=true pre_cancellation=audited' \
   'shell_kubernetes_docker_filesystem_control_plane=false audited=true' \
   'listener_closed=true persistent_state=false' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC' \
   'expires - finished == 86400'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
 done
+if grep -F 'action_time_rate_concurrency_request_response_memory=true' "${proof_script}" >/dev/null; then
+  fail 'remote evidence overclaims bounds that the artifact does not exercise'
+fi
 if grep -E '(^|[[:space:]])(sudo|kubectl|bpftool|systemctl|iptables|nft|docker)([[:space:]]|$)' "${proof_script}" >/dev/null; then
   fail 'unprivileged attacker executor proof contains a privileged or control-plane command'
 fi
