@@ -85,8 +85,25 @@ func TestExternalTokenBudgetStopsBeforeProposalExecution(t *testing.T) {
 	execution := &fakeExecutor{}
 	coordinator := newCoordinator(t, values, client, execution, 1)
 	result, err := coordinator.Run(context.Background())
-	if !errors.Is(err, ErrModelBudget) || result.StopReason != StopTokenBudget || len(execution.snapshot()) != 0 {
+	if !errors.Is(err, ErrInvalidModelResponse) || result.StopReason != StopModelError || len(execution.snapshot()) != 0 {
 		t.Fatalf("budget result = %+v, err=%v, invocations=%d", result, err, len(execution.snapshot()))
+	}
+}
+
+func TestPromptUsageCannotExceedPerTurnContextAllowance(t *testing.T) {
+	values := testValues(t, 1, 2, 1000)
+	client := &fakeClient{responses: []TurnResponse{validResponse(values.model.Model(), 501, 1,
+		Proposal{Name: "action_001", Arguments: json.RawMessage(`{}`)},
+	)}}
+	execution := &fakeExecutor{}
+	coordinator := newCoordinator(t, values, client, execution, 1)
+	result, err := coordinator.Run(context.Background())
+	if !errors.Is(err, ErrInvalidModelResponse) || result.StopReason != StopModelError || len(execution.snapshot()) != 0 {
+		t.Fatalf("context-limit result = %+v, err=%v, invocations=%d", result, err, len(execution.snapshot()))
+	}
+	requests := client.snapshot()
+	if len(requests) != 1 || requests[0].ContextTokens != 500 {
+		t.Fatalf("unexpected context allowance: %+v", requests)
 	}
 }
 

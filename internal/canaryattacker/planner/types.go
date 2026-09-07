@@ -183,7 +183,8 @@ func validateResponse(response TurnResponse, request TurnRequest) error {
 	if response.Model != request.Model || !response.Done {
 		return fmt.Errorf("%w: model identity or completion marker mismatch", ErrInvalidModelResponse)
 	}
-	if response.PromptTokens == 0 || response.OutputTokens == 0 || response.OutputTokens > request.MaxOutputTokens {
+	if response.PromptTokens == 0 || response.OutputTokens == 0 ||
+		response.PromptTokens > request.ContextTokens || response.OutputTokens > request.MaxOutputTokens {
 		return fmt.Errorf("%w: token usage is absent or exceeds the per-turn ceiling", ErrInvalidModelResponse)
 	}
 	if !sha256Pattern.MatchString(response.OutputSHA256) {
