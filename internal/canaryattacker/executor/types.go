@@ -128,8 +128,8 @@ func NewTargetBinding(in TargetBindingInput) (TargetBinding, error) {
 	for _, address := range in.AllowedAddresses {
 		address = address.Unmap()
 		if !address.IsValid() || address.Zone() != "" || address.IsUnspecified() || address.IsMulticast() ||
-			(!address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast()) {
-			return TargetBinding{}, fmt.Errorf("target address must be an exact private, loopback, or link-local laboratory address")
+			(!address.IsPrivate() && !address.IsLoopback()) {
+			return TargetBinding{}, fmt.Errorf("target address must be an exact private or loopback laboratory address")
 		}
 		addresses = append(addresses, address)
 	}

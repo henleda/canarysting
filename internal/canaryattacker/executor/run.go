@@ -16,6 +16,7 @@ var (
 	ErrActionBudget = errors.New("executor action budget exhausted")
 	ErrRunDuration  = errors.New("executor run duration exhausted")
 	ErrRunTerminal  = errors.New("executor audit ledger is terminal")
+	ErrStepSequence = errors.New("executor ordered step sequence regressed")
 )
 
 type RunConfig struct {
@@ -76,14 +77,15 @@ type Run struct {
 	active          sync.WaitGroup
 	closeOnce       sync.Once
 
-	mu             sync.Mutex
-	ordinal        uint32
-	toolAttempts   map[groundtruth.ToolName]uint32
-	stored         map[uint32]storedResponse
-	storedBytes    uint64
-	nextRequestAt  time.Time
-	terminalLedger bool
-	closed         bool
+	mu               sync.Mutex
+	ordinal          uint32
+	lastStepSequence uint32
+	toolAttempts     map[groundtruth.ToolName]uint32
+	stored           map[uint32]storedResponse
+	storedBytes      uint64
+	nextRequestAt    time.Time
+	terminalLedger   bool
+	closed           bool
 }
 
 type storedResponse struct {
@@ -184,12 +186,15 @@ func (r *Run) Execute(ctx context.Context, invocation Invocation) (Execution, er
 	if err != nil {
 		return Execution{}, fmt.Errorf("construct attacker intent: %w", err)
 	}
-	if err := r.config.Ledger.AppendIntent(ctx, intent); err != nil {
+	if err := r.config.Ledger.AppendIntent(r.auditCtx, intent); err != nil {
 		r.markTerminal()
 		return Execution{Intent: intent}, fmt.Errorf("commit attacker intent before execution: %w", err)
 	}
 	if operation == nil {
 		return r.recordDenied(intent)
+	}
+	if ctx.Err() != nil {
+		return r.recordAttempt(intent, *operation, time.Now().UTC(), execResult{status: groundtruth.ActionCancelled, errorCode: "caller_cancelled"})
 	}
 
 	select {
@@ -242,6 +247,16 @@ func (r *Run) authorize(invocation Invocation) (uint32, *Operation, string, erro
 	}
 	if r.ordinal >= maxActions {
 		return 0, nil, "", ErrActionBudget
+	}
+	if r.config.Scenario.ExecutionMode() == groundtruth.ExecutionOrdered {
+		sequence, ok := stepSequence(r.config.Scenario, invocation.StepID)
+		if !ok {
+			return 0, nil, "", fmt.Errorf("invocation step is outside the reviewed scenario")
+		}
+		if sequence < r.lastStepSequence {
+			return 0, nil, "", ErrStepSequence
+		}
+		r.lastStepSequence = sequence
 	}
 	r.ordinal++
 	ordinal := r.ordinal
@@ -383,6 +398,7 @@ func (r *Run) markTerminal() {
 	r.mu.Lock()
 	r.terminalLedger = true
 	r.mu.Unlock()
+	r.executionCancel()
 }
 
 func (r *Run) hasStoredTarget(ordinal uint32, targetRef string) bool {
@@ -397,6 +413,15 @@ func toolConstraint(scenario groundtruth.Scenario, tool groundtruth.ToolName) (g
 		}
 	}
 	return groundtruth.ToolConstraint{}, false
+}
+
+func stepSequence(scenario groundtruth.Scenario, stepID string) (uint32, bool) {
+	for _, step := range scenario.Steps() {
+		if step.ID() == stepID {
+			return step.Sequence(), true
+		}
+	}
+	return 0, false
 }
 
 func strictNow(after time.Time) time.Time {

@@ -123,6 +123,81 @@ func TestIntentLedgerFailurePreventsNetworkAndClosesRun(t *testing.T) {
 	}
 }
 
+func TestCallerCancellationIsAuditedWithoutNetwork(t *testing.T) {
+	var dialed atomic.Bool
+	ledger := &contextAwareLedger{}
+	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, dialerFunc(func(context.Context, string, string) (net.Conn, error) {
+		dialed.Store(true)
+		return nil, errors.New("unexpected dial")
+	}))
+	run := fixture.newRun(t, ledger)
+	defer run.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	execution, err := run.Execute(ctx, fixture.invocation(0, fixture.actions[0]))
+	if err != nil || execution.Result.Status != groundtruth.ActionCancelled || execution.Result.ErrorCode != "caller_cancelled" {
+		t.Fatalf("cancelled execution = %+v, %v", execution.Result, err)
+	}
+	if dialed.Load() {
+		t.Fatal("caller-cancelled execution reached the network")
+	}
+	if len(ledger.Intents()) != 1 || len(ledger.Actions()) != 1 {
+		t.Fatal("caller cancellation did not preserve complete intent/action ground truth")
+	}
+}
+
+func TestLedgerFailureCancelsConcurrentNetworkWork(t *testing.T) {
+	started := make(chan struct{})
+	cancelled := make(chan struct{})
+	dialer := dialerFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		return nil, ctx.Err()
+	})
+	ledger := &failOnceActionLedger{}
+	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, dialer)
+	run := fixture.newRun(t, ledger)
+	defer run.Close()
+	type outcome struct {
+		execution Execution
+		err       error
+	}
+	active := make(chan outcome, 1)
+	go func() {
+		execution, err := run.Execute(context.Background(), fixture.invocation(2, fixture.actions[2]))
+		active <- outcome{execution: execution, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent network action did not start")
+	}
+	ledger.failNext.Store(true)
+	denied, err := groundtruth.NewActionSpec(groundtruth.ActionSpecInput{
+		Tool: "shell", TargetAlias: fixture.actions[0].TargetAlias(), TargetRef: fixture.actions[0].TargetRef(), Operation: "run-command",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.Execute(context.Background(), fixture.invocation(0, denied)); err == nil {
+		t.Fatal("expected terminal action-ledger failure")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("terminal ledger failure did not cancel active network work")
+	}
+	select {
+	case result := <-active:
+		if result.err != nil || result.execution.Result.Status != groundtruth.ActionCancelled || result.execution.Result.ErrorCode != "run_cancelled" {
+			t.Fatalf("active execution after ledger failure = %+v, %v", result.execution.Result, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled network action did not finish")
+	}
+}
+
 func TestRedirectAndDNSRebindingFailClosed(t *testing.T) {
 	var redirect atomic.Bool
 	redirect.Store(true)
@@ -220,13 +295,25 @@ func TestSecretsAndLocatorsDoNotEnterGroundTruth(t *testing.T) {
 	}
 }
 
-func TestPolicyRejectsPublicTargetsAndUnregisteredOperations(t *testing.T) {
-	target, err := NewTargetBinding(TargetBindingInput{
-		Alias: "lab", Reference: opaque("labtarget:sha256:", "public"), FixtureRef: opaque("fixture:sha256:", "public"),
-		Scheme: "http", Host: "public.example", Port: 80, AllowedAddresses: []netip.Addr{netip.MustParseAddr("8.8.8.8")},
-	})
-	if err == nil || target.reference != "" {
-		t.Fatal("public target was accepted")
+func TestPolicyRejectsPublicAndLinkLocalTargetsAndUnregisteredOperations(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		host    string
+		address string
+	}{
+		{name: "public", host: "public.example", address: "8.8.8.8"},
+		{name: "ipv4-link-local", host: "metadata.internal", address: "169.254.169.254"},
+		{name: "ipv6-link-local", host: "host-local.internal", address: "fe80::1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target, err := NewTargetBinding(TargetBindingInput{
+				Alias: "lab", Reference: opaque("labtarget:sha256:", test.name), FixtureRef: opaque("fixture:sha256:", test.name),
+				Scheme: "http", Host: test.host, Port: 80, AllowedAddresses: []netip.Addr{netip.MustParseAddr(test.address)},
+			})
+			if err == nil || target.reference != "" {
+				t.Fatalf("%s target was accepted", test.name)
+			}
+		})
 	}
 	limits := defaultLimits()
 	if _, err := NewPolicy(PolicyConfig{Limits: limits}); err == nil {
@@ -236,6 +323,53 @@ func TestPolicyRejectsPublicTargetsAndUnregisteredOperations(t *testing.T) {
 		if err := validatePath(path); err == nil {
 			t.Fatalf("ambiguous or traversing path %q was accepted", path)
 		}
+	}
+}
+
+func TestEnumerationUsesRemainingAggregateResponseBudget(t *testing.T) {
+	var requests atomic.Uint32
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = writer.Write([]byte(strings.Repeat("e", 100)))
+	})
+	limits := defaultLimits()
+	limits.MaxResponseBytes = 128
+	fixture := newFixture(t, fixtureURL, limits, nil, httpFixtureDialer(handler))
+	run := fixture.newRun(t, &MemoryLedger{})
+	defer run.Close()
+	execution, err := run.Execute(context.Background(), fixture.invocation(3, fixture.actions[3]))
+	if err != nil || execution.Result.ErrorCode != "response_limit_exceeded" || requests.Load() != 2 {
+		t.Fatalf("bounded enumeration = %+v, err=%v, requests=%d", execution.Result, err, requests.Load())
+	}
+	operation := fixture.policy.operations[actionKey(fixture.actions[3])]
+	target := fixture.policy.targets[fixture.actions[3].TargetRef()]
+	part := run.httpRequestWithResponseLimit(context.Background(), operation, target, http.MethodGet, "/enum/a", PayloadFixture{}, CredentialFixture{}, nil, 28)
+	if part.errorCode != "response_limit_exceeded" {
+		t.Fatalf("remaining response cap result = %+v", part)
+	}
+}
+
+func TestOrderedScenarioRejectsStepRegressionBeforeNetwork(t *testing.T) {
+	var dials atomic.Uint32
+	dialer := httpFixtureDialer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, dialerFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials.Add(1)
+		return dialer.DialContext(ctx, network, address)
+	}))
+	fixture.scenario = scenarioWithExecutionMode(t, fixture.scenario, groundtruth.ExecutionOrdered)
+	run := fixture.newRun(t, &MemoryLedger{})
+	defer run.Close()
+	first, err := run.Execute(context.Background(), fixture.invocation(1, fixture.actions[1]))
+	if err != nil || first.Result.Status != groundtruth.ActionSucceeded {
+		t.Fatalf("ordered step 2 execution = %+v, %v", first.Result, err)
+	}
+	if _, err := run.Execute(context.Background(), fixture.invocation(0, fixture.actions[0])); !errors.Is(err, ErrStepSequence) {
+		t.Fatalf("ordered step regression error = %v, want ErrStepSequence", err)
+	}
+	if dials.Load() != 0 {
+		t.Fatal("ordered step regression reached the network")
 	}
 }
 
@@ -559,6 +693,25 @@ func (f fixtureValues) invocation(index int, action groundtruth.ActionSpec) Invo
 	}
 }
 
+func scenarioWithExecutionMode(t *testing.T, scenario groundtruth.Scenario, mode groundtruth.ExecutionMode) groundtruth.Scenario {
+	t.Helper()
+	envelope := scenario.Envelope()
+	rebuilt, err := groundtruth.NewScenario(groundtruth.ScenarioInput{
+		Scope: envelope.Scope(), ID: envelope.ScenarioID(), Version: envelope.ScenarioVersion(),
+		Name: scenario.Name(), Objective: scenario.Objective(), Safety: scenario.Safety(), ExecutionMode: mode,
+		RequiredFixtures: scenario.RequiredFixtures(), Targets: scenario.Targets(), ToolConstraints: scenario.ToolConstraints(),
+		Steps: scenario.Steps(), Budgets: scenario.Budgets(), ExpectedTelemetry: scenario.ExpectedTelemetry(),
+		RecordedAt: envelope.RecordedAt(), CorpusReviewDue: envelope.CorpusReviewDue(),
+		LifecyclePolicyVersion: envelope.LifecyclePolicyVersion(), ResidencyPolicyRef: envelope.ResidencyPolicyRef(),
+		EncryptionKeyRef: envelope.EncryptionKeyRef(), EstimatedStorageBytes: envelope.EstimatedStorageBytes(),
+		EstimateBasis: envelope.EstimateBasis(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rebuilt
+}
+
 func defaultLimits() Limits {
 	return Limits{
 		MaxActions: 10, MaxRunDuration: 3 * time.Second, MaxActionDuration: time.Second,
@@ -639,6 +792,34 @@ func (l *orderingLedger) intentCount() int { return len(l.Intents()) }
 type failingLedger struct {
 	failIntent bool
 	failAction bool
+}
+
+type contextAwareLedger struct{ MemoryLedger }
+
+func (l *contextAwareLedger) AppendIntent(ctx context.Context, intent groundtruth.AttackerIntent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.MemoryLedger.AppendIntent(ctx, intent)
+}
+
+func (l *contextAwareLedger) AppendAction(ctx context.Context, action groundtruth.AttackerAction) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.MemoryLedger.AppendAction(ctx, action)
+}
+
+type failOnceActionLedger struct {
+	MemoryLedger
+	failNext atomic.Bool
+}
+
+func (l *failOnceActionLedger) AppendAction(ctx context.Context, action groundtruth.AttackerAction) error {
+	if l.failNext.CompareAndSwap(true, false) {
+		return errors.New("fixed action ledger failure")
+	}
+	return l.MemoryLedger.AppendAction(ctx, action)
 }
 
 func (l *failingLedger) AppendIntent(context.Context, groundtruth.AttackerIntent) error {

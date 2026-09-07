@@ -95,7 +95,8 @@ func (r *Run) performEnumeration(ctx context.Context, operation Operation, targe
 		if requestBytes > requestLimit {
 			return execResult{status: groundtruth.ActionFailed, errorCode: "request_limit_exceeded", networkRefs: refs}
 		}
-		part := r.httpRequest(ctx, operation, target, http.MethodGet, path, PayloadFixture{}, CredentialFixture{}, nil)
+		remainingResponseBytes := responseLimit - responseBytes
+		part := r.httpRequestWithResponseLimit(ctx, operation, target, http.MethodGet, path, PayloadFixture{}, CredentialFixture{}, nil, remainingResponseBytes)
 		refs = append(refs, part.networkRefs...)
 		if part.status != groundtruth.ActionSucceeded {
 			part.networkRefs = refs
@@ -198,8 +199,14 @@ func (r *Run) performTCP(ctx context.Context, operation Operation, target Target
 }
 
 func (r *Run) httpRequest(ctx context.Context, operation Operation, target TargetBinding, method, path string, payload PayloadFixture, credential CredentialFixture, headers http.Header) execResult {
+	_, responseLimit := r.actionByteLimits(operation.action.Tool())
+	return r.httpRequestWithResponseLimit(ctx, operation, target, method, path, payload, credential, headers, responseLimit)
+}
+
+func (r *Run) httpRequestWithResponseLimit(ctx context.Context, operation Operation, target TargetBinding, method, path string, payload PayloadFixture, credential CredentialFixture, headers http.Header, responseLimit uint64) execResult {
 	networkRefs := requestNetworkReference(operation, method, path)
-	requestLimit, responseLimit := r.actionByteLimits(operation.action.Tool())
+	requestLimit, configuredResponseLimit := r.actionByteLimits(operation.action.Tool())
+	responseLimit = min64(responseLimit, configuredResponseLimit)
 	requestURL := (&url.URL{Scheme: target.scheme, Host: targetAuthority(target), Path: "/"}).ResolveReference(&url.URL{Path: path}).String()
 	if parsed, parseErr := url.ParseRequestURI(path); parseErr == nil {
 		requestURL = (&url.URL{Scheme: target.scheme, Host: targetAuthority(target), Path: parsed.Path, RawPath: parsed.RawPath, RawQuery: parsed.RawQuery}).String()
@@ -320,7 +327,7 @@ func (r *Run) resolveExact(ctx context.Context, target TargetBinding, network st
 	for _, address := range addresses {
 		address = address.Unmap()
 		if !address.IsValid() || address.Zone() != "" || address.IsUnspecified() || address.IsMulticast() ||
-			(!address.IsPrivate() && !address.IsLoopback() && !address.IsLinkLocalUnicast()) {
+			(!address.IsPrivate() && !address.IsLoopback()) {
 			return nil, errors.New("address outside laboratory boundary")
 		}
 		canonical = append(canonical, address)
