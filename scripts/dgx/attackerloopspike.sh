@@ -15,8 +15,9 @@ cleanup_script="${script_dir}/cleanup.sh"
 preflight_script="${script_dir}/preflight-proof.sh"
 attackercheck_script="${script_dir}/attackercheck.sh"
 remote_proof_script="${script_dir}/attackerloopspike_remote.sh"
+remote_finalize_script="${script_dir}/attackerloopspike_finalize_remote.sh"
 lock_supervisor_script="${script_dir}/attackerloopspike_lock_remote.sh"
-readonly copy_script check_script cleanup_script preflight_script attackercheck_script remote_proof_script lock_supervisor_script
+readonly copy_script check_script cleanup_script preflight_script attackercheck_script remote_proof_script remote_finalize_script lock_supervisor_script
 
 usage() {
   cat <<'USAGE'
@@ -85,61 +86,6 @@ cleanup_stage_from_inventory() {
     return 0
   fi
   return 1
-}
-
-retire_verified_model_marker() {
-  local expected_state="$1" retirement_report
-  [[ "${expected_state}" == 'owned' || "${expected_state}" == 'absent' || "${expected_state}" == 'either' ]] || return 1
-  assert_model_lock_held || return 1
-  retirement_report="$(ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${expected_state}" <<'REMOTE'
-set -euo pipefail
-
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
-run_id="$1"
-expected_state="$2"
-[[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid remote run ID'
-[[ "${expected_state}" == 'owned' || "${expected_state}" == 'absent' || "${expected_state}" == 'either' ]] ||
-  fail 'invalid expected marker state'
-[[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected marker-retirement host'
-for tool in hostname rm stat uname; do
-  command -v "${tool}" >/dev/null 2>&1 || fail "missing marker-retirement prerequisite: ${tool}"
-done
-
-root='/var/tmp/canarysting'
-evidence="${root}/execution-${run_id}"
-model_load_marker="${evidence}/model-load-owned"
-readonly root evidence model_load_marker
-
-if [[ ! -e "${root}" && ! -L "${root}" ]]; then
-  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
-  printf 'model_load_marker=absent\n'
-  exit 0
-fi
-[[ -d "${root}" && ! -L "${root}" && -O "${root}" ]] || fail 'remote root is unsafe'
-if [[ ! -e "${evidence}" && ! -L "${evidence}" ]]; then
-  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
-  printf 'model_load_marker=absent\n'
-  exit 0
-fi
-[[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" && "$(stat -c %a "${evidence}")" == '700' ]] ||
-  fail 'model marker evidence directory is unsafe'
-if [[ ! -e "${model_load_marker}" && ! -L "${model_load_marker}" ]]; then
-  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
-  printf 'model_load_marker=absent\n'
-  exit 0
-fi
-[[ "${expected_state}" != 'absent' ]] || fail 'unexpected model-load ownership marker is present'
-[[ -f "${model_load_marker}" && ! -L "${model_load_marker}" && -O "${model_load_marker}" &&
-  "$(stat -c %a "${model_load_marker}")" == '600' && "$(stat -c %s "${model_load_marker}")" == '32' ]] ||
-  fail 'model-load ownership marker is unsafe'
-[[ "$(<"${model_load_marker}")" == 'canarysting-model-load-owned-v1' ]] ||
-  fail 'model-load ownership marker is malformed'
-rm -f -- "${model_load_marker}"
-[[ ! -e "${model_load_marker}" && ! -L "${model_load_marker}" ]] || fail 'model-load ownership marker remains'
-printf 'model_load_marker=retired\n'
-REMOTE
-)" || return 1
-  [[ "${retirement_report}" == 'model_load_marker=retired' || "${retirement_report}" == 'model_load_marker=absent' ]]
 }
 
 model_lock_pid=''
@@ -232,9 +178,73 @@ start_locked_remote_proof() {
   LC_ALL=C program_bytes="${#remote_proof_program}"
   [[ "${program_bytes}" -ge 1 && "${program_bytes}" -le 32768 ]] || fail 'remote proof program has unsafe size'
   assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before proof start'
-  printf 'execute\t%s\t%s\t%s\t%s\t%s\n' \
+  printf 'execute\t%s\t%s\t%s\t%s\tnone\t%s\n' \
     "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" "${program_bytes}" >&9 || return 1
   printf '%s' "${remote_proof_program}" >&9 || return 1
+  remote_proof_active='true'
+}
+wait_for_remote_finalization() {
+  local expected_marker_state="$1" finalize_status='' status_count attempt finalization_report marker_line
+  [[ "${expected_marker_state}" == 'owned' || "${expected_marker_state}" == 'absent' ||
+    "${expected_marker_state}" == 'either' ]] || return 1
+  [[ "${remote_proof_active}" == 'true' && -n "${model_lock_report_file}" ]] || return 1
+  for ((attempt = 0; attempt < 36000; attempt++)); do
+    status_count="$(grep -Ec '^remote_finalize_status=[0-9]+$' "${model_lock_report_file}" || true)"
+    if [[ "${status_count}" -eq 1 ]]; then
+      finalize_status="$(awk -F= '$1 == "remote_finalize_status" { print $2 }' "${model_lock_report_file}")"
+      break
+    fi
+    if [[ "${status_count}" -gt 1 ]] || ! assert_model_lock_held; then
+      model_lock_lost_during_execution='true'
+      remote_proof_active='false'
+      return 1
+    fi
+    sleep 0.1
+  done
+  if [[ ! "${finalize_status}" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then
+    model_lock_lost_during_execution='true'
+    return 1
+  fi
+  if grep -Eq '^remote_proof_status=[0-9]+$' "${model_lock_report_file}"; then
+    finalization_report="$(awk '
+      /^remote_proof_status=[0-9]+$/ { after_proof=1; next }
+      /^remote_finalize_status=[0-9]+$/ { exit }
+      after_proof { print }
+    ' "${model_lock_report_file}")"
+  else
+    finalization_report="$(awk '
+      /^model_lock=acquired$/ { after_lock=1; next }
+      /^remote_finalize_status=[0-9]+$/ { exit }
+      after_lock { print }
+    ' "${model_lock_report_file}")"
+  fi
+  marker_line="$(sed -n '2p' <<<"${finalization_report}")"
+  if [[ "${finalization_report}" != $'model_finalize=PASS\nmodel_load_marker=retired' &&
+    "${finalization_report}" != $'model_finalize=PASS\nmodel_load_marker=absent' ]]; then
+    finalize_status=77
+  elif [[ "${expected_marker_state}" == 'owned' && "${marker_line}" != 'model_load_marker=retired' ]]; then
+    finalize_status=77
+  elif [[ "${expected_marker_state}" == 'absent' && "${marker_line}" != 'model_load_marker=absent' ]]; then
+    finalize_status=77
+  fi
+  printf '%s\n' "${finalization_report}"
+  remote_proof_active='false'
+  return "${finalize_status}"
+}
+start_locked_remote_finalization() {
+  local expected_marker_state="$1" remote_finalize_program program_bytes
+  [[ "${expected_marker_state}" == 'owned' || "${expected_marker_state}" == 'absent' ||
+    "${expected_marker_state}" == 'either' ]] || return 1
+  [[ -f "${remote_finalize_script}" && ! -L "${remote_finalize_script}" && -O "${remote_finalize_script}" ]] ||
+    fail 'remote finalization program is missing or unsafe'
+  remote_finalize_program="$(<"${remote_finalize_script}")"
+  LC_ALL=C program_bytes="${#remote_finalize_program}"
+  [[ "${program_bytes}" -ge 1 && "${program_bytes}" -le 32768 ]] || fail 'remote finalization program has unsafe size'
+  assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before finalization'
+  printf 'finalize\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" "${expected_marker_state}" "${program_bytes}" >&9 ||
+    return 1
+  printf '%s' "${remote_finalize_program}" >&9 || return 1
   remote_proof_active='true'
 }
 acquire_model_lock() {
@@ -312,7 +322,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   exit 0
 fi
 
-for required in awk chmod grep kill mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
+for required in awk chmod grep kill mkfifo mktemp rm rmdir sed sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
   else
@@ -367,20 +377,25 @@ if [[ "${mode}" != 'cleanup' || "${cleanup_stage_state}" == 'stage=validated' ]]
 fi
 
 [[ "${model_lock_lost_during_execution}" == 'false' ]] || fail 'DGX host-global Ollama model lock was lost during execution'
-assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before post-run inspection'
-post_model_report="$("${attackercheck_script}")"
-if [[ "${mode}" == 'cleanup' ]]; then
-  validate_model_unloaded_report "${post_model_report}" || fail 'post-cleanup Ollama identity, binding, inventory, or unloaded-state check failed'
-else
-  validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, resource, clock, or unloaded-state check failed'
-fi
+assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before finalization'
+marker_retirement_expectation='absent'
 if [[ "${mode}" == 'run' ]]; then
   marker_retirement_expectation='owned'
   if [[ "${remote_status}" -ne 0 ]]; then marker_retirement_expectation='either'; fi
-  retire_verified_model_marker "${marker_retirement_expectation}" || fail 'verified model-load ownership marker retirement failed'
 elif [[ "${mode}" == 'cleanup' ]]; then
-  retire_verified_model_marker "${cleanup_marker_state}" || fail 'verified model-load ownership marker retirement failed'
+  marker_retirement_expectation="${cleanup_marker_state}"
 fi
+set +e
+start_locked_remote_finalization "${marker_retirement_expectation}"
+finalize_start_status=$?
+finalize_status="${finalize_start_status}"
+if [[ "${finalize_start_status}" -eq 0 ]]; then
+  wait_for_remote_finalization "${marker_retirement_expectation}"
+  finalize_status=$?
+fi
+set -e
+[[ "${model_lock_lost_during_execution}" == 'false' ]] || fail 'DGX host-global Ollama model lock was lost during finalization'
+[[ "${finalize_status}" -eq 0 ]] || fail 'lock-scoped model postcheck or marker retirement failed'
 printf 'post_model_check=PASS\n'
 [[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"
 release_model_lock || fail 'DGX host-global Ollama model lock session failed'

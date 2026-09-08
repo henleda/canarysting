@@ -40,24 +40,39 @@ if ! flock -n 9; then
 fi
 printf 'model_lock=acquired\n'
 
-supervise_proof() {
-  local action='' run_id='' mode='' expected_model='' expected_model_id='' program_bytes='' extra=''
+supervised_action=''
+supervise_program() {
+  local action='' run_id='' mode='' expected_model='' expected_model_id='' expected_marker_state=''
+  local program_bytes='' extra=''
   local proof_program='' proof_status attempt
-  if ! IFS=$'\t' read -r action run_id mode expected_model expected_model_id program_bytes extra; then
+  if ! IFS=$'\t' read -r action run_id mode expected_model expected_model_id expected_marker_state program_bytes extra; then
     return 0
   fi
-  [[ "${action}" == 'execute' && -z "${extra}" ]] || fail 'invalid proof-supervisor request'
+  [[ ("${action}" == 'execute' || "${action}" == 'finalize') && -z "${extra}" ]] ||
+    fail 'invalid proof-supervisor request'
   [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid remote run ID'
   [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
   [[ "${expected_model}" == 'qwen3-coder:30b-a3b-q8_0' && "${expected_model_id}" == '7b438a19895a' ]] ||
     fail 'unexpected model identity'
+  if [[ "${action}" == 'execute' ]]; then
+    [[ "${expected_marker_state}" == 'none' ]] || fail 'proof request has unexpected marker authority'
+  else
+    [[ "${action}" == 'finalize' && ("${expected_marker_state}" == 'owned' ||
+      "${expected_marker_state}" == 'absent' || "${expected_marker_state}" == 'either') ]] ||
+      fail 'finalization request has invalid marker authority'
+  fi
   [[ "${program_bytes}" =~ ^[0-9]+$ && "${program_bytes}" -ge 1 && "${program_bytes}" -le 32768 ]] ||
     fail 'invalid proof program size'
 
   IFS= read -r -N "${program_bytes}" proof_program || fail 'proof program was truncated'
   [[ "${#proof_program}" -eq "${program_bytes}" ]] || fail 'proof program size changed'
   trap terminate_proof_group HUP INT TERM
-  setsid bash -c "${proof_program}" -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" &
+  if [[ "${action}" == 'execute' ]]; then
+    setsid bash -c "${proof_program}" -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" &
+  else
+    setsid bash -c "${proof_program}" -- "${run_id}" "${mode}" "${expected_model}" "${expected_model_id}" \
+      "${expected_marker_state}" &
+  fi
   proof_pid=$!
   set +e
   wait "${proof_pid}"
@@ -76,12 +91,16 @@ supervise_proof() {
   fi
   proof_pid=''
   trap - HUP INT TERM
-  printf 'remote_proof_status=%s\n' "${proof_status}"
-
-  # Keep this flock-owning process alive while the caller independently proves
-  # the model is unloaded and retires the recovery marker.
-  cat >/dev/null
-  return "${proof_status}"
+  printf 'remote_%s_status=%s\n' "${action}" "${proof_status}"
+  supervised_action="${action}"
 }
 
-supervise_proof
+supervise_program
+if [[ "${supervised_action}" == 'execute' ]]; then
+  supervised_action=''
+  supervise_program
+  [[ -z "${supervised_action}" || "${supervised_action}" == 'finalize' ]] || fail 'proof was not followed by finalization'
+fi
+# Keep this flock-owning process alive until the caller has received the
+# in-transaction finalization result and explicitly closes the request stream.
+cat >/dev/null

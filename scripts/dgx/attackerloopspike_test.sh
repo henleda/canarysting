@@ -5,9 +5,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
 proof_script="${script_dir}/attackerloopspike.sh"
 remote_proof_script="${script_dir}/attackerloopspike_remote.sh"
+remote_finalize_script="${script_dir}/attackerloopspike_finalize_remote.sh"
 lock_supervisor_script="${script_dir}/attackerloopspike_lock_remote.sh"
-readonly proof_script remote_proof_script lock_supervisor_script
-readonly -a proof_sources=("${proof_script}" "${remote_proof_script}" "${lock_supervisor_script}")
+readonly proof_script remote_proof_script remote_finalize_script lock_supervisor_script
+readonly -a proof_sources=("${proof_script}" "${remote_proof_script}" "${remote_finalize_script}" "${lock_supervisor_script}")
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_failure() {
@@ -24,9 +25,6 @@ for script in "${proof_sources[@]}"; do
   [[ -f "${script}" && ! -L "${script}" && -O "${script}" ]] || fail "proof source is missing or unsafe: ${script}"
   bash -n "${script}" || fail "proof source has invalid Bash syntax: ${script}"
 done
-awk '/retirement_report=.*<<.REMOTE./ { capture=1; next } /^REMOTE$/ { if (capture) exit } capture { print }' "${proof_script}" |
-  bash -n || fail 'embedded marker-retirement program has invalid Bash syntax'
-
 output="$(${proof_script} --run-id m2c4-contract --dry-run)"
 [[ "${output}" == *'bounded Ollama planner proof contract passed; DGX was not accessed'* ]] || fail 'dry run did not remain local'
 [[ "${output}" == *'artifact=test/attackerloopspike'* ]] || fail 'dry run omitted its fixed artifact'
@@ -54,6 +52,7 @@ for marker in \
   'output=content-digest-only' \
   'reason=scenario_complete deterministic=true' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC' \
+  'timeout --foreground --signal=TERM' \
   '"${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model' \
   'trap cleanup_after_signal HUP INT TERM' \
   'if ! flock -n 9; then' \
@@ -62,8 +61,16 @@ for marker in \
   'expires - finished == 86400'; do
   grep -F "${marker}" "${proof_sources[@]}" >/dev/null || fail "proof safety marker missing: ${marker}"
 done
-if grep -E '(^|[[:space:]])(sudo|kubectl|bpftool|systemctl|iptables|nft|docker|curl)([[:space:]]|$)' "${proof_sources[@]}" >/dev/null; then
+if grep -E '(^|[[:space:]])(sudo|kubectl|bpftool|systemctl|iptables|nft|docker|curl)([[:space:]]|$)' \
+  "${proof_script}" "${remote_proof_script}" "${lock_supervisor_script}" >/dev/null; then
   fail 'unprivileged planner proof contains a privileged, control-plane, or alternate HTTP command'
+fi
+grep -F 'timeout --foreground --signal=TERM --kill-after=2s 8s sudo -n ss -H -lntp' "${remote_finalize_script}" >/dev/null ||
+  fail 'lock-scoped finalizer is missing its exact read-only listener inspection'
+[[ "$(grep -Ec '(^|[[:space:]])sudo([[:space:]]|$)' "${remote_finalize_script}")" == '2' ]] ||
+  fail 'lock-scoped finalizer contains unreviewed sudo authority'
+if grep -E '(^|[[:space:]])(kubectl|bpftool|iptables|nft|docker|curl)([[:space:]]|$)' "${remote_finalize_script}" >/dev/null; then
+  fail 'lock-scoped finalizer contains control-plane, datapath, or alternate HTTP authority'
 fi
 
 report_definition="$(awk '/^validate_model_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
@@ -78,9 +85,11 @@ cleanup_stage_definition="$(awk '/^cleanup_stage_from_inventory\(\) \{/ { captur
 terminate_proof_definition="$(awk '/^terminate_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 assert_lock_definition="$(awk '/^assert_model_lock_held\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 wait_proof_definition="$(awk '/^wait_for_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+wait_finalize_definition="$(awk '/^wait_for_remote_finalization\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 supervisor_terminate_definition="$(awk '/^terminate_proof_group\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${lock_supervisor_script}")"
-supervise_proof_definition="$(awk '/^supervise_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${lock_supervisor_script}")"
-[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${unloaded_report_definition}" && -n "${marker_state_definition}" && -n "${cleanup_model_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" && -n "${supervisor_terminate_definition}" && -n "${supervise_proof_definition}" ]] || fail 'proof validators are not independently testable'
+supervise_program_definition="$(awk '/^supervise_program\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${lock_supervisor_script}")"
+finalize_marker_state_definition="$(awk '/^model_load_marker_state\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_finalize_script}")"
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${unloaded_report_definition}" && -n "${marker_state_definition}" && -n "${cleanup_model_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" && -n "${wait_finalize_definition}" && -n "${supervisor_terminate_definition}" && -n "${supervise_program_definition}" && -n "${finalize_marker_state_definition}" ]] || fail 'proof validators are not independently testable'
 
 valid_report=$'memory_available_kib=83886080\ngpu_count=1\ngpu_probe_status=ok\nntp_synchronized=true\nollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
 report_program="${identity_report_definition}"$'\n'"${unloaded_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a minimum_available_memory_kib=41943040'
@@ -123,37 +132,50 @@ done
 
 cleanup_inspect_line="$(grep -nF 'cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"' "${proof_script}" | cut -d: -f1)"
 remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' || "${model_cleanup}" == '\''NOT_REQUIRED'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${remote_proof_script}" | cut -d: -f1)"
-post_check_line="$(grep -nF 'validate_model_report "${post_model_report}"' "${proof_script}" | cut -d: -f1)"
-marker_retirement_line="$(grep -nF 'retire_verified_model_marker "${marker_retirement_expectation}" || fail' "${proof_script}" | cut -d: -f1)"
+finalize_start_line="$(grep -nFx 'start_locked_remote_finalization "${marker_retirement_expectation}"' "${proof_script}" | cut -d: -f1)"
+finalize_wait_line="$(grep -nFx '  wait_for_remote_finalization "${marker_retirement_expectation}"' "${proof_script}" | cut -d: -f1)"
 generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${proof_script}" | tail -n1 | cut -d: -f1)"
-[[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${marker_retirement_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
-((cleanup_inspect_line < post_check_line && post_check_line < marker_retirement_line && marker_retirement_line < generic_cleanup_line)) || fail 'cleanup can remove recovery authority or the stage before fixed-model unload verification'
+finalizer_postcheck_line="$(grep -nF '[[ "${snapshot_after}" == "${snapshot_before}" ]]' "${remote_finalize_script}" | cut -d: -f1)"
+finalizer_retirement_line="$(grep -nF 'rm -f -- "${model_load_marker}"' "${remote_finalize_script}" | cut -d: -f1)"
+[[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${finalize_start_line}" =~ ^[0-9]+$ && "${finalize_wait_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ && "${finalizer_postcheck_line}" =~ ^[0-9]+$ && "${finalizer_retirement_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
+((cleanup_inspect_line < finalize_start_line && finalize_start_line < finalize_wait_line && finalize_wait_line < generic_cleanup_line)) || fail 'cleanup can remove the stage before lock-scoped finalization'
+((finalizer_postcheck_line < finalizer_retirement_line)) || fail 'finalizer can retire recovery authority before its exact unloaded-state postcheck'
 if grep -F 'rm -f -- "${model_load_marker}"' <<<"${cleanup_model_definition}" >/dev/null; then
   fail 'Ollama unload acknowledgement can retire the recovery marker before independent verification'
 fi
-grep -F 'rm -f -- "${model_load_marker}"' "${proof_script}" >/dev/null || fail 'verified marker retirement is missing'
+if grep -F 'rm -f -- "${model_load_marker}"' "${proof_script}" "${remote_proof_script}" >/dev/null; then
+  fail 'marker retirement exists outside the lock-scoped finalizer'
+fi
 
 lock_acquire_line="$(grep -nFx 'acquire_model_lock' "${proof_script}" | cut -d: -f1)"
 preflight_line="$(grep -nFx 'run_preflight' "${proof_script}" | cut -d: -f1)"
 pre_model_line="$(grep -nF 'pre_model_report="$("${attackercheck_script}")"' "${proof_script}" | cut -d: -f1)"
 proof_start_line="$(grep -nFx '  start_locked_remote_proof' "${proof_script}" | cut -d: -f1)"
 lock_release_line="$(grep -nF 'release_model_lock || fail' "${proof_script}" | cut -d: -f1)"
-[[ "${preflight_line}" =~ ^[0-9]+$ && "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${proof_start_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
-((preflight_line < lock_acquire_line && lock_acquire_line < pre_model_line && pre_model_line < proof_start_line && proof_start_line < post_check_line && post_check_line < marker_retirement_line && marker_retirement_line < lock_release_line)) || fail 'preflight and host-global model lock ordering is unsafe'
+[[ "${preflight_line}" =~ ^[0-9]+$ && "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${proof_start_line}" =~ ^[0-9]+$ && "${finalize_start_line}" =~ ^[0-9]+$ && "${finalize_wait_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
+((preflight_line < lock_acquire_line && lock_acquire_line < pre_model_line && pre_model_line < proof_start_line && proof_start_line < finalize_start_line && finalize_start_line < finalize_wait_line && finalize_wait_line < lock_release_line)) || fail 'preflight and host-global model lock ordering is unsafe'
 
 supervisor_flock_line="$(grep -nF 'if ! flock -n 9; then' "${lock_supervisor_script}" | cut -d: -f1)"
-supervisor_start_line="$(grep -nF 'setsid bash -c "${proof_program}"' "${lock_supervisor_script}" | cut -d: -f1)"
+supervisor_start_line="$(grep -nF 'setsid bash -c "${proof_program}"' "${lock_supervisor_script}" | head -n1 | cut -d: -f1)"
 supervisor_wait_line="$(grep -nF 'wait "${proof_pid}"' "${lock_supervisor_script}" | tail -n1 | cut -d: -f1)"
-supervisor_status_line="$(grep -nF "printf 'remote_proof_status=%s\\n'" "${lock_supervisor_script}" | cut -d: -f1)"
-supervisor_hold_line="$(grep -nFx '  cat >/dev/null' "${lock_supervisor_script}" | cut -d: -f1)"
+supervisor_status_line="$(grep -nF "printf 'remote_%s_status=%s\\n'" "${lock_supervisor_script}" | cut -d: -f1)"
+supervisor_hold_line="$(grep -nFx 'cat >/dev/null' "${lock_supervisor_script}" | cut -d: -f1)"
 [[ "${supervisor_flock_line}" =~ ^[0-9]+$ && "${supervisor_start_line}" =~ ^[0-9]+$ && "${supervisor_wait_line}" =~ ^[0-9]+$ && "${supervisor_status_line}" =~ ^[0-9]+$ && "${supervisor_hold_line}" =~ ^[0-9]+$ ]] || fail 'remote lock-supervisor ordering markers are missing'
 ((supervisor_flock_line < supervisor_start_line && supervisor_start_line < supervisor_wait_line && supervisor_wait_line < supervisor_status_line && supervisor_status_line < supervisor_hold_line)) || fail 'remote proof lifetime is not bounded by its flock-owning supervisor'
 grep -F 'kill -TERM -- "-${proof_pid}"' "${lock_supervisor_script}" >/dev/null || fail 'remote supervisor cannot terminate the complete proof process group'
-if grep -F 'remote_proof_status=' "${remote_proof_script}" >/dev/null; then
-  fail 'remote proof can forge the lock-supervisor completion record'
+if grep -E 'remote_(proof|finalize)_status=' "${remote_proof_script}" "${remote_finalize_script}" >/dev/null; then
+  fail 'a streamed remote program can forge the lock-supervisor completion record'
+fi
+timeout_foreground_count="$(grep -Ec '(^|[[:space:]])timeout --foreground --signal=TERM' "${remote_proof_script}")"
+[[ "${timeout_foreground_count}" == '2' ]] || fail 'every bounded proof command must remain in the supervisor process group'
+if grep -E '(^|[[:space:]])timeout --signal=' "${remote_proof_script}" >/dev/null; then
+  fail 'bounded proof command can escape into a timeout-owned process group'
+fi
+if grep -E '(^|[[:space:]])timeout --signal=' "${remote_finalize_script}" >/dev/null; then
+  fail 'lock-scoped finalization command can escape into a timeout-owned process group'
 fi
 
-monitor_definitions="${assert_lock_definition}"$'\n'"${wait_proof_definition}"
+monitor_definitions="${assert_lock_definition}"$'\n'"${wait_proof_definition}"$'\n'"${wait_finalize_definition}"
 monitor_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-monitor.XXXXXX")"
 printf 'model_lock=acquired\nproof-output\nremote_proof_status=0\n' >"${monitor_root}/report"
 bash -c "${monitor_definitions}"$'\n''
@@ -180,20 +202,48 @@ proof_status=$?
 [[ "${proof_status}" -ne 0 && "${model_lock_lost_during_execution}" == true && "${remote_proof_active}" == false ]]
 ' -- "${monitor_root}/report" || fail 'proof monitor accepted completion after its lock-owning supervisor exited'
 
-if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then
+printf 'model_lock=acquired\nproof-output\nremote_proof_status=0\nmodel_finalize=PASS\nmodel_load_marker=retired\nremote_finalize_status=0\n' >"${monitor_root}/report"
+bash -c "${monitor_definitions}"$'\n''
+model_lock_lost_during_execution=false
+model_lock_report_file="$1"
+remote_proof_active=true
+sleep 2 & model_lock_pid=$!
+wait_for_remote_finalization owned >"$2"
+finalize_status=$?
+kill -TERM "${model_lock_pid}" 2>/dev/null || true
+wait "${model_lock_pid}" 2>/dev/null || true
+[[ "${finalize_status}" -eq 0 && "${model_lock_lost_during_execution}" == false && "${remote_proof_active}" == false ]]
+' -- "${monitor_root}/report" "${monitor_root}/finalize-output" || fail 'finalization monitor rejected a valid lock-scoped completion record'
+[[ "$(<"${monitor_root}/finalize-output")" == $'model_finalize=PASS\nmodel_load_marker=retired' ]] ||
+  fail 'finalization monitor did not preserve the fixed completion report'
+
+printf 'model_lock=acquired\nmodel_finalize=PASS\nmodel_load_marker=absent\nremote_finalize_status=0\n' >"${monitor_root}/report"
+bash -c "${monitor_definitions}"$'\n''
+model_lock_lost_during_execution=false
+model_lock_report_file="$1"
+remote_proof_active=true
+sleep 2 & model_lock_pid=$!
+wait_for_remote_finalization absent >/dev/null
+finalize_status=$?
+kill -TERM "${model_lock_pid}" 2>/dev/null || true
+wait "${model_lock_pid}" 2>/dev/null || true
+[[ "${finalize_status}" -eq 0 && "${model_lock_lost_during_execution}" == false && "${remote_proof_active}" == false ]]
+' -- "${monitor_root}/report" || fail 'finalization monitor rejected finalize-first cleanup completion'
+
+if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
   supervisor_fifo="${monitor_root}/supervisor-input"
   supervisor_lock="${monitor_root}/model.lock"
   supervisor_ready="${monitor_root}/ready"
   supervisor_report="${monitor_root}/supervisor-report"
   mkfifo -m 0600 "${supervisor_fifo}"
   exec 8<>"${supervisor_fifo}"
-  supervisor_program=$'set -euo pipefail\nfail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }\nproof_pid=""\n'"${supervisor_terminate_definition}"$'\n'"${supervise_proof_definition}"$'\nsupervise_proof'
+  supervisor_program=$'set -euo pipefail\nfail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }\nproof_pid=""\nsupervised_action=""\n'"${supervisor_terminate_definition}"$'\n'"${supervise_program_definition}"$'\nsupervise_program'
   (
     exec 8>&-
     exec 9>>"${supervisor_lock}"
     flock 9
     printf 'ready\n' >"${supervisor_ready}"
-    bash -c "${supervisor_program}" <"${supervisor_fifo}" >"${supervisor_report}"
+    exec bash -c "${supervisor_program}" <"${supervisor_fifo}" >"${supervisor_report}"
   ) &
   supervisor_pid=$!
   for ((attempt = 0; attempt < 100; attempt++)); do
@@ -202,9 +252,9 @@ if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then
     sleep 0.01
   done
   [[ -s "${supervisor_ready}" ]] || fail 'local lock-supervisor lifetime fixture did not start'
-  lifetime_proof='sleep 1'
+  lifetime_proof='exec timeout --foreground --signal=TERM --kill-after=1s 2s sleep 1'
   LC_ALL=C lifetime_proof_bytes="${#lifetime_proof}"
-  printf 'execute\tm2c4-lifetime\trun\tqwen3-coder:30b-a3b-q8_0\t7b438a19895a\t%s\n' "${lifetime_proof_bytes}" >&8
+  printf 'execute\tm2c4-lifetime\trun\tqwen3-coder:30b-a3b-q8_0\t7b438a19895a\tnone\t%s\n' "${lifetime_proof_bytes}" >&8
   printf '%s' "${lifetime_proof}" >&8
   exec 8>&-
   sleep 0.1
@@ -214,6 +264,84 @@ if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then
   wait "${supervisor_pid}" || fail 'local lock-supervisor lifetime fixture failed'
   flock -n "${supervisor_lock}" -c true || fail 'lock supervisor did not release after proof termination'
   [[ "$(<"${supervisor_report}")" == 'remote_proof_status=0' ]] || fail 'lock supervisor emitted an invalid completion record'
+
+  finalize_fifo="${monitor_root}/finalize-input"
+  finalize_lock="${monitor_root}/finalize.lock"
+  finalize_ready="${monitor_root}/finalize-ready"
+  finalize_report="${monitor_root}/finalize-report"
+  mkfifo -m 0600 "${finalize_fifo}"
+  exec 8<>"${finalize_fifo}"
+  (
+    exec 8>&-
+    exec 9>>"${finalize_lock}"
+    flock 9
+    printf 'ready\n' >"${finalize_ready}"
+    exec bash -c "${supervisor_program}" <"${finalize_fifo}" >"${finalize_report}"
+  ) &
+  finalize_pid=$!
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    [[ -s "${finalize_ready}" ]] && break
+    kill -0 "${finalize_pid}" 2>/dev/null || break
+    sleep 0.01
+  done
+  [[ -s "${finalize_ready}" ]] || fail 'local finalization EOF fixture did not start'
+  lifetime_finalize='exec timeout --foreground --signal=TERM --kill-after=1s 2s sleep 1'
+  LC_ALL=C lifetime_finalize_bytes="${#lifetime_finalize}"
+  printf 'finalize\tm2c4-finalize-eof\trun\tqwen3-coder:30b-a3b-q8_0\t7b438a19895a\tabsent\t%s\n' \
+    "${lifetime_finalize_bytes}" >&8
+  printf '%s' "${lifetime_finalize}" >&8
+  exec 8>&-
+  sleep 0.1
+  if flock -n "${finalize_lock}" -c true; then
+    fail 'finalization continued after client EOF without its supervisor lock'
+  fi
+  wait "${finalize_pid}" || fail 'local finalization EOF fixture failed'
+  flock -n "${finalize_lock}" -c true || fail 'finalization supervisor did not release after its child terminated'
+  [[ "$(<"${finalize_report}")" == 'remote_finalize_status=0' ]] || fail 'finalization supervisor emitted an invalid completion record'
+
+  signal_fifo="${monitor_root}/finalize-signal-input"
+  signal_lock="${monitor_root}/finalize-signal.lock"
+  signal_ready="${monitor_root}/finalize-signal-ready"
+  signal_report="${monitor_root}/finalize-signal-report"
+  mkfifo -m 0600 "${signal_fifo}"
+  exec 8<>"${signal_fifo}"
+  (
+    exec 8>&-
+    exec 9>>"${signal_lock}"
+    flock 9
+    printf 'ready\n' >"${signal_ready}"
+    exec bash -c "${supervisor_program}" <"${signal_fifo}" >"${signal_report}"
+  ) &
+  signal_pid=$!
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    [[ -s "${signal_ready}" ]] && break
+    kill -0 "${signal_pid}" 2>/dev/null || break
+    sleep 0.01
+  done
+  [[ -s "${signal_ready}" ]] || fail 'local finalization signal fixture did not start'
+  signal_finalize='printf "finalizer_started\\n"; trap '\''sleep 1; exit 130'\'' TERM; timeout --foreground --signal=TERM --kill-after=1s 30s sleep 30 & wait'
+  LC_ALL=C signal_finalize_bytes="${#signal_finalize}"
+  printf 'finalize\tm2c4-finalize-signal\trun\tqwen3-coder:30b-a3b-q8_0\t7b438a19895a\tabsent\t%s\n' \
+    "${signal_finalize_bytes}" >&8
+  printf '%s' "${signal_finalize}" >&8
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    grep -Fqx 'finalizer_started' "${signal_report}" && break
+    kill -0 "${signal_pid}" 2>/dev/null || break
+    sleep 0.01
+  done
+  grep -Fqx 'finalizer_started' "${signal_report}" || fail 'local finalization signal fixture did not enter its supervised child'
+  kill -TERM "${signal_pid}"
+  sleep 0.1
+  if flock -n "${signal_lock}" -c true; then
+    fail 'finalization supervisor released its lock before signal cleanup completed'
+  fi
+  set +e
+  wait "${signal_pid}"
+  signal_status=$?
+  set -e
+  exec 8>&-
+  [[ "${signal_status}" -eq 130 ]] || fail 'signalled finalization supervisor did not report cancellation'
+  flock -n "${signal_lock}" -c true || fail 'signalled finalization supervisor did not release after child termination'
 fi
 rm -rf -- "${monitor_root}"
 

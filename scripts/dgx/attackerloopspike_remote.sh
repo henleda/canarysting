@@ -58,7 +58,7 @@ cleanup_model() {
     model_cleanup='NOT_REQUIRED'
     return 0
   fi
-  if timeout --signal=TERM --kill-after=2s 25s \
+  if timeout --foreground --signal=TERM --kill-after=2s 25s \
     env -i LANG=C PATH=/usr/bin:/bin TZ=UTC \
     "${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model >/dev/null 2>&1; then
     model_cleanup='PASS'
@@ -195,7 +195,7 @@ set +e
   cd "${evidence}"
   ulimit -c 0
   ulimit -f 1024
-  exec timeout --signal=TERM --kill-after=10s 250s \
+  exec timeout --foreground --signal=TERM --kill-after=10s 250s \
     env -i LANG=C PATH=/usr/bin:/bin TZ=UTC \
     "${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -selfcheck
 ) >"${stdout_log}" 2>"${stderr_log}"
