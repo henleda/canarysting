@@ -89,6 +89,7 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 
 		activeStep := stepIndex
 		acceptedThisTurn := false
+		observationBudgetExhausted := false
 		for proposalIndex, proposal := range response.Proposals {
 			selected, accepted := c.selectAction(activeStep, proposal, proposalIndex == 0)
 			if !accepted {
@@ -119,10 +120,18 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			if !accepted {
 				observationName = "proposal_rejected"
 			}
-			observations = append(observations, observation(observationName, execution.Result))
+			if !observationBudgetExhausted {
+				var exhausted bool
+				observations, exhausted = appendBoundedObservation(observations, observationName, execution.Result)
+				observationBudgetExhausted = exhausted
+			}
 			if accepted {
 				acceptedThisTurn = true
 			}
+		}
+		if observationBudgetExhausted {
+			result.StopReason = StopObservationBudget
+			return result, nil
 		}
 		if acceptedThisTurn {
 			stepIndex++
@@ -148,6 +157,49 @@ func observationHistoryBytes(observations []Observation) int {
 		return AbsoluteMaxObservationHistoryBytes + 1
 	}
 	return len(encoded)
+}
+
+// appendBoundedObservation preserves the audit of every proposal while making
+// the model-visible history a hard bound. If the complete observation will not
+// fit, it retains the largest base64-valid content prefix that does fit and
+// tells the coordinator to stop after auditing the rest of the current model
+// response. If even metadata cannot fit, the history remains unchanged.
+func appendBoundedObservation(observations []Observation, toolName string, result executor.Result) ([]Observation, bool) {
+	if len(observations) >= AbsoluteMaxObservations {
+		return observations, true
+	}
+	candidate := observation(toolName, result)
+	if appended, ok := appendObservationIfWithinHistoryLimit(observations, candidate); ok {
+		return appended, len(appended) >= AbsoluteMaxObservations
+	}
+
+	maximumContent := min(len(result.Content), AbsoluteMaxObservationBytes)
+	bestContent := -1
+	var best []Observation
+	for low, high := 0, maximumContent; low <= high; {
+		mid := low + (high-low)/2
+		candidate.ContentBase64 = base64.StdEncoding.EncodeToString(result.Content[:mid])
+		candidate.ContentTruncated = mid < len(result.Content)
+		appended, ok := appendObservationIfWithinHistoryLimit(observations, candidate)
+		if ok {
+			bestContent = mid
+			best = appended
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if bestContent < 0 {
+		return observations, true
+	}
+	return best, true
+}
+
+func appendObservationIfWithinHistoryLimit(observations []Observation, candidate Observation) ([]Observation, bool) {
+	appended := make([]Observation, len(observations), len(observations)+1)
+	copy(appended, observations)
+	appended = append(appended, candidate)
+	return appended, observationHistoryBytes(appended) <= AbsoluteMaxObservationHistoryBytes
 }
 
 func min32(left, right uint32) uint32 {

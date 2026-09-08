@@ -27,6 +27,13 @@ const (
 	expectedModelID    = "7b438a19895a"
 )
 
+var (
+	// These dates are part of reviewed scenario-v1 semantics. Renewing the
+	// review requires a scenario version bump, never a runtime-derived date.
+	scenarioV1RecordedAt = time.Date(2026, time.September, 7, 0, 0, 0, 0, time.UTC)
+	scenarioV1ReviewDue  = time.Date(2027, time.September, 7, 0, 0, 0, 0, time.UTC)
+)
+
 func main() {
 	var runID string
 	var scenarioID string
@@ -235,15 +242,14 @@ func buildFixture(port uint16) (fixtureValues, error) {
 	if err != nil {
 		return fixtureValues{}, err
 	}
-	now := time.Now().UTC()
 	scenario, err := groundtruth.NewScenario(groundtruth.ScenarioInput{
 		Scope: scope, ID: expectedScenarioID, Version: 1, Name: "Bounded Ollama planner proof",
 		Objective: "Prove one local model proposal remains inside the reviewed executor boundary.",
 		Safety:    groundtruth.SafetyHarmlessLab, ExecutionMode: groundtruth.ExecutionBoundedAdaptive,
 		RequiredFixtures: []string{fixtureRef}, Targets: []groundtruth.Target{groundTarget},
 		ToolConstraints: []groundtruth.ToolConstraint{constraint}, Steps: []groundtruth.Step{step}, Budgets: budgets,
-		ExpectedTelemetry: []string{"executor-audit", "planner-audit"}, RecordedAt: now.Add(-time.Hour),
-		CorpusReviewDue: now.AddDate(1, 0, 0), LifecyclePolicyVersion: "synthetic-ground-truth-v1",
+		ExpectedTelemetry: []string{"executor-audit", "planner-audit"}, RecordedAt: scenarioV1RecordedAt,
+		CorpusReviewDue: scenarioV1ReviewDue, LifecyclePolicyVersion: "synthetic-ground-truth-v1",
 		ResidencyPolicyRef: "residency-dgx-local-v1", EncryptionKeyRef: opaque("keyref:sha256:", "m2c4-key"),
 		EstimatedStorageBytes: 8192, EstimateBasis: groundtruth.EstimateAssumed,
 	})

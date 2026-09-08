@@ -150,12 +150,18 @@ func TestObservationByteBudgetStopsBeforeAnUnserviceableModelTurn(t *testing.T) 
 		len(execution.snapshot()) != 3 || len(requests) != 1 {
 		t.Fatalf("unexpected encoded observation-budget result: %+v", result)
 	}
-	observations := make([]Observation, 3)
-	for index := range observations {
-		observations[index] = observation("proposal_rejected", executor.Result{Status: groundtruth.ActionDenied, Content: execution.content})
+	observations := make([]Observation, 0, 3)
+	exhausted := false
+	for range 3 {
+		observations, exhausted = appendBoundedObservation(observations, "proposal_rejected", executor.Result{
+			Status: groundtruth.ActionDenied, Content: execution.content,
+		})
+		if got := observationHistoryBytes(observations); got > AbsoluteMaxObservationHistoryBytes {
+			t.Fatalf("bounded history bytes = %d, exceeds %d", got, AbsoluteMaxObservationHistoryBytes)
+		}
 	}
-	if got := observationHistoryBytes(observations); got <= AbsoluteMaxObservationHistoryBytes {
-		t.Fatalf("test history bytes = %d, want greater than %d", got, AbsoluteMaxObservationHistoryBytes)
+	if !exhausted || len(observations) != 3 || !observations[2].ContentTruncated {
+		t.Fatalf("history did not stop at a truncated bounded observation: exhausted=%t observations=%+v", exhausted, observations)
 	}
 }
 
