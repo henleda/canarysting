@@ -100,7 +100,7 @@ func runProof(runID string) error {
 	ledger := &executor.MemoryLedger{}
 	run, err := values.boundary.NewRun(executor.RunConfig{
 		Scenario: values.scenario, RunID: runID, Ledger: ledger,
-		ClockSource: "monotonic-system-clock", ClockUncertaintyMillis: 1,
+		ClockSource: "ntp-synchronized-system-clock", ClockUncertaintyMillis: 30000,
 		IntentStorageBytes: 2048, ActionStorageBytes: 2048, EstimateBasis: groundtruth.EstimateMeasured,
 	})
 	if err != nil {

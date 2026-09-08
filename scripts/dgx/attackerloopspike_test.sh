@@ -41,6 +41,9 @@ for marker in \
   'expected_model='"'"'qwen3-coder:30b-a3b-q8_0'"'" \
   'expected_model_id='"'"'7b438a19895a'"'" \
   'loaded_model_count=0' \
+  'ntp_synchronized=true' \
+  'gpu_probe_status=ok' \
+  'minimum_available_memory_kib=41943040' \
   'zero_argument_handles=true target_policy_budget_model_visible=false' \
   'output=content-digest-only' \
   'reason=scenario_complete deterministic=true' \
@@ -59,6 +62,9 @@ fi
 
 report_definition="$(awk '/^validate_model_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 identity_report_definition="$(awk '/^validate_model_identity_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+unloaded_report_definition="$(awk '/^validate_model_unloaded_report\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+marker_state_definition="$(awk '/^model_load_marker_state\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+cleanup_model_definition="$(awk '/^cleanup_model\(\) \{/ { capture=1 } /^cleanup_after_signal\(\) \{/ { exit } capture { print }' "${proof_script}")"
 schema_definition="$(awk '/^validate_result_schema\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
@@ -66,15 +72,28 @@ cleanup_stage_definition="$(awk '/^cleanup_stage_from_inventory\(\) \{/ { captur
 terminate_proof_definition="$(awk '/^terminate_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 assert_lock_definition="$(awk '/^assert_model_lock_held\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 wait_proof_definition="$(awk '/^wait_for_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
-[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" ]] || fail 'proof validators are not independently testable'
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${unloaded_report_definition}" && -n "${marker_state_definition}" && -n "${cleanup_model_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" ]] || fail 'proof validators are not independently testable'
 
-valid_report=$'ollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
-bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
+valid_report=$'memory_available_kib=83886080\ngpu_count=1\ngpu_probe_status=ok\nntp_synchronized=true\nollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
+report_program="${identity_report_definition}"$'\n'"${unloaded_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a minimum_available_memory_kib=41943040'
+bash -c "${report_program}"$'\n''validate_model_report "$1"' -- "${valid_report}" || fail 'valid model report was rejected'
 bad_report="${valid_report/loaded_model_count=0/loaded_model_count=1}"
-if bash -c "${identity_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_report "$1"' -- "${bad_report}"; then
+if bash -c "${report_program}"$'\n''validate_model_report "$1"' -- "${bad_report}"; then
   fail 'model report accepted an already-loaded model'
 fi
 bash -c "${identity_report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a validate_model_identity_report "$1"' -- "${bad_report}" || fail 'cleanup identity validator rejected an otherwise safe loaded-model report'
+if bash -c "${report_program}"$'\n''validate_model_unloaded_report "$1"' -- "${bad_report}"; then
+  fail 'cleanup unloaded-state validator accepted a loaded model'
+fi
+for unsafe_report in \
+  "${valid_report/ntp_synchronized=true/ntp_synchronized=false}" \
+  "${valid_report/gpu_probe_status=ok/gpu_probe_status=unavailable}" \
+  "${valid_report/gpu_count=1/gpu_count=0}" \
+  "${valid_report/memory_available_kib=83886080/memory_available_kib=1024}"; do
+  if bash -c "${report_program}"$'\n''validate_model_report "$1"' -- "${unsafe_report}"; then
+    fail 'model report accepted unsafe clock, GPU, or memory readiness'
+  fi
+done
 
 for inventory in \
   $'mode=inspect\nrun_id=m2c4-clean\nroot=absent\npostcondition=all-candidates-absent' \
@@ -94,7 +113,7 @@ for inventory in $'root=absent\nstage=absent' $'stage=absent\nstage=validated' $
 done
 
 cleanup_inspect_line="$(grep -nF 'cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"' "${proof_script}" | cut -d: -f1)"
-remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${proof_script}" | cut -d: -f1)"
+remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' || "${model_cleanup}" == '\''NOT_REQUIRED'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${proof_script}" | cut -d: -f1)"
 post_check_line="$(grep -nF 'validate_model_report "${post_model_report}"' "${proof_script}" | cut -d: -f1)"
 generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${proof_script}" | tail -n1 | cut -d: -f1)"
 [[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
@@ -132,6 +151,36 @@ wait "${model_lock_pid}" 2>/dev/null || true
 
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXXXX")"
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
+evidence="${fixture_root}/evidence"
+model_load_marker="${evidence}/model-load-owned"
+marker_test_program=$'evidence="$1"\nmodel_load_marker="$2"\nstat() {\n  case "$1:$2" in\n    -c:%a) /usr/bin/stat -f "%Lp" "$3" ;;\n    -c:%s) /usr/bin/stat -f "%z" "$3" ;;\n    *) return 1 ;;\n  esac\n}\n'"${marker_state_definition}"$'\nmodel_load_marker_state'
+[[ "$(bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}")" == 'absent' ]] || fail 'absent model-load marker was not recognized'
+cleanup_test_program="${marker_test_program%model_load_marker_state}"$'\n'"${cleanup_model_definition}"$'\nartifact=unused\nrun_id=m2c4-marker\nscenario_id=m2c4-ollama-bounded-loop'
+cleanup_without_marker="$(bash -c "${cleanup_test_program}"$'\ntimeout() { return 99; }\nmodel_cleanup=PENDING\ncleanup_model\nprintf "%s\\n" "${model_cleanup}"' -- "${evidence}" "${model_load_marker}")"
+[[ "${cleanup_without_marker}" == 'NOT_REQUIRED' ]] || fail 'cleanup without a run-owned marker attempted model unload'
+mkdir -m 0700 "${evidence}"
+printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
+chmod 0600 "${model_load_marker}"
+[[ "$(bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}")" == 'owned' ]] || fail 'safe model-load ownership marker was rejected'
+cleanup_with_marker="$(bash -c "${cleanup_test_program}"$'\ntimeout() { return 0; }\nmodel_cleanup=PENDING\ncleanup_model\nprintf "%s:%s\\n" "${model_cleanup}" "$([[ ! -e "${model_load_marker}" ]] && printf removed || printf present)"' -- "${evidence}" "${model_load_marker}")"
+[[ "${cleanup_with_marker}" == 'PASS:removed' ]] || fail 'run-owned model cleanup did not unload and retire its marker'
+printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
+chmod 0644 "${model_load_marker}"
+if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" >/dev/null; then
+  fail 'unsafe model-load marker mode was accepted'
+fi
+rm -f -- "${model_load_marker}"
+ln -s missing "${model_load_marker}"
+if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" >/dev/null; then
+  fail 'symlink model-load marker was accepted'
+fi
+rm -f -- "${model_load_marker}"
+
+marker_create_line="$(grep -nF "printf 'canarysting-model-load-owned-v1\\n' >\"\${model_load_marker}\"" "${proof_script}" | cut -d: -f1)"
+model_execute_line="$(grep -nF '"${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -selfcheck' "${proof_script}" | cut -d: -f1)"
+[[ "${marker_create_line}" =~ ^[0-9]+$ && "${model_execute_line}" =~ ^[0-9]+$ ]] || fail 'model-load ownership ordering markers are missing'
+((marker_create_line < model_execute_line)) || fail 'model execution can begin before its run-owned load marker exists'
+
 result_file="${fixture_root}/result.tsv"
 write_valid_result() {
   cat >"${result_file}" <<'RESULT'

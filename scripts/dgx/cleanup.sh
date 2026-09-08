@@ -183,7 +183,7 @@ validate_evidence() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp|f:model-load-owned) ;;
       *) fail "evidence candidate contains an undeclared entry: ${path}/${entry#*:}" ;;
     esac
   done < <(cd "${path}" && find . -mindepth 1 -printf '%y:%P\n' | LC_ALL=C sort)

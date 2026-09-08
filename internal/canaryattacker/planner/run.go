@@ -34,6 +34,10 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			result.StopReason = StopActionBudget
 			return result, nil
 		}
+		if len(observations) >= AbsoluteMaxObservations {
+			result.StopReason = StopObservationBudget
+			return result, nil
+		}
 		usedTokens := result.PromptTokens + result.OutputTokens
 		if usedTokens >= budgets.MaxModelTokens() {
 			result.StopReason = StopTokenBudget
@@ -50,7 +54,7 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			Tools: c.toolsForStep(stepIndex), Observations: append([]Observation(nil), observations...),
 			MaxOutputTokens: outputTokens,
 			ContextTokens:   contextTokens,
-			MaxProposals:    budgets.MaxActions() - result.ProposalsLogged,
+			MaxProposals:    min32(budgets.MaxActions()-result.ProposalsLogged, uint32(AbsoluteMaxObservations-len(observations))),
 			Seed:            c.seed,
 		}
 		response, err := c.client.Complete(runCtx, request)
@@ -132,6 +136,13 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 		result.StopReason = StopMaxTurns
 	}
 	return result, nil
+}
+
+func min32(left, right uint32) uint32 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (c *Coordinator) toolsForStep(stepIndex int) []Tool {

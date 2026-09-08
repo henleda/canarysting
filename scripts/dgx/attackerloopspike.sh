@@ -4,6 +4,7 @@ set -euo pipefail
 readonly dgx_host='falcon1'
 readonly expected_model='qwen3-coder:30b-a3b-q8_0'
 readonly expected_model_id='7b438a19895a'
+readonly minimum_available_memory_kib=41943040
 readonly -a ssh_options=(-o BatchMode=yes -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes)
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -25,7 +26,8 @@ uses only the fixed loopback Ollama API and one process-lifetime loopback HTTP
 fixture. The model sees opaque zero-argument handles; the executor retains all
 target, operation, policy, fixture, credential, and budget authority. The proof
 loads then explicitly unloads only the pinned model and owns only its verified
-run stage plus three bounded 24-hour evidence files.
+run stage, a transient run-owned model-load marker, and three bounded 24-hour
+evidence files.
 USAGE
 }
 
@@ -47,6 +49,15 @@ validate_model_identity_report() {
   grep -Fqx 'm2c1_inspection=PASS' <<<"${report}" || return 1
 }
 validate_model_report() {
+  local report="$1"
+  validate_model_identity_report "${report}" || return 1
+  grep -Fqx 'loaded_model_count=0' <<<"${report}" || return 1
+  grep -Fqx 'ntp_synchronized=true' <<<"${report}" || return 1
+  grep -Fqx 'gpu_probe_status=ok' <<<"${report}" || return 1
+  awk -F= '$1 == "gpu_count" { count++; value=$2 } END { exit !(count == 1 && value ~ /^[1-9][0-9]*$/) }' <<<"${report}" || return 1
+  awk -F= -v minimum="${minimum_available_memory_kib}" '$1 == "memory_available_kib" { count++; value=$2 } END { exit !(count == 1 && value ~ /^[0-9]+$/ && value + 0 >= minimum) }' <<<"${report}" || return 1
+}
+validate_model_unloaded_report() {
   local report="$1"
   validate_model_identity_report "${report}" || return 1
   grep -Fqx 'loaded_model_count=0' <<<"${report}" || return 1
@@ -216,7 +227,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
   exit 0
 fi
 
-for required in chmod grep kill mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
+for required in awk chmod grep kill mkfifo mktemp rm rmdir sleep ssh "${copy_script}" "${check_script}" "${cleanup_script}" "${preflight_script}" "${attackercheck_script}"; do
   if [[ "${required}" == */* ]]; then
     [[ -x "${required}" ]] || fail "required executable is missing: ${required}"
   else
@@ -243,7 +254,7 @@ if [[ "${mode}" == 'cleanup' ]]; then
   cleanup_stage_state="$(cleanup_stage_from_inventory "${cleanup_inventory}")" ||
     fail 'cleanup inspection did not return one exact root/stage state'
   if [[ "${cleanup_stage_state}" == 'stage=absent' ]]; then
-    validate_model_report "${pre_model_report}" || fail 'run stage is absent while a model remains loaded'
+    validate_model_unloaded_report "${pre_model_report}" || fail 'run stage is absent while a model remains loaded'
   fi
 else
   validate_model_report "${pre_model_report}" || fail 'pre-run Ollama identity, binding, inventory, or unloaded-state check failed'
@@ -267,17 +278,18 @@ expected_model_id="$4"
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
 [[ "${expected_model}" == 'qwen3-coder:30b-a3b-q8_0' && "${expected_model_id}" == '7b438a19895a' ]] || fail 'unexpected model identity'
 [[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected proof host'
-for tool in awk chmod date env find hostname mkdir mv sed sha256sum sort stat timeout tr uname wc; do
+for tool in awk chmod date env find hostname mkdir mv rm sed sha256sum sort stat timeout tr uname wc; do
   command -v "${tool}" >/dev/null 2>&1 || fail "missing remote prerequisite: ${tool}"
 done
 
 root='/var/tmp/canarysting'
 stage="${root}/${run_id}"
 evidence="${root}/execution-${run_id}"
+model_load_marker="${evidence}/model-load-owned"
 artifact_relative='test/attackerloopspike'
 artifact="${stage}/${artifact_relative}"
 scenario_id='m2c4-ollama-bounded-loop'
-readonly root stage evidence artifact_relative artifact scenario_id
+readonly root stage evidence model_load_marker artifact_relative artifact scenario_id
 
 [[ -d "${root}" && ! -L "${root}" && -O "${root}" ]] || fail 'remote root is unsafe'
 [[ -d "${stage}" && ! -L "${stage}" && -O "${stage}" ]] || fail 'run stage is unsafe'
@@ -293,10 +305,31 @@ IFS=$'\t' read -r expected_size expected_sha256 <<<"${artifact_metadata}"
 [[ "$(sha256sum "${artifact}" | awk '{print $1}')" == "${expected_sha256}" ]] || fail 'proof artifact checksum changed'
 
 model_cleanup='PENDING'
+model_load_marker_state() {
+  if [[ ! -e "${model_load_marker}" && ! -L "${model_load_marker}" ]]; then
+    printf 'absent\n'
+    return 0
+  fi
+  [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" && "$(stat -c %a "${evidence}")" == '700' ]] || return 1
+  [[ -f "${model_load_marker}" && ! -L "${model_load_marker}" && -O "${model_load_marker}" &&
+    "$(stat -c %a "${model_load_marker}")" == '600' && "$(stat -c %s "${model_load_marker}")" == '32' ]] || return 1
+  [[ "$(<"${model_load_marker}")" == 'canarysting-model-load-owned-v1' ]] || return 1
+  printf 'owned\n'
+}
 cleanup_model() {
+  local marker_state
+  marker_state="$(model_load_marker_state)" || {
+    model_cleanup='FAIL'
+    return 1
+  }
+  if [[ "${marker_state}" == 'absent' ]]; then
+    model_cleanup='NOT_REQUIRED'
+    return 0
+  fi
   if timeout --signal=TERM --kill-after=2s 25s \
     env -i LANG=C PATH=/usr/bin:/bin TZ=UTC \
     "${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model >/dev/null 2>&1; then
+    rm -f -- "${model_load_marker}"
     model_cleanup='PASS'
   else
     model_cleanup='FAIL'
@@ -313,8 +346,12 @@ if [[ "${mode}" == 'run' ]]; then
 fi
 if [[ "${mode}" == 'cleanup' ]]; then
   cleanup_model
-  [[ "${model_cleanup}" == 'PASS' ]] || fail 'fixed-model cleanup failed'
-  printf 'PASS: fixed model unloaded before run-stage cleanup\n'
+  [[ "${model_cleanup}" == 'PASS' || "${model_cleanup}" == 'NOT_REQUIRED' ]] || fail 'fixed-model cleanup failed'
+  if [[ "${model_cleanup}" == 'PASS' ]]; then
+    printf 'PASS: run-owned fixed model unloaded before run-stage cleanup\n'
+  else
+    printf 'PASS: model unload skipped because this run has no load-ownership marker\n'
+  fi
   exit 0
 fi
 
@@ -412,6 +449,8 @@ umask 077
 mkdir -m 0700 "${evidence}"
 stdout_log="${evidence}/stdout.log"
 stderr_log="${evidence}/stderr.log"
+printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
+chmod 0600 "${model_load_marker}"
 started_epoch="$(date -u +%s)"
 started_utc="$(date -u -d "@${started_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 set +e
@@ -463,7 +502,11 @@ fi
 [[ "${model_lock_lost_during_execution}" == 'false' ]] || fail 'DGX host-global Ollama model lock was lost during execution'
 assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before post-run inspection'
 post_model_report="$("${attackercheck_script}")"
-validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, inventory, or unloaded-state check failed'
+if [[ "${mode}" == 'cleanup' ]]; then
+  validate_model_unloaded_report "${post_model_report}" || fail 'post-cleanup Ollama identity, binding, inventory, or unloaded-state check failed'
+else
+  validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, resource, clock, or unloaded-state check failed'
+fi
 printf 'post_model_check=PASS\n'
 [[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"
 release_model_lock || fail 'DGX host-global Ollama model lock session failed'

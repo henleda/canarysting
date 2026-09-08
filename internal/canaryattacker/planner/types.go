@@ -19,6 +19,8 @@ const (
 	AbsoluteMaxContextTokens    = 32768
 	AbsoluteMaxObservationBytes = 16 << 10
 	AbsoluteMaxProposalBytes    = 4 << 10
+	AbsoluteMaxToolsPerTurn     = 256
+	AbsoluteMaxObservations     = 256
 	// AbsoluteMaxCatalogActions matches the ground-truth scenario aggregate
 	// bound. Opaque action handles must cover this entire reviewed surface.
 	AbsoluteMaxCatalogActions = 1024
@@ -29,14 +31,15 @@ var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 type StopReason string
 
 const (
-	StopScenarioComplete StopReason = "scenario_complete"
-	StopModel            StopReason = "model_stop"
-	StopMaxTurns         StopReason = "max_turns"
-	StopActionBudget     StopReason = "action_budget"
-	StopTokenBudget      StopReason = "token_budget"
-	StopCancelled        StopReason = "cancelled"
-	StopModelError       StopReason = "model_error"
-	StopExecutorError    StopReason = "executor_error"
+	StopScenarioComplete  StopReason = "scenario_complete"
+	StopModel             StopReason = "model_stop"
+	StopMaxTurns          StopReason = "max_turns"
+	StopActionBudget      StopReason = "action_budget"
+	StopTokenBudget       StopReason = "token_budget"
+	StopObservationBudget StopReason = "observation_budget"
+	StopCancelled         StopReason = "cancelled"
+	StopModelError        StopReason = "model_error"
+	StopExecutorError     StopReason = "executor_error"
 )
 
 var (
@@ -155,7 +158,11 @@ func New(config Config) (*Coordinator, error) {
 	catalog := make([]catalogAction, 0)
 	ordinal := 1
 	for stepIndex, step := range steps {
-		for _, action := range step.AllowedActions() {
+		actions := step.AllowedActions()
+		if len(actions) > AbsoluteMaxToolsPerTurn {
+			return nil, fmt.Errorf("scenario step %q exceeds the planner per-turn tool limit of %d", step.ID(), AbsoluteMaxToolsPerTurn)
+		}
+		for _, action := range actions {
 			name, err := actionHandle(ordinal)
 			if err != nil {
 				return nil, err

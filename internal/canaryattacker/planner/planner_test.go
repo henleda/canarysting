@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,27 @@ func TestSurplusToolCallsAreAuditedWithoutAdditionalExecution(t *testing.T) {
 	requests := client.snapshot()
 	if len(requests) != 1 || requests[0].MaxProposals != 4 {
 		t.Fatalf("proposal audit allowance = %+v", requests)
+	}
+}
+
+func TestObservationBudgetStopsBeforeAnUnserviceableModelTurn(t *testing.T) {
+	values := testValues(t, 1, AbsoluteMaxObservations+1, 1000)
+	proposals := make([]Proposal, AbsoluteMaxObservations)
+	for index := range proposals {
+		proposals[index] = Proposal{Name: "invented_tool", Arguments: json.RawMessage(`{}`)}
+	}
+	client := &fakeClient{responses: []TurnResponse{
+		validResponse(values.model.Model(), 100, 20, proposals...),
+	}}
+	execution := &fakeExecutor{}
+	coordinator := newCoordinator(t, values, client, execution, 2)
+	result, err := coordinator.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StopReason != StopObservationBudget || result.ProposalsLogged != AbsoluteMaxObservations ||
+		result.Denied != AbsoluteMaxObservations || len(execution.snapshot()) != AbsoluteMaxObservations || len(client.snapshot()) != 1 {
+		t.Fatalf("unexpected observation-budget result: %+v", result)
 	}
 }
 
@@ -260,6 +282,16 @@ func TestActionHandlesCoverWholeScenarioAggregateBound(t *testing.T) {
 	}
 }
 
+func TestConstructorRejectsStepBeyondTransportToolCapacity(t *testing.T) {
+	values := testValuesWithSingleStepActions(t, AbsoluteMaxToolsPerTurn+1)
+	_, err := New(Config{
+		Scenario: values.scenario, Model: values.model, Client: &fakeClient{}, Executor: &fakeExecutor{}, MaxTurns: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "per-turn tool limit") {
+		t.Fatalf("oversized active step error = %v", err)
+	}
+}
+
 type testFixture struct {
 	scenario groundtruth.Scenario
 	model    groundtruth.ModelIdentity
@@ -336,6 +368,60 @@ func testValues(t *testing.T, stepCount int, maxActions uint32, maxTokens uint64
 		t.Fatal(err)
 	}
 	return testFixture{scenario: scenario, model: model}
+}
+
+func testValuesWithSingleStepActions(t *testing.T, actionCount int) testFixture {
+	t.Helper()
+	base := testValues(t, 1, uint32(actionCount), 1000)
+	target := base.scenario.Targets()[0]
+	actions := make([]groundtruth.ActionSpec, actionCount)
+	operations := make([]string, actionCount)
+	var err error
+	for index := range actions {
+		operations[index] = fmt.Sprintf("operation-%d", index+1)
+		actions[index], err = groundtruth.NewActionSpec(groundtruth.ActionSpecInput{
+			Tool: groundtruth.ToolHTTPRequest, TargetAlias: target.Alias(), TargetRef: target.Reference(), Operation: operations[index],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	constraint, err := groundtruth.NewToolConstraint(groundtruth.ToolConstraintInput{
+		Tool: groundtruth.ToolHTTPRequest, AllowedOperations: operations, MaxActions: uint32(actionCount),
+		MaxRequestBytes: 1024, MaxResponseBytes: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := groundtruth.NewStep(groundtruth.StepInput{
+		ID: "step-1", Sequence: 1, Objective: "Exercise reviewed harmless laboratory actions.", AllowedActions: actions,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budgets, err := groundtruth.NewBudgets(groundtruth.BudgetsInput{
+		MaxActions: uint32(actionCount), MaxDuration: time.Minute, MaxConcurrency: 1,
+		MaxRequestBytes: 1024, MaxResponseBytes: 1024, MaxModelTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	scenario, err := groundtruth.NewScenario(groundtruth.ScenarioInput{
+		Scope: base.scenario.Envelope().Scope(), ID: "m2c4-tool-cardinality", Version: 1, Name: "Planner tool cardinality",
+		Objective: "Prove the active tool surface remains transport-serviceable.",
+		Safety:    groundtruth.SafetyHarmlessLab, ExecutionMode: groundtruth.ExecutionBoundedAdaptive,
+		RequiredFixtures: base.scenario.RequiredFixtures(), Targets: []groundtruth.Target{target},
+		ToolConstraints: []groundtruth.ToolConstraint{constraint}, Steps: []groundtruth.Step{step}, Budgets: budgets,
+		ExpectedTelemetry: []string{"planner-audit"}, RecordedAt: now.Add(-time.Hour), CorpusReviewDue: now.AddDate(1, 0, 0),
+		LifecyclePolicyVersion: "synthetic-ground-truth-v1", ResidencyPolicyRef: "residency-dgx-local-v1",
+		EncryptionKeyRef: opaque("keyref:sha256:", "planner-cardinality-key"), EstimatedStorageBytes: 8192,
+		EstimateBasis: groundtruth.EstimateAssumed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testFixture{scenario: scenario, model: base.model}
 }
 
 func newCoordinator(t *testing.T, values testFixture, client Client, execution ActionExecutor, turns uint32) *Coordinator {

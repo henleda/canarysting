@@ -274,7 +274,8 @@ func buildRequest(request planner.TurnRequest) (apiRequest, error) {
 		request.MaxProposals == 0 || request.MaxProposals > planner.AbsoluteMaxCatalogActions {
 		return apiRequest{}, fmt.Errorf("Ollama turn request is incomplete or exceeds planner bounds")
 	}
-	if len(request.Tools) == 0 || len(request.Tools) > 256 || len(request.Observations) > 256 {
+	if len(request.Tools) == 0 || len(request.Tools) > planner.AbsoluteMaxToolsPerTurn ||
+		len(request.Observations) > planner.AbsoluteMaxObservations {
 		return apiRequest{}, fmt.Errorf("Ollama tool or observation count is outside bounds")
 	}
 	tools := make([]apiTool, 0, len(request.Tools))
