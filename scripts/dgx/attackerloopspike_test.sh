@@ -153,7 +153,7 @@ fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-attacker-loop-schema.XXXX
 trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
 evidence="${fixture_root}/evidence"
 model_load_marker="${evidence}/model-load-owned"
-marker_test_program=$'evidence="$1"\nmodel_load_marker="$2"\nstat() {\n  case "$1:$2" in\n    -c:%a) /usr/bin/stat -f "%Lp" "$3" ;;\n    -c:%s) /usr/bin/stat -f "%z" "$3" ;;\n    *) return 1 ;;\n  esac\n}\n'"${marker_state_definition}"$'\nmodel_load_marker_state'
+marker_test_program=$'evidence="$1"\nmodel_load_marker="$2"\ntest_marker_mode="${3:-600}"\ntest_marker_size="${4:-32}"\nstat() {\n  local format="$2" path="$3"\n  if [[ "${format}" == "%a" && "${path}" == "${evidence}" ]]; then printf "700\\n"; return 0; fi\n  if [[ "${format}" == "%a" && "${path}" == "${model_load_marker}" ]]; then printf "%s\\n" "${test_marker_mode}"; return 0; fi\n  if [[ "${format}" == "%s" && "${path}" == "${model_load_marker}" ]]; then printf "%s\\n" "${test_marker_size}"; return 0; fi\n  return 1\n}\n'"${marker_state_definition}"$'\nmodel_load_marker_state'
 [[ "$(bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}")" == 'absent' ]] || fail 'absent model-load marker was not recognized'
 cleanup_test_program="${marker_test_program%model_load_marker_state}"$'\n'"${cleanup_model_definition}"$'\nartifact=unused\nrun_id=m2c4-marker\nscenario_id=m2c4-ollama-bounded-loop'
 cleanup_without_marker="$(bash -c "${cleanup_test_program}"$'\ntimeout() { return 99; }\nmodel_cleanup=PENDING\ncleanup_model\nprintf "%s\\n" "${model_cleanup}"' -- "${evidence}" "${model_load_marker}")"
@@ -166,8 +166,12 @@ cleanup_with_marker="$(bash -c "${cleanup_test_program}"$'\ntimeout() { return 0
 [[ "${cleanup_with_marker}" == 'PASS:removed' ]] || fail 'run-owned model cleanup did not unload and retire its marker'
 printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
 chmod 0644 "${model_load_marker}"
-if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" >/dev/null; then
+if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" 644 >/dev/null; then
   fail 'unsafe model-load marker mode was accepted'
+fi
+chmod 0600 "${model_load_marker}"
+if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" 600 31 >/dev/null; then
+  fail 'malformed model-load marker size was accepted'
 fi
 rm -f -- "${model_load_marker}"
 ln -s missing "${model_load_marker}"
