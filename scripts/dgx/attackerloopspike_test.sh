@@ -98,7 +98,8 @@ done
 for inventory in \
   $'mode=inspect\nrun_id=m2c4-clean\nroot=absent\npostcondition=all-candidates-absent' \
   $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=absent\nevidence=absent\nmutation=none' \
-  $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=validated\nevidence=validated\nmutation=none'; do
+  $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=validated\nevidence=validated\nmutation=none' \
+  $'mode=inspect\nrun_id=m2c4-clean\nincoming=absent\nstage=validated\nevidence=model-owned\nmutation=none'; do
   cleanup_state="$(bash -c "${cleanup_stage_definition}"$'\n''cleanup_stage_from_inventory "$1"' -- "${inventory}")" || fail 'valid cleanup inventory was rejected'
   if [[ "${inventory}" == *'stage=validated'* ]]; then
     [[ "${cleanup_state}" == 'stage=validated' ]] || fail 'validated stage state was not preserved'
