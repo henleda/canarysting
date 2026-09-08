@@ -39,7 +39,12 @@ func TestClosedCatalogExecutesOnlyReviewedOperations(t *testing.T) {
 		}
 	})
 
-	fixture := newFixture(t, fixtureURL, defaultLimits(), nil, httpFixtureDialer(handler))
+	limits := defaultLimits()
+	// This test validates the closed catalog, not the run-duration ceiling. Leave
+	// enough wall-clock budget for its seven sequential actions under a loaded
+	// race-enabled package suite; dedicated tests below exercise duration expiry.
+	limits.MaxRunDuration = 10 * time.Second
+	fixture := newFixture(t, fixtureURL, limits, nil, httpFixtureDialer(handler))
 	run := fixture.newRun(t, &MemoryLedger{})
 	defer run.Close()
 	for index, action := range fixture.actions {
