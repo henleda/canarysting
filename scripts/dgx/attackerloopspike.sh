@@ -85,6 +85,61 @@ cleanup_stage_from_inventory() {
   return 1
 }
 
+retire_verified_model_marker() {
+  local expected_state="$1" retirement_report
+  [[ "${expected_state}" == 'owned' || "${expected_state}" == 'absent' || "${expected_state}" == 'either' ]] || return 1
+  assert_model_lock_held || return 1
+  retirement_report="$(ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${expected_state}" <<'REMOTE'
+set -euo pipefail
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+run_id="$1"
+expected_state="$2"
+[[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid remote run ID'
+[[ "${expected_state}" == 'owned' || "${expected_state}" == 'absent' || "${expected_state}" == 'either' ]] ||
+  fail 'invalid expected marker state'
+[[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected marker-retirement host'
+for tool in hostname rm stat uname; do
+  command -v "${tool}" >/dev/null 2>&1 || fail "missing marker-retirement prerequisite: ${tool}"
+done
+
+root='/var/tmp/canarysting'
+evidence="${root}/execution-${run_id}"
+model_load_marker="${evidence}/model-load-owned"
+readonly root evidence model_load_marker
+
+if [[ ! -e "${root}" && ! -L "${root}" ]]; then
+  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
+  printf 'model_load_marker=absent\n'
+  exit 0
+fi
+[[ -d "${root}" && ! -L "${root}" && -O "${root}" ]] || fail 'remote root is unsafe'
+if [[ ! -e "${evidence}" && ! -L "${evidence}" ]]; then
+  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
+  printf 'model_load_marker=absent\n'
+  exit 0
+fi
+[[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" && "$(stat -c %a "${evidence}")" == '700' ]] ||
+  fail 'model marker evidence directory is unsafe'
+if [[ ! -e "${model_load_marker}" && ! -L "${model_load_marker}" ]]; then
+  [[ "${expected_state}" != 'owned' ]] || fail 'required model-load ownership marker is absent'
+  printf 'model_load_marker=absent\n'
+  exit 0
+fi
+[[ "${expected_state}" != 'absent' ]] || fail 'unexpected model-load ownership marker is present'
+[[ -f "${model_load_marker}" && ! -L "${model_load_marker}" && -O "${model_load_marker}" &&
+  "$(stat -c %a "${model_load_marker}")" == '600' && "$(stat -c %s "${model_load_marker}")" == '32' ]] ||
+  fail 'model-load ownership marker is unsafe'
+[[ "$(<"${model_load_marker}")" == 'canarysting-model-load-owned-v1' ]] ||
+  fail 'model-load ownership marker is malformed'
+rm -f -- "${model_load_marker}"
+[[ ! -e "${model_load_marker}" && ! -L "${model_load_marker}" ]] || fail 'model-load ownership marker remains'
+printf 'model_load_marker=retired\n'
+REMOTE
+)" || return 1
+  [[ "${retirement_report}" == 'model_load_marker=retired' || "${retirement_report}" == 'model_load_marker=absent' ]]
+}
+
 model_lock_pid=''
 model_lock_directory=''
 model_lock_fifo=''
@@ -248,11 +303,15 @@ acquire_model_lock
 assert_model_lock_held || fail 'DGX host-global Ollama model lock was lost before inspection'
 pre_model_report="$("${attackercheck_script}")"
 cleanup_stage_state=''
+cleanup_marker_state='absent'
 if [[ "${mode}" == 'cleanup' ]]; then
   validate_model_identity_report "${pre_model_report}" || fail 'cleanup Ollama identity, binding, or inventory check failed'
   cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"
   cleanup_stage_state="$(cleanup_stage_from_inventory "${cleanup_inventory}")" ||
     fail 'cleanup inspection did not return one exact root/stage state'
+  if grep -Fqx 'evidence=model-owned' <<<"${cleanup_inventory}"; then
+    cleanup_marker_state='owned'
+  fi
   if [[ "${cleanup_stage_state}" == 'stage=absent' ]]; then
     validate_model_unloaded_report "${pre_model_report}" || fail 'run stage is absent while a model remains loaded'
   fi
@@ -329,7 +388,6 @@ cleanup_model() {
   if timeout --signal=TERM --kill-after=2s 25s \
     env -i LANG=C PATH=/usr/bin:/bin TZ=UTC \
     "${artifact}" -run-id "${run_id}" -scenario-id "${scenario_id}" -cleanup-model >/dev/null 2>&1; then
-    rm -f -- "${model_load_marker}"
     model_cleanup='PASS'
   else
     model_cleanup='FAIL'
@@ -425,8 +483,14 @@ validate_timestamps() {
   ((started <= finished && finished - started <= 300 && expires - finished == 86400 && now < expires))
 }
 validate_evidence() {
+  local expected_inventory
   [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" && "$(stat -c %a "${evidence}")" == '700' ]] || fail 'published evidence is unsafe'
-  [[ "$(cd "${evidence}" && find . -mindepth 1 -maxdepth 1 -printf '%y:%P\n' | sort)" == $'f:result.tsv\nf:stderr.log\nf:stdout.log' ]] || fail 'published evidence inventory is not exact'
+  expected_inventory=$'f:result.tsv\nf:stderr.log\nf:stdout.log'
+  if [[ "${mode}" == 'run' ]]; then
+    expected_inventory=$'f:model-load-owned\nf:result.tsv\nf:stderr.log\nf:stdout.log'
+    [[ "$(model_load_marker_state)" == 'owned' ]] || fail 'model-load ownership marker is unsafe'
+  fi
+  [[ "$(cd "${evidence}" && find . -mindepth 1 -maxdepth 1 -printf '%y:%P\n' | sort)" == "${expected_inventory}" ]] || fail 'published evidence inventory is not exact'
   for file in result.tsv stderr.log stdout.log; do
     [[ -f "${evidence}/${file}" && ! -L "${evidence}/${file}" && -O "${evidence}/${file}" ]] || fail "unsafe evidence file: ${file}"
     [[ "$(stat -c %a "${evidence}/${file}")" == '600' && "$(stat -c %s "${evidence}/${file}")" -le 1048576 ]] || fail "evidence file mode or size is unsafe: ${file}"
@@ -506,6 +570,13 @@ if [[ "${mode}" == 'cleanup' ]]; then
   validate_model_unloaded_report "${post_model_report}" || fail 'post-cleanup Ollama identity, binding, inventory, or unloaded-state check failed'
 else
   validate_model_report "${post_model_report}" || fail 'post-run Ollama identity, binding, resource, clock, or unloaded-state check failed'
+fi
+if [[ "${mode}" == 'run' ]]; then
+  marker_retirement_expectation='owned'
+  if [[ "${remote_status}" -ne 0 ]]; then marker_retirement_expectation='either'; fi
+  retire_verified_model_marker "${marker_retirement_expectation}" || fail 'verified model-load ownership marker retirement failed'
+elif [[ "${mode}" == 'cleanup' ]]; then
+  retire_verified_model_marker "${cleanup_marker_state}" || fail 'verified model-load ownership marker retirement failed'
 fi
 printf 'post_model_check=PASS\n'
 [[ "${remote_status}" -eq 0 ]] || fail "remote proof failed with exit ${remote_status}"

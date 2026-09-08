@@ -18,6 +18,8 @@ expect_failure() {
 
 [[ -x "${proof_script}" ]] || fail "proof script is missing or not executable: ${proof_script}"
 bash -n "${proof_script}" || fail 'proof script has invalid Bash syntax'
+awk '/retirement_report=.*<<.REMOTE./ { capture=1; next } /^REMOTE$/ { if (capture) exit } capture { print }' "${proof_script}" |
+  bash -n || fail 'embedded marker-retirement program has invalid Bash syntax'
 awk '/^ssh .*<<.REMOTE./ { capture=1; next } /^REMOTE$/ { capture=0 } capture { print }' "${proof_script}" |
   bash -n || fail 'embedded remote proof program has invalid Bash syntax'
 
@@ -116,16 +118,21 @@ done
 cleanup_inspect_line="$(grep -nF 'cleanup_inventory="$("${cleanup_script}" --run-id "${run_id}" --inspect)"' "${proof_script}" | cut -d: -f1)"
 remote_cleanup_line="$(grep -nF '[[ "${model_cleanup}" == '\''PASS'\'' || "${model_cleanup}" == '\''NOT_REQUIRED'\'' ]] || fail '\''fixed-model cleanup failed'\''' "${proof_script}" | cut -d: -f1)"
 post_check_line="$(grep -nF 'validate_model_report "${post_model_report}"' "${proof_script}" | cut -d: -f1)"
+marker_retirement_line="$(grep -nF 'retire_verified_model_marker "${marker_retirement_expectation}" || fail' "${proof_script}" | cut -d: -f1)"
 generic_cleanup_line="$(grep -nF '"${cleanup_script}" --run-id "${run_id}"' "${proof_script}" | tail -n1 | cut -d: -f1)"
-[[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
-((cleanup_inspect_line < remote_cleanup_line && remote_cleanup_line < post_check_line && post_check_line < generic_cleanup_line)) || fail 'cleanup can remove the stage before fixed-model unload and verification'
+[[ "${cleanup_inspect_line}" =~ ^[0-9]+$ && "${remote_cleanup_line}" =~ ^[0-9]+$ && "${post_check_line}" =~ ^[0-9]+$ && "${marker_retirement_line}" =~ ^[0-9]+$ && "${generic_cleanup_line}" =~ ^[0-9]+$ ]] || fail 'cleanup recovery ordering markers are missing'
+((cleanup_inspect_line < remote_cleanup_line && remote_cleanup_line < post_check_line && post_check_line < marker_retirement_line && marker_retirement_line < generic_cleanup_line)) || fail 'cleanup can remove recovery authority or the stage before fixed-model unload verification'
+if grep -F 'rm -f -- "${model_load_marker}"' <<<"${cleanup_model_definition}" >/dev/null; then
+  fail 'Ollama unload acknowledgement can retire the recovery marker before independent verification'
+fi
+grep -F 'rm -f -- "${model_load_marker}"' "${proof_script}" >/dev/null || fail 'verified marker retirement is missing'
 
 lock_acquire_line="$(grep -nFx 'acquire_model_lock' "${proof_script}" | cut -d: -f1)"
 preflight_line="$(grep -nFx 'run_preflight' "${proof_script}" | cut -d: -f1)"
 pre_model_line="$(grep -nF 'pre_model_report="$("${attackercheck_script}")"' "${proof_script}" | cut -d: -f1)"
 lock_release_line="$(grep -nF 'release_model_lock || fail' "${proof_script}" | cut -d: -f1)"
 [[ "${preflight_line}" =~ ^[0-9]+$ && "${lock_acquire_line}" =~ ^[0-9]+$ && "${pre_model_line}" =~ ^[0-9]+$ && "${lock_release_line}" =~ ^[0-9]+$ ]] || fail 'host-global model lock ordering markers are missing'
-((preflight_line < lock_acquire_line && lock_acquire_line < pre_model_line && post_check_line < lock_release_line)) || fail 'preflight and host-global model lock ordering is unsafe'
+((preflight_line < lock_acquire_line && lock_acquire_line < pre_model_line && post_check_line < marker_retirement_line && marker_retirement_line < lock_release_line)) || fail 'preflight and host-global model lock ordering is unsafe'
 
 monitor_definitions="${terminate_proof_definition}"$'\n'"${assert_lock_definition}"$'\n'"${wait_proof_definition}"
 bash -c "${monitor_definitions}"$'\n''
@@ -164,7 +171,7 @@ printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
 chmod 0600 "${model_load_marker}"
 [[ "$(bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}")" == 'owned' ]] || fail 'safe model-load ownership marker was rejected'
 cleanup_with_marker="$(bash -c "${cleanup_test_program}"$'\ntimeout() { return 0; }\nmodel_cleanup=PENDING\ncleanup_model\nprintf "%s:%s\\n" "${model_cleanup}" "$([[ ! -e "${model_load_marker}" ]] && printf removed || printf present)"' -- "${evidence}" "${model_load_marker}")"
-[[ "${cleanup_with_marker}" == 'PASS:removed' ]] || fail 'run-owned model cleanup did not unload and retire its marker'
+[[ "${cleanup_with_marker}" == 'PASS:present' ]] || fail 'run-owned model cleanup did not retain recovery authority pending independent verification'
 printf 'canarysting-model-load-owned-v1\n' >"${model_load_marker}"
 chmod 0644 "${model_load_marker}"
 if bash -c "${marker_test_program}" -- "${evidence}" "${model_load_marker}" 644 >/dev/null; then
