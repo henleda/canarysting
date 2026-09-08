@@ -131,6 +131,19 @@ func TestCombinedCriticalChangesRetainEveryDGXProfile(t *testing.T) {
 	}
 }
 
+func TestSharedDGXCleanupPathsSelectKernelAndLiveQwen(t *testing.T) {
+	for _, path := range []string{"scripts/dgx/cleanup.sh", "scripts/dgx/pr.sh"} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || !report.RequiresLiveQwen ||
+			strings.Join(report.RemoteProfiles, ",") != "dgx-attacker-loop,dgx-kernel" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
 func TestGoBackedTracePathsSelectFrontendValidation(t *testing.T) {
 	for _, path := range []string{
 		"test/fixtures/tracebackend/main.go",

@@ -122,9 +122,40 @@ func TestObservationBudgetStopsBeforeAnUnserviceableModelTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requests := client.snapshot()
 	if result.StopReason != StopObservationBudget || result.ProposalsLogged != AbsoluteMaxObservations ||
-		result.Denied != AbsoluteMaxObservations || len(execution.snapshot()) != AbsoluteMaxObservations || len(client.snapshot()) != 1 {
+		result.Denied != AbsoluteMaxObservations || len(execution.snapshot()) != AbsoluteMaxObservations || len(requests) != 1 ||
+		requests[0].MaxProposals != AbsoluteMaxObservations {
 		t.Fatalf("unexpected observation-budget result: %+v", result)
+	}
+}
+
+func TestObservationByteBudgetStopsBeforeAnUnserviceableModelTurn(t *testing.T) {
+	values := testValues(t, 1, 4, 1000)
+	client := &fakeClient{responses: []TurnResponse{
+		validResponse(values.model.Model(), 100, 20,
+			Proposal{Name: "invented_tool", Arguments: json.RawMessage(`{}`)},
+			Proposal{Name: "invented_tool", Arguments: json.RawMessage(`{}`)},
+			Proposal{Name: "invented_tool", Arguments: json.RawMessage(`{}`)},
+		),
+	}}
+	execution := &fakeExecutor{content: make([]byte, AbsoluteMaxObservationBytes)}
+	coordinator := newCoordinator(t, values, client, execution, 2)
+	result, err := coordinator.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := client.snapshot()
+	if result.StopReason != StopObservationBudget || result.ProposalsLogged != 3 || result.Denied != 3 ||
+		len(execution.snapshot()) != 3 || len(requests) != 1 {
+		t.Fatalf("unexpected encoded observation-budget result: %+v", result)
+	}
+	observations := make([]Observation, 3)
+	for index := range observations {
+		observations[index] = observation("proposal_rejected", executor.Result{Status: groundtruth.ActionDenied, Content: execution.content})
+	}
+	if got := observationHistoryBytes(observations); got <= AbsoluteMaxObservationHistoryBytes {
+		t.Fatalf("test history bytes = %d, want greater than %d", got, AbsoluteMaxObservationHistoryBytes)
 	}
 }
 
@@ -470,6 +501,7 @@ func (c *fakeClient) responseSnapshot() []TurnResponse {
 type fakeExecutor struct {
 	mu          sync.Mutex
 	invocations []executor.Invocation
+	content     []byte
 }
 
 func (e *fakeExecutor) Execute(_ context.Context, invocation executor.Invocation) (executor.Execution, error) {
@@ -480,7 +512,7 @@ func (e *fakeExecutor) Execute(_ context.Context, invocation executor.Invocation
 	if invocation.ProposedAction.Tool() == "planner_rejected" {
 		status = groundtruth.ActionDenied
 	}
-	return executor.Execution{Result: executor.Result{Status: status}}, nil
+	return executor.Execution{Result: executor.Result{Status: status, Content: append([]byte(nil), e.content...)}}, nil
 }
 
 func (e *fakeExecutor) snapshot() []executor.Invocation {

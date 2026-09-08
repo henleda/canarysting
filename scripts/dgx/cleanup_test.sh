@@ -36,8 +36,9 @@ grep -F 'f:test/attackerexecutorspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits attackerexecutorspike'
 grep -F 'f:test/attackerloopspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits attackerloopspike'
-grep -F 'f:model-load-owned' "${cleanup_script}" >/dev/null ||
-  fail 'cleanup evidence inventory omits the bounded-loop model ownership marker'
+if grep -F 'f:model-load-owned' "${cleanup_script}" >/dev/null; then
+  fail 'generic cleanup accepts a bounded-loop model ownership marker'
+fi
 grep -F 'test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits attackerexecutorspike'
 

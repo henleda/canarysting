@@ -18,9 +18,13 @@ const (
 	AbsoluteMaxOutputTokens     = 2048
 	AbsoluteMaxContextTokens    = 32768
 	AbsoluteMaxObservationBytes = 16 << 10
-	AbsoluteMaxProposalBytes    = 4 << 10
-	AbsoluteMaxToolsPerTurn     = 256
-	AbsoluteMaxObservations     = 256
+	// AbsoluteMaxObservationHistoryBytes bounds the serialized history before
+	// transport-specific request framing. It leaves ample room beneath the
+	// Ollama request ceiling for the maximum active tool catalog and envelope.
+	AbsoluteMaxObservationHistoryBytes = 64 << 10
+	AbsoluteMaxProposalBytes           = 4 << 10
+	AbsoluteMaxToolsPerTurn            = 256
+	AbsoluteMaxObservations            = 256
 	// AbsoluteMaxCatalogActions matches the ground-truth scenario aggregate
 	// bound. Opaque action handles must cover this entire reviewed surface.
 	AbsoluteMaxCatalogActions = 1024

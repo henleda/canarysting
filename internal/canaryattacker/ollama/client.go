@@ -278,6 +278,10 @@ func buildRequest(request planner.TurnRequest) (apiRequest, error) {
 		len(request.Observations) > planner.AbsoluteMaxObservations {
 		return apiRequest{}, fmt.Errorf("Ollama tool or observation count is outside bounds")
 	}
+	encodedHistory, err := json.Marshal(request.Observations)
+	if err != nil || len(encodedHistory) > planner.AbsoluteMaxObservationHistoryBytes {
+		return apiRequest{}, fmt.Errorf("Ollama observation history is outside the serialized byte bound")
+	}
 	tools := make([]apiTool, 0, len(request.Tools))
 	for _, tool := range request.Tools {
 		if !validActionName(tool.Name) || tool.Description == "" || len(tool.Description) > 256 {

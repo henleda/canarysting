@@ -70,6 +70,49 @@ func TestRequestAcceptsEveryPlannerActionHandle(t *testing.T) {
 	}
 }
 
+func TestMaximumPlannerEnvelopeFitsRequestByteCeiling(t *testing.T) {
+	request := turnRequest()
+	request.Tools = make([]planner.Tool, planner.AbsoluteMaxToolsPerTurn)
+	for index := range request.Tools {
+		request.Tools[index] = planner.Tool{
+			Name:        fmt.Sprintf("action_%03d", index+1),
+			Description: strings.Repeat("x", 256),
+		}
+	}
+	probe, err := json.Marshal([]planner.Observation{{ContentBase64: "A"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentBytes := planner.AbsoluteMaxObservationHistoryBytes - (len(probe) - 1)
+	request.Observations = []planner.Observation{{ContentBase64: strings.Repeat("A", contentBytes)}}
+	history, err := json.Marshal(request.Observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != planner.AbsoluteMaxObservationHistoryBytes {
+		t.Fatalf("history bytes = %d, want %d", len(history), planner.AbsoluteMaxObservationHistoryBytes)
+	}
+	payload, err := buildRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > AbsoluteMaxRequestBytes {
+		t.Fatalf("maximum planner envelope = %d bytes, exceeds %d", len(body), AbsoluteMaxRequestBytes)
+	}
+}
+
+func TestRequestRejectsOversizedObservationHistory(t *testing.T) {
+	request := turnRequest()
+	request.Observations = []planner.Observation{{ContentBase64: strings.Repeat("A", planner.AbsoluteMaxObservationHistoryBytes)}}
+	if _, err := buildRequest(request); err == nil {
+		t.Fatal("oversized serialized observation history was accepted")
+	}
+}
+
 func TestClientRejectsNonLoopbackAndAmbiguousEndpoints(t *testing.T) {
 	for _, endpoint := range []string{
 		"https://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434",

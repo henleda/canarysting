@@ -38,6 +38,10 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 			result.StopReason = StopObservationBudget
 			return result, nil
 		}
+		if observationHistoryBytes(observations) > AbsoluteMaxObservationHistoryBytes {
+			result.StopReason = StopObservationBudget
+			return result, nil
+		}
 		usedTokens := result.PromptTokens + result.OutputTokens
 		if usedTokens >= budgets.MaxModelTokens() {
 			result.StopReason = StopTokenBudget
@@ -136,6 +140,14 @@ func (c *Coordinator) Run(ctx context.Context) (Result, error) {
 		result.StopReason = StopMaxTurns
 	}
 	return result, nil
+}
+
+func observationHistoryBytes(observations []Observation) int {
+	encoded, err := json.Marshal(observations)
+	if err != nil {
+		return AbsoluteMaxObservationHistoryBytes + 1
+	}
+	return len(encoded)
 }
 
 func min32(left, right uint32) uint32 {
