@@ -79,6 +79,58 @@ fi
 bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup kernel-full 1'
 grep -Fq 'if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then' "${script_dir}/pr.sh"
 
+ssh_transport_definition="$(awk '/^ssh\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+scp_transport_definition="$(awk '/^scp\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+close_transport_definition="$(awk '/^close_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" ]] || {
+  echo 'FAIL: shared DGX transport functions are not independently testable' >&2
+  exit 1
+}
+transport_probe="${fixture_root}/transport-probe"
+cat >"${transport_probe}" <<'PROBE'
+#!/usr/bin/env bash
+if [[ -n "${TRANSPORT_PROBE_LOG:-}" ]]; then
+  printf '%s\n' "$@" >"${TRANSPORT_PROBE_LOG}"
+  exit 0
+fi
+printf '%s\n' "$@"
+PROBE
+chmod 0700 "${transport_probe}"
+control_path="${fixture_root}/ssh-%C"
+ssh_arguments="$(bash -c "${ssh_transport_definition}"$'\n''
+CANARYSTING_DGX_REAL_SSH="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
+ssh -o BatchMode=yes falcon1 true
+' -- "${transport_probe}" "${control_path}")"
+scp_arguments="$(bash -c "${scp_transport_definition}"$'\n''
+CANARYSTING_DGX_REAL_SCP="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
+scp -o BatchMode=yes source falcon1:/target
+' -- "${transport_probe}" "${control_path}")"
+expected_prefix=$'-o\nControlMaster=auto\n-o\nControlPersist=1200\n-o\nControlPath='"${control_path}"$'\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
+[[ "${ssh_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nfalcon1\ntrue' ]] || {
+  echo 'FAIL: SSH does not prepend the bounded shared-control options' >&2
+  exit 1
+}
+[[ "${scp_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nsource\nfalcon1:/target' ]] || {
+  echo 'FAIL: SCP does not reuse the bounded shared-control options' >&2
+  exit 1
+}
+close_arguments_file="${fixture_root}/close-arguments"
+TRANSPORT_PROBE_LOG="${close_arguments_file}" bash -c "${close_transport_definition}"$'\n''
+CANARYSTING_DGX_REAL_SSH="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
+close_ssh_control
+' -- "${transport_probe}" "${control_path}"
+expected_close=$'-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
+[[ "$(<"${close_arguments_file}")" == "${expected_close}" ]] || {
+  echo 'FAIL: coordinator cleanup does not close the exact run-scoped SSH control connection' >&2
+  exit 1
+}
+grep -Fq "CANARYSTING_DGX_SSH_CONTROL_PATH=\"\${work_root}/ssh-%C\"" "${script_dir}/pr.sh"
+grep -Fq 'export -f ssh scp' "${script_dir}/pr.sh"
+grep -Fqx '  close_ssh_control' "${script_dir}/pr.sh"
+
 grep -Fq '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh"
 summary_line="$(grep -nF '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh" | cut -d: -f1)"
 work_root_line="$(grep -nF 'work_root="$(mktemp -d' "${script_dir}/pr.sh" | cut -d: -f1)"

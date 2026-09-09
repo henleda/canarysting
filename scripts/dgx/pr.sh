@@ -9,6 +9,36 @@ fail() {
   exit 1
 }
 
+# The NVIDIA Sync ProxyCommand used by the pinned DGX alias is intentionally
+# paid once per coordinator run. Every child harness inherits these functions,
+# so SSH and SCP share one host-key-verified connection instead of repeatedly
+# exposing the run to independent proxy handshakes.
+ssh() {
+  "${CANARYSTING_DGX_REAL_SSH}" \
+    -o ControlMaster=auto \
+    -o ControlPersist=1200 \
+    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    "$@"
+}
+
+scp() {
+  "${CANARYSTING_DGX_REAL_SCP}" \
+    -o ControlMaster=auto \
+    -o ControlPersist=1200 \
+    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    "$@"
+}
+
+close_ssh_control() {
+  "${CANARYSTING_DGX_REAL_SSH}" \
+    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -O exit falcon1 >/dev/null 2>&1 || true
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -98,8 +128,15 @@ fi
 
 work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 [[ "${work_root}" == /tmp/canarysting-dgx-pr.* ]] || fail 'unsafe temporary work root'
+[[ -x /usr/bin/ssh && -x /usr/bin/scp ]] || fail 'fixed OpenSSH client paths are unavailable'
 artifact_dir="${work_root}/artifacts"
 proof_file="${work_root}/preflight.proof"
+CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
+CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
+CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-%C"
+readonly CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH
+export CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH
+export -f ssh scp
 cleanup_required=0
 should_run_generic_cleanup() {
   local selected_profile="$1" scenario_cleanup_failed="$2"
@@ -123,6 +160,7 @@ cleanup() {
       printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
     fi
   fi
+  close_ssh_control
   if [[ -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
     rm -rf -- "${work_root}"
   fi
