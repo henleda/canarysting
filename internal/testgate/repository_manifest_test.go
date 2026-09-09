@@ -92,8 +92,9 @@ func TestPRDGXRunsEveryMappedProfile(t *testing.T) {
 	for _, required := range []string{
 		`IFS=',' read -ra required_profiles`,
 		`for required in "${required_profiles[@]}"`,
-		`for selected in ${SELECTED_PROFILES}`,
-		`RUN_ID="pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}-${index}"`,
+		`scripts/dgx/pr-batch.sh`,
+		`--profiles "${SELECTED_PROFILES}"`,
+		`--run-prefix "pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}"`,
 	} {
 		if !strings.Contains(job, required) {
 			t.Fatalf("PR DGX job does not preserve and run every required profile; missing %q", required)

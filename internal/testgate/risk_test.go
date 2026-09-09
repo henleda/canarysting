@@ -132,7 +132,7 @@ func TestCombinedCriticalChangesRetainEveryDGXProfile(t *testing.T) {
 }
 
 func TestSharedDGXCleanupPathsSelectKernelAndLiveQwen(t *testing.T) {
-	for _, path := range []string{"scripts/dgx/cleanup.sh", "scripts/dgx/pr.sh"} {
+	for _, path := range []string{"scripts/dgx/cleanup.sh", "scripts/dgx/pr.sh", "scripts/dgx/pr-batch.sh"} {
 		report, err := ClassifyRisk([]string{path}, "")
 		if err != nil {
 			t.Fatal(err)

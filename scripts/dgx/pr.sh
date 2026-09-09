@@ -10,9 +10,9 @@ fail() {
 }
 
 # The NVIDIA Sync ProxyCommand used by the pinned DGX alias is intentionally
-# paid once per coordinator run. Every child harness inherits these functions,
-# so SSH and SCP share one host-key-verified connection instead of repeatedly
-# exposing the run to independent proxy handshakes.
+# paid once per selected-profile batch (or standalone coordinator). Every child
+# harness inherits these functions, so SSH and SCP share one host-key-verified
+# connection instead of repeatedly exposing the run to proxy handshakes.
 ssh() {
   "${CANARYSTING_DGX_REAL_SSH}" \
     -o ControlMaster=auto \
@@ -37,6 +37,50 @@ close_ssh_control() {
   "${CANARYSTING_DGX_REAL_SSH}" \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
     -O exit falcon1 >/dev/null 2>&1 || true
+}
+
+directory_mode() {
+  local path="$1"
+  local mode=''
+  if mode="$(/usr/bin/stat -f '%Lp' "${path}" 2>/dev/null)"; then
+    :
+  elif mode="$(/usr/bin/stat -c '%a' "${path}" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  [[ "${mode}" =~ ^0?700$ ]] || return 1
+  printf '700\n'
+}
+
+configure_ssh_control() {
+  local coordinator_root="$1"
+  local batch_path="${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}"
+  local batch_root=''
+
+  CANARYSTING_DGX_SSH_CONTROL_OWNED=1
+  CANARYSTING_DGX_SSH_CONTROL_PATH="${coordinator_root}/ssh-%C"
+  if [[ -z "${batch_path}" ]]; then
+    return
+  fi
+  [[ "${batch_path}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+/ssh-%C$ ]] || \
+    fail 'shared SSH control path is outside a bounded DGX batch root'
+  batch_root="${batch_path%/ssh-%C}"
+  [[ -d "${batch_root}" && ! -L "${batch_root}" && -O "${batch_root}" && "$(directory_mode "${batch_root}")" == '700' ]] || \
+    fail 'shared SSH control root is unavailable, non-private, or not owned by this user'
+  CANARYSTING_DGX_SSH_CONTROL_OWNED=0
+  CANARYSTING_DGX_SSH_CONTROL_PATH="${batch_path}"
+}
+
+initialize_ssh_control() {
+  local coordinator_root="$1"
+  [[ -x /usr/bin/ssh && -x /usr/bin/scp ]] || fail 'fixed OpenSSH client paths are unavailable'
+  CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
+  CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
+  configure_ssh_control "${coordinator_root}"
+  readonly CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
+  export CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
+  export -f ssh scp
 }
 
 usage() {
@@ -120,6 +164,10 @@ if ((dry_run)); then
   exit 0
 fi
 
+if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
+  initialize_ssh_control '/tmp'
+fi
+
 if [[ -n "${read_only_check}" ]]; then
   "${script_dir}/${read_only_check}.sh" --summary
   printf 'PASS: passive DGX inspection profile completed\n'
@@ -128,15 +176,11 @@ fi
 
 work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 [[ "${work_root}" == /tmp/canarysting-dgx-pr.* ]] || fail 'unsafe temporary work root'
-[[ -x /usr/bin/ssh && -x /usr/bin/scp ]] || fail 'fixed OpenSSH client paths are unavailable'
 artifact_dir="${work_root}/artifacts"
 proof_file="${work_root}/preflight.proof"
-CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
-CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
-CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-%C"
-readonly CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH
-export CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH
-export -f ssh scp
+if [[ -z "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
+  initialize_ssh_control "${work_root}"
+fi
 cleanup_required=0
 should_run_generic_cleanup() {
   local selected_profile="$1" scenario_cleanup_failed="$2"
@@ -160,7 +204,9 @@ cleanup() {
       printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
     fi
   fi
-  close_ssh_control
+  if ((CANARYSTING_DGX_SSH_CONTROL_OWNED)); then
+    close_ssh_control
+  fi
   if [[ -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
     rm -rf -- "${work_root}"
   fi

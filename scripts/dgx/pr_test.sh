@@ -5,7 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
 
 fixture_root="$(mktemp -d)"
-trap 'rm -rf -- "${fixture_root}"' EXIT INT TERM
+batch_fixture="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
+trap 'rm -rf -- "${fixture_root}" "${batch_fixture}"' EXIT INT TERM
 proof_file="${fixture_root}/preflight.proof"
 revision="$(git -C "${script_dir}/../.." rev-parse --verify HEAD)"
 printf 'proof_version\t1\nrun_id\tci-risk-proof\nhost\tfalcon1\nsource_revision\t%s\ncreated_epoch\t%s\n' \
@@ -82,7 +83,10 @@ grep -Fq 'if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}
 ssh_transport_definition="$(awk '/^ssh\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 scp_transport_definition="$(awk '/^scp\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 close_transport_definition="$(awk '/^close_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
-[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" ]] || {
+configure_transport_definition="$(awk '/^configure_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+directory_mode_definition="$(awk '/^directory_mode\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+fail_definition="$(awk '/^fail\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" && -n "${configure_transport_definition}" && -n "${directory_mode_definition}" && -n "${fail_definition}" ]] || {
   echo 'FAIL: shared DGX transport functions are not independently testable' >&2
   exit 1
 }
@@ -127,9 +131,70 @@ expected_close=$'-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
   echo 'FAIL: coordinator cleanup does not close the exact run-scoped SSH control connection' >&2
   exit 1
 }
-grep -Fq "CANARYSTING_DGX_SSH_CONTROL_PATH=\"\${work_root}/ssh-%C\"" "${script_dir}/pr.sh"
+own_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
+configure_ssh_control "$1"
+printf "%s\t%s\n" "${CANARYSTING_DGX_SSH_CONTROL_PATH}" "${CANARYSTING_DGX_SSH_CONTROL_OWNED}"
+' -- "${fixture_root}")"
+[[ "${own_control}" == "${fixture_root}/ssh-%C"$'\t1' ]] || {
+  echo 'FAIL: standalone coordinator does not own a private control path' >&2
+  exit 1
+}
+shared_control_path="${batch_fixture}/ssh-%C"
+shared_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
+CANARYSTING_DGX_BATCH_CONTROL_PATH="$2"
+configure_ssh_control "$1"
+printf "%s\t%s\n" "${CANARYSTING_DGX_SSH_CONTROL_PATH}" "${CANARYSTING_DGX_SSH_CONTROL_OWNED}"
+' -- "${fixture_root}" "${shared_control_path}")"
+[[ "${shared_control}" == "${shared_control_path}"$'\t0' ]] || {
+  echo 'FAIL: batch coordinator does not reuse its externally owned control path' >&2
+  exit 1
+}
+if bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
+CANARYSTING_DGX_BATCH_CONTROL_PATH="$2"
+configure_ssh_control "$1"
+' -- "${fixture_root}" "${fixture_root}/ssh-%C" >/dev/null 2>&1; then
+  echo 'FAIL: coordinator accepted a shared control path outside the bounded batch root' >&2
+  exit 1
+fi
+chmod 0755 "${batch_fixture}"
+if bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
+CANARYSTING_DGX_BATCH_CONTROL_PATH="$2"
+configure_ssh_control "$1"
+' -- "${fixture_root}" "${shared_control_path}" >/dev/null 2>&1; then
+  echo 'FAIL: coordinator accepted a non-private shared control root' >&2
+  exit 1
+fi
+chmod 0700 "${batch_fixture}"
 grep -Fq 'export -f ssh scp' "${script_dir}/pr.sh"
-grep -Fqx '  close_ssh_control' "${script_dir}/pr.sh"
+grep -Fqx '    close_ssh_control' "${script_dir}/pr.sh"
+
+batch_output="$("${script_dir}/pr-batch.sh" \
+  --profiles 'attacker-executor attacker-loop preflight kernel-full' \
+  --run-prefix ci-risk-batch \
+  --dry-run)"
+grep -Fqx 'batch_profile_count=4' <<<"${batch_output}"
+grep -Fqx 'run_prefix=ci-risk-batch' <<<"${batch_output}"
+grep -Fqx 'run_id=ci-risk-batch-1' <<<"${batch_output}"
+grep -Fqx 'run_id=ci-risk-batch-2' <<<"${batch_output}"
+grep -Fqx 'run_id=ci-risk-batch-3' <<<"${batch_output}"
+grep -Fqx 'run_id=ci-risk-batch-4' <<<"${batch_output}"
+grep -Fq 'DGX batch transport was not created' <<<"${batch_output}"
+if "${script_dir}/pr-batch.sh" --profiles 'preflight preflight' --run-prefix ci-duplicate --dry-run >/dev/null 2>&1; then
+  echo 'FAIL: DGX profile batch accepted a duplicate profile' >&2
+  exit 1
+fi
+if "${script_dir}/pr-batch.sh" --profiles 'preflight arbitrary' --run-prefix ci-invalid --dry-run >/dev/null 2>&1; then
+  echo 'FAIL: DGX profile batch accepted an unsupported profile' >&2
+  exit 1
+fi
+if "${script_dir}/pr-batch.sh" --profiles '' --run-prefix ci-empty --dry-run >/dev/null 2>&1; then
+  echo 'FAIL: DGX profile batch accepted an empty profile list' >&2
+  exit 1
+fi
+if "${script_dir}/pr-batch.sh" --profiles $'preflight\nkernel-full' --run-prefix ci-multiline --dry-run >/dev/null 2>&1; then
+  echo 'FAIL: DGX profile batch silently truncated a multiline profile list' >&2
+  exit 1
+fi
 
 grep -Fq '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh"
 summary_line="$(grep -nF '"${script_dir}/${read_only_check}.sh" --summary' "${script_dir}/pr.sh" | cut -d: -f1)"
