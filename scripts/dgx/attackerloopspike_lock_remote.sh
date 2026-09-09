@@ -44,7 +44,7 @@ supervised_action=''
 supervise_program() {
   local action='' run_id='' mode='' expected_model='' expected_model_id='' expected_marker_state=''
   local program_bytes='' extra=''
-  local proof_program='' proof_status attempt
+  local proof_program='' proof_status status_name attempt
   if ! IFS=$'\t' read -r action run_id mode expected_model expected_model_id expected_marker_state program_bytes extra; then
     return 0
   fi
@@ -91,7 +91,9 @@ supervise_program() {
   fi
   proof_pid=''
   trap - HUP INT TERM
-  printf 'remote_%s_status=%s\n' "${action}" "${proof_status}"
+  status_name='proof'
+  if [[ "${action}" == 'finalize' ]]; then status_name='finalize'; fi
+  printf 'remote_%s_status=%s\n' "${status_name}" "${proof_status}"
   supervised_action="${action}"
 }
 

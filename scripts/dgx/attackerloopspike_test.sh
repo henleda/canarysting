@@ -162,6 +162,9 @@ supervisor_status_line="$(grep -nF "printf 'remote_%s_status=%s\\n'" "${lock_sup
 supervisor_hold_line="$(grep -nFx 'cat >/dev/null' "${lock_supervisor_script}" | cut -d: -f1)"
 [[ "${supervisor_flock_line}" =~ ^[0-9]+$ && "${supervisor_start_line}" =~ ^[0-9]+$ && "${supervisor_wait_line}" =~ ^[0-9]+$ && "${supervisor_status_line}" =~ ^[0-9]+$ && "${supervisor_hold_line}" =~ ^[0-9]+$ ]] || fail 'remote lock-supervisor ordering markers are missing'
 ((supervisor_flock_line < supervisor_start_line && supervisor_start_line < supervisor_wait_line && supervisor_wait_line < supervisor_status_line && supervisor_status_line < supervisor_hold_line)) || fail 'remote proof lifetime is not bounded by its flock-owning supervisor'
+grep -Fq "status_name='proof'" "${lock_supervisor_script}" || fail 'execute completion is not mapped to the proof protocol status'
+grep -Fq "if [[ \"\${action}\" == 'finalize' ]]; then status_name='finalize'; fi" "${lock_supervisor_script}" ||
+  fail 'finalization completion is not mapped to the finalization protocol status'
 grep -F 'kill -TERM -- "-${proof_pid}"' "${lock_supervisor_script}" >/dev/null || fail 'remote supervisor cannot terminate the complete proof process group'
 if grep -E 'remote_(proof|finalize)_status=' "${remote_proof_script}" "${remote_finalize_script}" >/dev/null; then
   fail 'a streamed remote program can forge the lock-supervisor completion record'
