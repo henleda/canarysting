@@ -20,6 +20,13 @@ ssh() {
     -o ControlMaster=no \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
     -o ProxyCommand=/usr/bin/false \
+    -o ClearAllForwardings=yes \
+    -o ForwardAgent=no \
+    -o ForwardX11=no \
+    -o GSSAPIDelegateCredentials=no \
+    -o Tunnel=no \
+    -o PermitLocalCommand=no \
+    -o RequestTTY=no \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
@@ -30,15 +37,20 @@ scp() {
     -o ControlMaster=no \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
     -o ProxyCommand=/usr/bin/false \
+    -o ClearAllForwardings=yes \
+    -o ForwardAgent=no \
+    -o ForwardX11=no \
+    -o GSSAPIDelegateCredentials=no \
+    -o Tunnel=no \
+    -o PermitLocalCommand=no \
+    -o RequestTTY=no \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
 }
 
 close_ssh_control() {
-  "${CANARYSTING_DGX_REAL_SSH}" \
-    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
-    -O exit falcon1 >/dev/null 2>&1 || true
+  dgx_run_ssh_control_operation "${CANARYSTING_DGX_SSH_CONTROL_PATH}" exit 5 || true
 }
 
 directory_mode() {
@@ -180,13 +192,9 @@ if [[ -n "${read_only_check}" ]]; then
   exit 0
 fi
 
-work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
-[[ "${work_root}" == /tmp/canarysting-dgx-pr.* ]] || fail 'unsafe temporary work root'
-artifact_dir="${work_root}/artifacts"
-proof_file="${work_root}/preflight.proof"
-if [[ -z "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
-  initialize_ssh_control "${work_root}"
-fi
+work_root=''
+artifact_dir=''
+proof_file=''
 cleanup_required=0
 should_run_generic_cleanup() {
   local selected_profile="$1" scenario_cleanup_failed="$2"
@@ -210,15 +218,25 @@ cleanup() {
       printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
     fi
   fi
-  if ((CANARYSTING_DGX_SSH_CONTROL_OWNED)); then
+  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then
     close_ssh_control
   fi
-  if [[ -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
+  if [[ -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
     rm -rf -- "${work_root}"
   fi
   exit "${status}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
+[[ "${work_root}" == /tmp/canarysting-dgx-pr.* ]] || fail 'unsafe temporary work root'
+artifact_dir="${work_root}/artifacts"
+proof_file="${work_root}/preflight.proof"
+if [[ -z "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
+  initialize_ssh_control "${work_root}"
+fi
 
 "${script_dir}/preflight-proof.sh" --create --run-id "${run_id}" --proof-file "${proof_file}"
 if ((target_count == 0)); then

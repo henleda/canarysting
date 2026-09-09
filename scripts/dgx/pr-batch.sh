@@ -82,14 +82,16 @@ cleanup() {
   local status=$?
   trap - EXIT INT TERM
   if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" ]]; then
-    /usr/bin/ssh -o "ControlPath=${CANARYSTING_DGX_BATCH_CONTROL_PATH}" -O exit falcon1 >/dev/null 2>&1 || true
+    dgx_run_ssh_control_operation "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" exit 5 || true
   fi
   if [[ -n "${transport_root}" && -d "${transport_root}" && ! -L "${transport_root}" && "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ ]]; then
     rm -rf -- "${transport_root}"
   fi
   exit "${status}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [[ -x /usr/bin/ssh && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
 CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'

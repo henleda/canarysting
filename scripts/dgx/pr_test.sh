@@ -86,7 +86,9 @@ close_transport_definition="$(awk '/^close_ssh_control\(\) \{/ { capture=1 } cap
 configure_transport_definition="$(awk '/^configure_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 directory_mode_definition="$(awk '/^directory_mode\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 fail_definition="$(awk '/^fail\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
-[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" && -n "${configure_transport_definition}" && -n "${directory_mode_definition}" && -n "${fail_definition}" ]] || {
+control_operation_definition="$(awk '/^dgx_run_ssh_control_operation\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
+retry_wait_definition="$(awk '/^dgx_wait_before_ssh_retry\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
+[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" && -n "${configure_transport_definition}" && -n "${directory_mode_definition}" && -n "${fail_definition}" && -n "${control_operation_definition}" && -n "${retry_wait_definition}" ]] || {
   echo 'FAIL: shared DGX transport functions are not independently testable' >&2
   exit 1
 }
@@ -111,7 +113,7 @@ CANARYSTING_DGX_REAL_SCP="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
 scp -o BatchMode=yes source falcon1:/target
 ' -- "${transport_probe}" "${control_path}")"
-expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o\nProxyCommand=/usr/bin/false\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
+expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
 [[ "${ssh_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nfalcon1\ntrue' ]] || {
   echo 'FAIL: SSH does not prepend the bounded shared-control options' >&2
   exit 1
@@ -121,16 +123,53 @@ expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o
   exit 1
 }
 close_arguments_file="${fixture_root}/close-arguments"
-TRANSPORT_PROBE_LOG="${close_arguments_file}" bash -c "${close_transport_definition}"$'\n''
+TRANSPORT_PROBE_LOG="${close_arguments_file}" bash -c "${control_operation_definition}"$'\n'"${close_transport_definition}"$'\n''
 CANARYSTING_DGX_REAL_SSH="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
 close_ssh_control
 ' -- "${transport_probe}" "${control_path}"
-expected_close=$'-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
+expected_close=$'-o\nBatchMode=yes\n-o\nConnectTimeout=5\n-o\nConnectionAttempts=1\n-o\nStrictHostKeyChecking=yes\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
 [[ "$(<"${close_arguments_file}")" == "${expected_close}" ]] || {
   echo 'FAIL: coordinator cleanup does not close the exact run-scoped SSH control connection' >&2
   exit 1
 }
+
+hostile_ssh_config="${fixture_root}/hostile-ssh-config"
+cat >"${hostile_ssh_config}" <<'CONFIG'
+Host falcon1
+  HostName 127.0.0.1
+  LocalForward 127.0.0.1:40101 127.0.0.1:1
+  RemoteForward 127.0.0.1:40102 127.0.0.1:1
+  DynamicForward 127.0.0.1:40103
+  ForwardAgent yes
+  ForwardX11 yes
+  GSSAPIDelegateCredentials yes
+  Tunnel yes
+  PermitLocalCommand yes
+  LocalCommand /usr/bin/false
+  RequestTTY force
+CONFIG
+effective_ssh_config="$(/usr/bin/ssh -G -F "${hostile_ssh_config}" \
+  -o ClearAllForwardings=yes \
+  -o ForwardAgent=no \
+  -o ForwardX11=no \
+  -o GSSAPIDelegateCredentials=no \
+  -o Tunnel=no \
+  -o PermitLocalCommand=no \
+  -o RequestTTY=no \
+  falcon1 2>/dev/null)"
+for required_setting in 'clearallforwardings yes' 'forwardagent no' 'forwardx11 no' \
+  'gssapidelegatecredentials no' \
+  'tunnel false' 'permitlocalcommand no' 'requesttty false'; do
+  grep -Fqx "${required_setting}" <<<"${effective_ssh_config}" || {
+    echo "FAIL: hostile SSH configuration retained ${required_setting}" >&2
+    exit 1
+  }
+done
+if grep -Eq '^(localforward|remoteforward|dynamicforward) ' <<<"${effective_ssh_config}"; then
+  echo 'FAIL: hostile SSH configuration retained a configured forwarding channel' >&2
+  exit 1
+fi
 
 bootstrap_definition="$(awk '/^dgx_open_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
 [[ -n "${bootstrap_definition}" ]] || {
@@ -149,6 +188,8 @@ for argument in "$@"; do
   previous="${argument}"
 done
 if [[ "${operation}" == 'check' || "${operation}" == 'exit' ]]; then
+  printf 'CONTROL_%s\n' "${operation}" >>"${BOOTSTRAP_CONTROL_LOG}"
+  printf '%s\n' "$@" >>"${BOOTSTRAP_CONTROL_LOG}"
   exit 0
 fi
 count=0
@@ -164,21 +205,25 @@ PROBE
 chmod 0700 "${bootstrap_probe}"
 bootstrap_count="${fixture_root}/bootstrap-count"
 bootstrap_log="${fixture_root}/bootstrap-log"
-bash -c "${bootstrap_definition}"$'\n''
-sleep() { :; }
+bootstrap_control_log="${fixture_root}/bootstrap-control-log"
+bash -c "${control_operation_definition}"$'\n'"${bootstrap_definition}"$'\n''
+dgx_wait_before_ssh_retry() { :; }
 CANARYSTING_DGX_REAL_SSH="$1"
 BOOTSTRAP_PROBE_COUNT="$2"
 BOOTSTRAP_PROBE_LOG="$3"
 BOOTSTRAP_PROBE_FAILURES=2
-export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES
-dgx_open_ssh_control "$4"
-' -- "${bootstrap_probe}" "${bootstrap_count}" "${bootstrap_log}" "${control_path}" 2>/dev/null
+BOOTSTRAP_CONTROL_LOG="$4"
+export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES BOOTSTRAP_CONTROL_LOG
+dgx_open_ssh_control "$5"
+' -- "${bootstrap_probe}" "${bootstrap_count}" "${bootstrap_log}" "${bootstrap_control_log}" "${control_path}" 2>/dev/null
 [[ "$(<"${bootstrap_count}")" == '3' ]] || {
   echo 'FAIL: DGX transport bootstrap did not make exactly three bounded pre-mutation attempts' >&2
   exit 1
 }
 for required_option in 'BatchMode=yes' 'ConnectTimeout=20' 'ConnectionAttempts=1' \
-  'StrictHostKeyChecking=yes' 'ControlMaster=yes' 'ControlPersist=1200' \
+  'StrictHostKeyChecking=yes' 'ClearAllForwardings=yes' 'ForwardAgent=no' \
+  'ForwardX11=no' 'GSSAPIDelegateCredentials=no' 'Tunnel=no' 'PermitLocalCommand=no' 'RequestTTY=no' \
+  'ControlMaster=yes' 'ControlPersist=1200' \
   "ControlPath=${control_path}" 'ServerAliveInterval=5' 'ServerAliveCountMax=3'; do
   [[ "$(grep -Fxc -- "${required_option}" "${bootstrap_log}")" == '3' ]] || {
     echo "FAIL: DGX transport bootstrap did not apply ${required_option} to every attempt" >&2
@@ -189,17 +234,32 @@ done
   echo 'FAIL: DGX transport bootstrap did not create a background no-command master' >&2
   exit 1
 }
+for required_option in 'BatchMode=yes' 'ConnectTimeout=5' 'ConnectionAttempts=1' \
+  'StrictHostKeyChecking=yes' 'ProxyCommand=/usr/bin/false' \
+  'ClearAllForwardings=yes' 'ForwardAgent=no' 'ForwardX11=no' 'GSSAPIDelegateCredentials=no' 'Tunnel=no' \
+  'PermitLocalCommand=no' 'RequestTTY=no' "ControlPath=${control_path}"; do
+  [[ "$(grep -Fxc -- "${required_option}" "${bootstrap_control_log}")" == '3' ]] || {
+    echo "FAIL: bounded mux operations did not force ${required_option}" >&2
+    exit 1
+  }
+done
+[[ "$(grep -Fxc 'CONTROL_exit' "${bootstrap_control_log}")" == '2' && "$(grep -Fxc 'CONTROL_check' "${bootstrap_control_log}")" == '1' ]] || {
+  echo 'FAIL: bootstrap did not close failed masters and verify the successful master exactly once' >&2
+  exit 1
+}
 bootstrap_failure_count="${fixture_root}/bootstrap-failure-count"
 bootstrap_failure_log="${fixture_root}/bootstrap-failure-log"
-if bash -c "${bootstrap_definition}"$'\n''
-sleep() { :; }
+bootstrap_failure_control_log="${fixture_root}/bootstrap-failure-control-log"
+if bash -c "${control_operation_definition}"$'\n'"${bootstrap_definition}"$'\n''
+dgx_wait_before_ssh_retry() { :; }
 CANARYSTING_DGX_REAL_SSH="$1"
 BOOTSTRAP_PROBE_COUNT="$2"
 BOOTSTRAP_PROBE_LOG="$3"
 BOOTSTRAP_PROBE_FAILURES=3
-export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES
-dgx_open_ssh_control "$4"
-' -- "${bootstrap_probe}" "${bootstrap_failure_count}" "${bootstrap_failure_log}" "${control_path}" 2>/dev/null; then
+BOOTSTRAP_CONTROL_LOG="$4"
+export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES BOOTSTRAP_CONTROL_LOG
+dgx_open_ssh_control "$5"
+' -- "${bootstrap_probe}" "${bootstrap_failure_count}" "${bootstrap_failure_log}" "${bootstrap_failure_control_log}" "${control_path}" 2>/dev/null; then
   echo 'FAIL: DGX transport bootstrap did not fail closed after its bounded attempts' >&2
   exit 1
 fi
@@ -207,6 +267,162 @@ fi
   echo 'FAIL: DGX transport bootstrap exceeded or truncated its failure bound' >&2
   exit 1
 }
+[[ "$(grep -Fxc 'CONTROL_exit' "${bootstrap_failure_control_log}")" == '3' ]] || {
+  echo 'FAIL: every failed bootstrap attempt did not request exact master shutdown' >&2
+  exit 1
+}
+
+control_hang_probe="${fixture_root}/control-hang-probe"
+cat >"${control_hang_probe}" <<'PROBE'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"${CONTROL_HANG_PID_FILE}"
+trap '' TERM
+while :; do :; done
+PROBE
+chmod 0700 "${control_hang_probe}"
+for control_operation in check exit; do
+  control_hang_pid_file="${fixture_root}/control-${control_operation}-hang-pid"
+  control_started="$(date +%s)"
+  set +e
+  CONTROL_HANG_PID_FILE="${control_hang_pid_file}" bash -c "${control_operation_definition}"$'\n''
+CANARYSTING_DGX_REAL_SSH="$1"
+dgx_run_ssh_control_operation "$2" "$3" 1
+' -- "${control_hang_probe}" "${control_path}" "${control_operation}" 2>/dev/null
+  control_hang_status=$?
+  set -e
+  control_elapsed=$(( $(date +%s) - control_started ))
+  [[ "${control_hang_status}" -ne 0 && "${control_elapsed}" -le 4 ]] || {
+    echo "FAIL: wedged mux ${control_operation} did not fail within its watchdog bound" >&2
+    exit 1
+  }
+  control_hang_pid="$(<"${control_hang_pid_file}")"
+  if kill -0 "${control_hang_pid}" 2>/dev/null; then
+    echo "FAIL: wedged mux ${control_operation} was not killed and reaped" >&2
+    exit 1
+  fi
+done
+
+pr_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+batch_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr-batch.sh")"
+[[ -n "${pr_cleanup_definition}" && -n "${batch_cleanup_definition}" ]] || {
+  echo 'FAIL: coordinator cleanup functions are not independently testable' >&2
+  exit 1
+}
+
+standalone_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
+standalone_count="${fixture_root}/standalone-bootstrap-count"
+standalone_log="${fixture_root}/standalone-bootstrap-log"
+standalone_control_log="${fixture_root}/standalone-control-log"
+set +e
+bash -c "${control_operation_definition}"$'\n'"${bootstrap_definition}"$'\n'"${close_transport_definition}"$'\n'"${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+dgx_wait_before_ssh_retry() { :; }
+work_root="$2"
+artifact_dir="${work_root}/artifacts"
+proof_file="${work_root}/preflight.proof"
+cleanup_required=0
+scenario_count=0
+scenarios=()
+profile=preflight
+run_id=standalone-bootstrap-failure
+script_dir="$3"
+CANARYSTING_DGX_REAL_SSH="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-%C"
+CANARYSTING_DGX_SSH_CONTROL_OWNED=1
+BOOTSTRAP_PROBE_COUNT="$4"
+BOOTSTRAP_PROBE_LOG="$5"
+BOOTSTRAP_CONTROL_LOG="$6"
+BOOTSTRAP_PROBE_FAILURES=3
+export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_CONTROL_LOG BOOTSTRAP_PROBE_FAILURES
+trap cleanup EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+dgx_open_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}" || exit 41
+' -- "${bootstrap_probe}" "${standalone_root}" "${script_dir}" "${standalone_count}" "${standalone_log}" "${standalone_control_log}" 2>/dev/null
+standalone_status=$?
+set -e
+[[ "${standalone_status}" -eq 41 && ! -e "${standalone_root}" && ! -L "${standalone_root}" ]] || {
+  echo 'FAIL: exhausted standalone bootstrap did not fail and remove its exact private root' >&2
+  exit 1
+}
+[[ "$(grep -Fxc 'CONTROL_exit' "${standalone_control_log}")" == '4' ]] || {
+  echo 'FAIL: exhausted standalone bootstrap cleanup did not make its final bounded shutdown request' >&2
+  exit 1
+}
+
+signal_script_dir="${fixture_root}/signal-scripts"
+mkdir -p "${signal_script_dir}"
+for signal_script in scenario cleanup; do
+  cat >"${signal_script_dir}/${signal_script}.sh" <<'PROBE'
+#!/usr/bin/env bash
+printf '%s\n' "$(basename "$0")" >>"${SIGNAL_CLEANUP_LOG}"
+PROBE
+  chmod 0700 "${signal_script_dir}/${signal_script}.sh"
+done
+for signal_case in 'INT 130' 'TERM 143'; do
+  read -r signal_name expected_status <<<"${signal_case}"
+  signal_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
+  signal_log="${fixture_root}/pr-${signal_name}-cleanup-log"
+  set +e
+  SIGNAL_CLEANUP_LOG="${signal_log}" bash -c "${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+work_root="$1"
+artifact_dir="${work_root}/artifacts"
+proof_file="${work_root}/preflight.proof"
+cleanup_required=1
+scenario_count=1
+scenarios=(scenario)
+profile=kernel-full
+run_id=signal-cleanup
+script_dir="$2"
+CANARYSTING_DGX_SSH_CONTROL_OWNED=0
+trap cleanup EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+kill -s "$3" "$$"
+' -- "${signal_root}" "${signal_script_dir}" "${signal_name}"
+  signal_status=$?
+  set -e
+  [[ "${signal_status}" -eq "${expected_status}" && ! -e "${signal_root}" && ! -L "${signal_root}" ]] || {
+    echo "FAIL: ${signal_name} did not preserve failure status and exact local cleanup" >&2
+    exit 1
+  }
+  [[ "$(<"${signal_log}")" == $'scenario.sh\ncleanup.sh' ]] || {
+    echo "FAIL: ${signal_name} did not run exact scenario and generic remote cleanup" >&2
+    exit 1
+  }
+
+  batch_signal_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
+  set +e
+  bash -c "${control_operation_definition}"$'\n'"${batch_cleanup_definition}"$'\n''
+transport_root="$1"
+CANARYSTING_DGX_BATCH_CONTROL_PATH=""
+trap cleanup EXIT
+trap "exit 130" INT
+trap "exit 143" TERM
+kill -s "$2" "$$"
+' -- "${batch_signal_root}" "${signal_name}"
+  batch_signal_status=$?
+  set -e
+  [[ "${batch_signal_status}" -eq "${expected_status}" && ! -e "${batch_signal_root}" && ! -L "${batch_signal_root}" ]] || {
+    echo "FAIL: batch ${signal_name} did not preserve failure status and exact local cleanup" >&2
+    exit 1
+  }
+done
+
+pr_trap_line="$(grep -nFx 'trap cleanup EXIT' "${script_dir}/pr.sh" | cut -d: -f1)"
+standalone_initialize_line="$(grep -nF 'initialize_ssh_control "${work_root}"' "${script_dir}/pr.sh" | cut -d: -f1)"
+[[ "${pr_trap_line}" =~ ^[0-9]+$ && "${standalone_initialize_line}" =~ ^[0-9]+$ ]] && \
+  ((pr_trap_line < standalone_initialize_line)) || {
+  echo 'FAIL: standalone cleanup trap is installed after fallible transport bootstrap' >&2
+  exit 1
+}
+for coordinator in "${script_dir}/pr.sh" "${script_dir}/pr-batch.sh"; do
+  grep -Fqx "trap 'exit 130' INT" "${coordinator}"
+  grep -Fqx "trap 'exit 143' TERM" "${coordinator}"
+  if grep -Fq 'trap cleanup EXIT INT TERM' "${coordinator}"; then
+    echo "FAIL: coordinator can normalize an interrupt to successful cleanup: ${coordinator}" >&2
+    exit 1
+  fi
+done
 own_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
 configure_ssh_control "$1"
 printf "%s\t%s\n" "${CANARYSTING_DGX_SSH_CONTROL_PATH}" "${CANARYSTING_DGX_SSH_CONTROL_OWNED}"
