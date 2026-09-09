@@ -12,9 +12,9 @@ fail() {
 }
 
 # The NVIDIA Sync ProxyCommand used by the pinned DGX alias is intentionally
-# paid once per selected-profile batch (or standalone coordinator). Every child
-# harness inherits these functions, so SSH and SCP share one host-key-verified
-# connection instead of repeatedly exposing the run to proxy handshakes.
+# paid once per profile. Every child harness inherits these functions, so SSH
+# and SCP share one host-key-verified connection instead of repeatedly exposing
+# that profile to proxy handshakes.
 ssh() {
   "${CANARYSTING_DGX_REAL_SSH}" \
     -o ControlMaster=no \
@@ -50,7 +50,7 @@ scp() {
 }
 
 close_ssh_control() {
-  dgx_run_ssh_control_operation "${CANARYSTING_DGX_SSH_CONTROL_PATH}" exit 5 || true
+  dgx_close_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}"
 }
 
 directory_mode() {
@@ -91,6 +91,7 @@ initialize_ssh_control() {
   [[ -x /usr/bin/ssh && -x /usr/bin/scp && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
   CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
   CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
+  CANARYSTING_DGX_SSH_MASTER_PID=''
   configure_ssh_control "${coordinator_root}"
   if ((CANARYSTING_DGX_SSH_CONTROL_OWNED)); then
     dgx_open_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}" || \
@@ -218,10 +219,12 @@ cleanup() {
       printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
     fi
   fi
-  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then
-    close_ssh_control
+  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' && -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+    if ! close_ssh_control && ((status == 0)); then
+      status=1
+    fi
   fi
-  if [[ -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
+  if [[ -z "${CANARYSTING_DGX_SSH_MASTER_PID:-}" && -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
     rm -rf -- "${work_root}"
   fi
   exit "${status}"

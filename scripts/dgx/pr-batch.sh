@@ -16,8 +16,8 @@ usage() {
 Usage:
   scripts/dgx/pr-batch.sh --profiles "PROFILE ..." --run-prefix ID [--dry-run]
 
-Runs a bounded, space-separated profile list with distinct run IDs while all
-selected coordinators reuse one batch-scoped falcon1 SSH connection.
+Runs a bounded, space-separated profile list with distinct run IDs. Each
+selected coordinator gets a fresh profile-scoped falcon1 SSH connection.
 USAGE
 }
 
@@ -78,15 +78,26 @@ fi
 
 transport_root=''
 CANARYSTING_DGX_BATCH_CONTROL_PATH=''
-cleanup() {
-  local status=$?
-  trap - EXIT INT TERM
-  if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" ]]; then
-    dgx_run_ssh_control_operation "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" exit 5 || true
+close_profile_transport() {
+  local close_status=0
+  if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" && -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+    dgx_close_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || close_status=$?
+  fi
+  if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+    return 1
   fi
   if [[ -n "${transport_root}" && -d "${transport_root}" && ! -L "${transport_root}" && "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ ]]; then
     rm -rf -- "${transport_root}"
   fi
+  CANARYSTING_DGX_BATCH_CONTROL_PATH=''
+  transport_root=''
+  return "${close_status}"
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  close_profile_transport || true
   exit "${status}"
 }
 trap cleanup EXIT
@@ -95,19 +106,21 @@ trap 'exit 143' TERM
 
 [[ -x /usr/bin/ssh && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
 CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
-transport_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
-[[ "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ && -d "${transport_root}" && ! -L "${transport_root}" && -O "${transport_root}" ]] || \
-  fail 'unsafe DGX batch transport root'
-chmod 0700 "${transport_root}"
-CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
-readonly transport_root CANARYSTING_DGX_BATCH_CONTROL_PATH CANARYSTING_DGX_REAL_SSH
-export CANARYSTING_DGX_BATCH_CONTROL_PATH CANARYSTING_DGX_REAL_SSH
-
-dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || \
-  fail 'unable to establish bounded DGX batch transport after three pre-mutation attempts'
+CANARYSTING_DGX_SSH_MASTER_PID=''
+readonly CANARYSTING_DGX_REAL_SSH
+export CANARYSTING_DGX_REAL_SSH
 
 for index in "${!selected_profiles[@]}"; do
   run_id="${run_prefix}-$((index + 1))"
+  transport_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
+  [[ "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ && -d "${transport_root}" && ! -L "${transport_root}" && -O "${transport_root}" ]] || \
+    fail 'unsafe DGX profile transport root'
+  chmod 0700 "${transport_root}"
+  CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+  export CANARYSTING_DGX_BATCH_CONTROL_PATH
+  dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || \
+    fail "unable to establish bounded DGX transport for profile ${selected_profiles[index]} after three pre-mutation attempts"
   "${script_dir}/pr.sh" --profile "${selected_profiles[index]}" --run-id "${run_id}"
+  close_profile_transport || fail "unable to close DGX transport for completed profile ${selected_profiles[index]}"
 done
 printf 'PASS: selected DGX PR profile batch completed\n'

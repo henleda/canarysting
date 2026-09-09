@@ -46,7 +46,7 @@ dgx_run_ssh_control_operation() {
   else
     status=$?
   fi
-  kill -TERM "${watchdog_pid}" 2>/dev/null || true
+  kill -KILL "${watchdog_pid}" 2>/dev/null || true
   wait "${watchdog_pid}" 2>/dev/null || true
   return "${status}"
 }
@@ -55,42 +55,87 @@ dgx_wait_before_ssh_retry() {
   sleep "$1"
 }
 
-# Opens one bounded, host-key-verified control connection before any DGX
+dgx_terminate_ssh_master() {
+  local master_pid="${CANARYSTING_DGX_SSH_MASTER_PID:-}"
+  local watchdog_pid=''
+  local wait_status=0
+
+  [[ "${master_pid}" =~ ^[1-9][0-9]*$ ]] || return 2
+  kill -TERM "${master_pid}" 2>/dev/null || true
+  (
+    sleep 1
+    kill -KILL "${master_pid}" 2>/dev/null || true
+  ) &
+  watchdog_pid=$!
+  if wait "${master_pid}" 2>/dev/null; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+  kill -KILL "${watchdog_pid}" 2>/dev/null || true
+  wait "${watchdog_pid}" 2>/dev/null || true
+  [[ "${wait_status}" -ne 127 ]] || return 1
+  CANARYSTING_DGX_SSH_MASTER_PID=''
+  return 0
+}
+
+dgx_close_ssh_control() {
+  local control_path="$1"
+  local operation_status=0
+
+  if dgx_run_ssh_control_operation "${control_path}" exit 5; then
+    :
+  else
+    operation_status=$?
+  fi
+  dgx_terminate_ssh_master || return 1
+  return "${operation_status}"
+}
+
+# Opens one bounded, host-key-verified control connection before its DGX
 # profile can mutate remote state. Failed attempts cannot have transferred or
-# executed a profile, so retry is safe; after success, the batch reuses only
-# this connection. Forwarding and credential delegation from the current
+# executed that profile, so retry is safe; after success, the profile reuses
+# only this connection. Forwarding and credential delegation from the current
 # network's SSH configuration are explicitly suppressed.
 dgx_open_ssh_control() {
   local control_path="$1"
   local attempt=1
+  local deadline=0
   local max_attempts=3
 
+  CANARYSTING_DGX_SSH_MASTER_PID=''
   while ((attempt <= max_attempts)); do
-    if "${CANARYSTING_DGX_REAL_SSH}" \
-      -o BatchMode=yes \
-      -o ConnectTimeout=20 \
-      -o ConnectionAttempts=1 \
-      -o StrictHostKeyChecking=yes \
-      -o ClearAllForwardings=yes \
-      -o ForwardAgent=no \
-      -o ForwardX11=no \
-      -o GSSAPIDelegateCredentials=no \
-      -o Tunnel=no \
-      -o PermitLocalCommand=no \
-      -o RequestTTY=no \
-      -o ControlMaster=yes \
-      -o ControlPersist=1200 \
-      -o "ControlPath=${control_path}" \
-      -o ServerAliveInterval=5 \
-      -o ServerAliveCountMax=3 \
-      -N -f falcon1; then
-      if dgx_run_ssh_control_operation "${control_path}" check 5; then
+    "${CANARYSTING_DGX_REAL_SSH}" \
+    -o BatchMode=yes \
+    -o ConnectTimeout=20 \
+    -o ConnectionAttempts=1 \
+    -o StrictHostKeyChecking=yes \
+    -o ClearAllForwardings=yes \
+    -o ForwardAgent=no \
+    -o ForwardX11=no \
+    -o GSSAPIDelegateCredentials=no \
+    -o Tunnel=no \
+    -o PermitLocalCommand=no \
+    -o RequestTTY=no \
+    -o ControlMaster=yes \
+    -o ControlPersist=1200 \
+    -o "ControlPath=${control_path}" \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    -n -N falcon1 &
+    CANARYSTING_DGX_SSH_MASTER_PID=$!
+    deadline=$((SECONDS + 20))
+    while ((SECONDS < deadline)); do
+      if ! kill -0 "${CANARYSTING_DGX_SSH_MASTER_PID}" 2>/dev/null; then
+        break
+      fi
+      if dgx_run_ssh_control_operation "${control_path}" check 5 &&
+        kill -0 "${CANARYSTING_DGX_SSH_MASTER_PID}" 2>/dev/null; then
         return 0
       fi
-      dgx_run_ssh_control_operation "${control_path}" exit 5 || true
-    else
-      dgx_run_ssh_control_operation "${control_path}" exit 5 || true
-    fi
+      sleep 1
+    done
+    dgx_terminate_ssh_master || return 1
     if ((attempt < max_attempts)); then
       printf 'dgx-ssh: bootstrap attempt %d/%d failed before remote mutation; retrying\n' \
         "${attempt}" "${max_attempts}" >&2
