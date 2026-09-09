@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
+# shellcheck source=scripts/dgx/ssh-control.sh
+source "${script_dir}/ssh-control.sh"
 
 fail() {
   printf 'dgx-pr-batch: %s\n' "$*" >&2
@@ -89,14 +91,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-[[ -x /usr/bin/ssh ]] || fail 'fixed OpenSSH client path is unavailable'
+[[ -x /usr/bin/ssh && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
+CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
 transport_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
 [[ "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ && -d "${transport_root}" && ! -L "${transport_root}" && -O "${transport_root}" ]] || \
   fail 'unsafe DGX batch transport root'
 chmod 0700 "${transport_root}"
 CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
-readonly transport_root CANARYSTING_DGX_BATCH_CONTROL_PATH
-export CANARYSTING_DGX_BATCH_CONTROL_PATH
+readonly transport_root CANARYSTING_DGX_BATCH_CONTROL_PATH CANARYSTING_DGX_REAL_SSH
+export CANARYSTING_DGX_BATCH_CONTROL_PATH CANARYSTING_DGX_REAL_SSH
+
+dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || \
+  fail 'unable to establish bounded DGX batch transport after three pre-mutation attempts'
 
 for index in "${!selected_profiles[@]}"; do
   run_id="${run_prefix}-$((index + 1))"

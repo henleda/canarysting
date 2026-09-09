@@ -91,7 +91,7 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 				profiles["dgx-trace"] = true
 			case strings.Contains(path, "attackercheck"):
 				profiles["dgx-attacker-check"] = true
-			case strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"), strings.HasSuffix(path, "/pr-batch.sh"):
+			case strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"), strings.HasSuffix(path, "/pr-batch.sh"), strings.HasSuffix(path, "/ssh-control.sh"):
 				profiles["dgx-kernel"] = true
 				profiles["dgx-attacker-loop"] = true
 				report.RequiresLiveQwen = true

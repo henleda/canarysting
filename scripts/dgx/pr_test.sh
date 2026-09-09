@@ -111,7 +111,7 @@ CANARYSTING_DGX_REAL_SCP="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
 scp -o BatchMode=yes source falcon1:/target
 ' -- "${transport_probe}" "${control_path}")"
-expected_prefix=$'-o\nControlMaster=auto\n-o\nControlPersist=1200\n-o\nControlPath='"${control_path}"$'\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
+expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o\nProxyCommand=/usr/bin/false\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
 [[ "${ssh_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nfalcon1\ntrue' ]] || {
   echo 'FAIL: SSH does not prepend the bounded shared-control options' >&2
   exit 1
@@ -129,6 +129,82 @@ close_ssh_control
 expected_close=$'-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
 [[ "$(<"${close_arguments_file}")" == "${expected_close}" ]] || {
   echo 'FAIL: coordinator cleanup does not close the exact run-scoped SSH control connection' >&2
+  exit 1
+}
+
+bootstrap_definition="$(awk '/^dgx_open_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
+[[ -n "${bootstrap_definition}" ]] || {
+  echo 'FAIL: DGX transport bootstrap is not independently testable' >&2
+  exit 1
+}
+bootstrap_probe="${fixture_root}/bootstrap-probe"
+cat >"${bootstrap_probe}" <<'PROBE'
+#!/usr/bin/env bash
+operation=''
+previous=''
+for argument in "$@"; do
+  if [[ "${previous}" == '-O' ]]; then
+    operation="${argument}"
+  fi
+  previous="${argument}"
+done
+if [[ "${operation}" == 'check' || "${operation}" == 'exit' ]]; then
+  exit 0
+fi
+count=0
+if [[ -s "${BOOTSTRAP_PROBE_COUNT}" ]]; then
+  count="$(<"${BOOTSTRAP_PROBE_COUNT}")"
+fi
+count=$((count + 1))
+printf '%s\n' "${count}" >"${BOOTSTRAP_PROBE_COUNT}"
+printf 'CALL\n' >>"${BOOTSTRAP_PROBE_LOG}"
+printf '%s\n' "$@" >>"${BOOTSTRAP_PROBE_LOG}"
+((count > BOOTSTRAP_PROBE_FAILURES))
+PROBE
+chmod 0700 "${bootstrap_probe}"
+bootstrap_count="${fixture_root}/bootstrap-count"
+bootstrap_log="${fixture_root}/bootstrap-log"
+bash -c "${bootstrap_definition}"$'\n''
+sleep() { :; }
+CANARYSTING_DGX_REAL_SSH="$1"
+BOOTSTRAP_PROBE_COUNT="$2"
+BOOTSTRAP_PROBE_LOG="$3"
+BOOTSTRAP_PROBE_FAILURES=2
+export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES
+dgx_open_ssh_control "$4"
+' -- "${bootstrap_probe}" "${bootstrap_count}" "${bootstrap_log}" "${control_path}" 2>/dev/null
+[[ "$(<"${bootstrap_count}")" == '3' ]] || {
+  echo 'FAIL: DGX transport bootstrap did not make exactly three bounded pre-mutation attempts' >&2
+  exit 1
+}
+for required_option in 'BatchMode=yes' 'ConnectTimeout=20' 'ConnectionAttempts=1' \
+  'StrictHostKeyChecking=yes' 'ControlMaster=yes' 'ControlPersist=1200' \
+  "ControlPath=${control_path}" 'ServerAliveInterval=5' 'ServerAliveCountMax=3'; do
+  [[ "$(grep -Fxc -- "${required_option}" "${bootstrap_log}")" == '3' ]] || {
+    echo "FAIL: DGX transport bootstrap did not apply ${required_option} to every attempt" >&2
+    exit 1
+  }
+done
+[[ "$(grep -Fxc -- '-N' "${bootstrap_log}")" == '3' && "$(grep -Fxc -- '-f' "${bootstrap_log}")" == '3' ]] || {
+  echo 'FAIL: DGX transport bootstrap did not create a background no-command master' >&2
+  exit 1
+}
+bootstrap_failure_count="${fixture_root}/bootstrap-failure-count"
+bootstrap_failure_log="${fixture_root}/bootstrap-failure-log"
+if bash -c "${bootstrap_definition}"$'\n''
+sleep() { :; }
+CANARYSTING_DGX_REAL_SSH="$1"
+BOOTSTRAP_PROBE_COUNT="$2"
+BOOTSTRAP_PROBE_LOG="$3"
+BOOTSTRAP_PROBE_FAILURES=3
+export BOOTSTRAP_PROBE_COUNT BOOTSTRAP_PROBE_LOG BOOTSTRAP_PROBE_FAILURES
+dgx_open_ssh_control "$4"
+' -- "${bootstrap_probe}" "${bootstrap_failure_count}" "${bootstrap_failure_log}" "${control_path}" 2>/dev/null; then
+  echo 'FAIL: DGX transport bootstrap did not fail closed after its bounded attempts' >&2
+  exit 1
+fi
+[[ "$(<"${bootstrap_failure_count}")" == '3' ]] || {
+  echo 'FAIL: DGX transport bootstrap exceeded or truncated its failure bound' >&2
   exit 1
 }
 own_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
@@ -167,6 +243,12 @@ fi
 chmod 0700 "${batch_fixture}"
 grep -Fq 'export -f ssh scp' "${script_dir}/pr.sh"
 grep -Fqx '    close_ssh_control' "${script_dir}/pr.sh"
+bootstrap_line="$(grep -nF 'dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}"' "${script_dir}/pr-batch.sh" | cut -d: -f1)"
+profile_loop_line="$(grep -nF 'for index in "${!selected_profiles[@]}"; do' "${script_dir}/pr-batch.sh" | tail -1 | cut -d: -f1)"
+if [[ -z "${bootstrap_line}" || -z "${profile_loop_line}" ]] || ((bootstrap_line >= profile_loop_line)); then
+  echo 'FAIL: selected DGX profiles can start before transport bootstrap succeeds' >&2
+  exit 1
+fi
 
 batch_output="$("${script_dir}/pr-batch.sh" \
   --profiles 'attacker-executor attacker-loop preflight kernel-full' \

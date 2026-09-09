@@ -215,7 +215,7 @@ jobs:
         env:
           SELECTED_PROFILES: ${{ steps.profiles.outputs.profiles }}
         run: |
-          short_sha="${GITHUB_SHA:0:10}"
+          short_sha="$(git rev-parse --short=10 HEAD)"
           scripts/dgx/pr-batch.sh \
             --profiles "${SELECTED_PROFILES}" \
             --run-prefix "pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}"

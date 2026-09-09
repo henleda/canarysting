@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
+# shellcheck source=scripts/dgx/ssh-control.sh
+source "${script_dir}/ssh-control.sh"
 
 fail() {
   printf 'dgx-pr: %s\n' "$*" >&2
@@ -15,9 +17,9 @@ fail() {
 # connection instead of repeatedly exposing the run to proxy handshakes.
 ssh() {
   "${CANARYSTING_DGX_REAL_SSH}" \
-    -o ControlMaster=auto \
-    -o ControlPersist=1200 \
+    -o ControlMaster=no \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ProxyCommand=/usr/bin/false \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
@@ -25,9 +27,9 @@ ssh() {
 
 scp() {
   "${CANARYSTING_DGX_REAL_SCP}" \
-    -o ControlMaster=auto \
-    -o ControlPersist=1200 \
+    -o ControlMaster=no \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ProxyCommand=/usr/bin/false \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
@@ -74,10 +76,14 @@ configure_ssh_control() {
 
 initialize_ssh_control() {
   local coordinator_root="$1"
-  [[ -x /usr/bin/ssh && -x /usr/bin/scp ]] || fail 'fixed OpenSSH client paths are unavailable'
+  [[ -x /usr/bin/ssh && -x /usr/bin/scp && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
   CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
   CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
   configure_ssh_control "${coordinator_root}"
+  if ((CANARYSTING_DGX_SSH_CONTROL_OWNED)); then
+    dgx_open_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}" || \
+      fail 'unable to establish bounded standalone DGX transport after three pre-mutation attempts'
+  fi
   readonly CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
   export CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
   export -f ssh scp

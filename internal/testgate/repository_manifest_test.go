@@ -94,6 +94,7 @@ func TestPRDGXRunsEveryMappedProfile(t *testing.T) {
 		`for required in "${required_profiles[@]}"`,
 		`scripts/dgx/pr-batch.sh`,
 		`--profiles "${SELECTED_PROFILES}"`,
+		`short_sha="$(git rev-parse --short=10 HEAD)"`,
 		`--run-prefix "pr-${{ github.event.pull_request.number || github.run_id }}-${short_sha}"`,
 	} {
 		if !strings.Contains(job, required) {
