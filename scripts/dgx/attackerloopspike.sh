@@ -152,6 +152,11 @@ release_model_lock() {
       ((removal_status != 0)) || removal_status=1
     fi
   fi
+  if ((removal_status != 0)); then
+    printf 'attackerloopspike: local model-lock cleanup failed with exit %s; retained_directory=%s; retained_fifo=%s; retained_report=%s\n' \
+      "${removal_status}" "${model_lock_directory:-none}" "${model_lock_fifo:-none}" \
+      "${model_lock_report_file:-none}" >&2
+  fi
   ((lock_status != 0)) && return "${lock_status}"
   return "${removal_status}"
 }
@@ -289,14 +294,14 @@ acquire_model_lock() {
     sleep 0.1
   done
   if [[ -z "${model_lock_report}" ]]; then
-    release_model_lock >/dev/null 2>&1 || true
+    release_model_lock || true
     fail 'could not acquire the DGX host-global Ollama model lock'
   fi
   if [[ "${model_lock_report}" != 'model_lock=acquired' ]] || ! assert_model_lock_held; then
-    release_model_lock >/dev/null 2>&1 || true
+    release_model_lock || true
     fail 'the DGX host-global Ollama model lock is busy or unsafe'
   fi
-  trap 'release_model_lock >/dev/null 2>&1 || true' EXIT
+  trap 'release_model_lock || true' EXIT
   trap 'exit 130' INT TERM
 }
 

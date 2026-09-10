@@ -97,6 +97,11 @@ grep -Fq 'CANARYSTING_DGX_SSH_EXEC_CHILD=1' "${proof_script}" ||
   fail 'model-lock client does not request directly owned SSH execution'
 grep -Fq 'exec "${dgx_ssh_command[@]}"' "${pr_script}" ||
   fail 'coordinator SSH wrapper cannot replace the asynchronous client process'
+grep -Fq "trap 'release_model_lock || true' EXIT" "${proof_script}" ||
+  fail 'production EXIT cleanup suppresses model-lock cleanup diagnostics'
+if grep -Fq 'release_model_lock >/dev/null 2>&1' "${proof_script}"; then
+  fail 'production model-lock cleanup still suppresses retained-path diagnostics'
+fi
 
 valid_report=$'memory_available_kib=83886080\ngpu_count=1\ngpu_probe_status=ok\nntp_synchronized=true\nollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
 report_program="${identity_report_definition}"$'\n'"${unloaded_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a minimum_available_memory_kib=41943040'
@@ -281,7 +286,7 @@ for ((attempt = 0; attempt < 100; attempt++)); do
   sleep 0.01
 done
 [[ -s "$4" && "$(<"$5")" == "${model_lock_pid}" ]]
-trap "release_model_lock >/dev/null 2>&1 || true" EXIT
+trap "release_model_lock || true" EXIT
 trap "exit 130" INT TERM
 kill -s "$6" "$$"
 ' -- "${lock_client_probe}" "${lock_client_root}" "${lock_client_recorded_pid_file}" \
@@ -298,6 +303,7 @@ kill -s "$6" "$$"
 done
 
 release_rm_root="${monitor_root}/release-rm-failure"
+release_rm_error="${monitor_root}/release-rm-failure.err"
 mkdir -m 0700 "${release_rm_root}"
 mkfifo -m 0600 "${release_rm_root}/hold"
 : >"${release_rm_root}/report"
@@ -314,12 +320,15 @@ release_model_lock
 release_status=$?
 set -e
 printf "%s\t%s\t%s\t%s\n" "${release_status}" "${model_lock_directory}" "${model_lock_fifo}" "${model_lock_report_file}"
-' -- "${release_rm_root}")"
+' -- "${release_rm_root}" 2>"${release_rm_error}")"
 [[ "${release_rm_state}" == "88"$'\t'"${release_rm_root}"$'\t'"${release_rm_root}/hold"$'\t'"${release_rm_root}/report" &&
   -p "${release_rm_root}/hold" && -f "${release_rm_root}/report" ]] ||
   fail 'model-lock cleanup masked file-removal failure or discarded retry paths'
+[[ "$(<"${release_rm_error}")" == "attackerloopspike: local model-lock cleanup failed with exit 88; retained_directory=${release_rm_root}; retained_fifo=${release_rm_root}/hold; retained_report=${release_rm_root}/report" ]] ||
+  fail 'model-lock file cleanup failure did not report every retained exact path'
 
 release_rmdir_root="${monitor_root}/release-rmdir-failure"
+release_rmdir_error="${monitor_root}/release-rmdir-failure.err"
 mkdir -m 0700 "${release_rmdir_root}"
 mkfifo -m 0600 "${release_rmdir_root}/hold"
 : >"${release_rmdir_root}/report"
@@ -336,10 +345,57 @@ release_model_lock
 release_status=$?
 set -e
 printf "%s\t%s\t%s\t%s\n" "${release_status}" "${model_lock_directory}" "${model_lock_fifo}" "${model_lock_report_file}"
-' -- "${release_rmdir_root}")"
+' -- "${release_rmdir_root}" 2>"${release_rmdir_error}")"
 [[ "${release_rmdir_state}" == "89"$'\t'"${release_rmdir_root}"$'\t\t' &&
   -d "${release_rmdir_root}" && ! -e "${release_rmdir_root}/hold" && ! -e "${release_rmdir_root}/report" ]] ||
   fail 'model-lock cleanup masked directory-removal failure or discarded its retry path'
+[[ "$(<"${release_rmdir_error}")" == "attackerloopspike: local model-lock cleanup failed with exit 89; retained_directory=${release_rmdir_root}; retained_fifo=none; retained_report=none" ]] ||
+  fail 'model-lock directory cleanup failure did not report its retained exact path'
+
+for caller_case in 'acquire 1' 'normal 1' 'exit 42' 'INT 130' 'TERM 130'; do
+  read -r caller_name expected_status <<<"${caller_case}"
+  caller_root="${monitor_root}/caller-${caller_name}"
+  caller_error="${monitor_root}/caller-${caller_name}.err"
+  mkdir -m 0700 "${caller_root}"
+  mkfifo -m 0600 "${caller_root}/hold"
+  : >"${caller_root}/report"
+  set +e
+  bash -c "${terminate_proof_definition}"$'\n'"${release_lock_definition}"$'\n''
+rm() { return 88; }
+fail() { printf "attackerloopspike: %s\n" "$*" >&2; exit 1; }
+model_lock_directory="$1"
+model_lock_fifo="$1/hold"
+model_lock_report_file="$1/report"
+model_lock_hold_open=false
+model_lock_pid=""
+remote_proof_active=false
+case "$2" in
+  acquire)
+    release_model_lock || true
+    fail "could not acquire the DGX host-global Ollama model lock"
+    ;;
+  normal)
+    release_model_lock || fail "DGX host-global Ollama model lock session failed"
+    ;;
+  exit)
+    trap "release_model_lock || true" EXIT
+    exit 42
+    ;;
+  INT|TERM)
+    trap "release_model_lock || true" EXIT
+    trap "exit 130" INT TERM
+    kill -s "$2" "$$"
+    ;;
+esac
+' -- "${caller_root}" "${caller_name}" 2>"${caller_error}"
+  caller_status=$?
+  set -e
+  [[ "${caller_status}" -eq "${expected_status}" && -d "${caller_root}" &&
+    -p "${caller_root}/hold" && -f "${caller_root}/report" ]] ||
+    fail "production ${caller_name} cleanup caller masked status or discarded retry state"
+  grep -Fqx "attackerloopspike: local model-lock cleanup failed with exit 88; retained_directory=${caller_root}; retained_fifo=${caller_root}/hold; retained_report=${caller_root}/report" \
+    "${caller_error}" || fail "production ${caller_name} cleanup caller hid its exact retry paths"
+done
 
 if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
   supervisor_fifo="${monitor_root}/supervisor-input"
