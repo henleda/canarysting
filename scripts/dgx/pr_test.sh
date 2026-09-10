@@ -388,6 +388,22 @@ printf "%s\t%s\t%s\n" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}
   exit 1
 }
 
+profile_removal_failure_state="$(bash -c "${batch_close_transport_definition}"$'\n''
+rm() { return 88; }
+transport_root="$1"
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+CANARYSTING_DGX_SSH_MASTER_PID=""
+set +e
+close_profile_transport
+close_status=$?
+set -e
+printf "%s\t%s\t%s\n" "${close_status}" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}"
+' -- "${batch_fixture}")"
+[[ "${profile_removal_failure_state}" == "88"$'\t'"${batch_fixture}"$'\t'"${batch_fixture}/ssh-%C" && -d "${batch_fixture}" && ! -L "${batch_fixture}" ]] || {
+  echo 'FAIL: failed profile-root removal was reported as success or discarded cleanup state' >&2
+  exit 1
+}
+
 standalone_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 standalone_count="${fixture_root}/standalone-bootstrap-count"
 standalone_log="${fixture_root}/standalone-bootstrap-log"

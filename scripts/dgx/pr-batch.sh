@@ -80,14 +80,23 @@ transport_root=''
 CANARYSTING_DGX_BATCH_CONTROL_PATH=''
 close_profile_transport() {
   local close_status=0
+  local removal_status=0
   if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" && -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
     dgx_close_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || close_status=$?
   fi
   if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
     return 1
   fi
-  if [[ -n "${transport_root}" && -d "${transport_root}" && ! -L "${transport_root}" && "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ ]]; then
-    rm -rf -- "${transport_root}"
+  if [[ -n "${transport_root}" ]]; then
+    if [[ ! "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ || -L "${transport_root}" ]]; then
+      return 1
+    fi
+    if [[ -e "${transport_root}" ]]; then
+      [[ -d "${transport_root}" && -O "${transport_root}" ]] || return 1
+      rm -rf -- "${transport_root}" || removal_status=$?
+      ((removal_status == 0)) || return "${removal_status}"
+    fi
+    [[ ! -e "${transport_root}" && ! -L "${transport_root}" ]] || return 1
   fi
   CANARYSTING_DGX_BATCH_CONTROL_PATH=''
   transport_root=''
