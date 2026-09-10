@@ -5,7 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
 proof_script="${script_dir}/attackerscenariospike.sh"
 remote_script="${script_dir}/attackerscenariospike_remote.sh"
-readonly proof_script remote_script
+enforce_script="${script_dir}/enforcespike.sh"
+readonly proof_script remote_script enforce_script
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_failure() {
@@ -51,6 +52,7 @@ for marker in \
   'path: ${artifact}' \
   'cmp -s "${working}/proof-1.log" "${working}/proof-2.log"' \
   "fail 'unable to inventory CanarySting Kubernetes runtime state'" \
+  "fail 'unable to inventory CanarySting Cilium policy state'" \
   "fail 'unable to inventory eBPF program state'" \
   'namespace_uid\t%s' \
   'delete --raw "/api/v1/namespaces/${namespace}" -f -' \
@@ -64,6 +66,27 @@ for marker in \
 done
 [[ "$(grep -Ec '^ *validate_passive_posture (no|yes)$' "${remote_script}")" -ge 4 ]] ||
   fail 'scenario must repeatedly prove passive posture while its exclusive lease is held'
+grep -Fq "[[ \"\$(id -u)\" == '1000' ]]" "${remote_script}" ||
+  fail 'scenario does not require the shared DGX runtime UID'
+grep -Fq "posture_lock_root='/run/user/1000'" "${remote_script}" ||
+  fail 'scenario posture lease root differs from the enforcement contract'
+grep -Fq 'posture_lock_file="${posture_lock_root}/canarysting-response-posture.lock"' "${remote_script}" ||
+  fail 'scenario posture lease filename differs from the enforcement contract'
+grep -Fq "posture_lock='/run/user/1000/canarysting-response-posture.lock'" "${enforce_script}" ||
+  fail 'enforcement posture lease path differs from the scenario contract'
+
+namespace_cleanup_line="$(grep -nF "cleanup_namespace yes || fail 'namespace cleanup failed; preserving the recovery workspace and artifact stage'" "${remote_script}" | cut -d: -f1)"
+cleanup_disable_line="$(grep -nE '^cleanup_required=0$' "${remote_script}" | cut -d: -f1)"
+final_posture_line="$(grep -nF "validate_posture_lease || fail 'response-posture lease was lost before final passive check'" "${remote_script}" | cut -d: -f1)"
+evidence_validation_line="$(grep -nF 'validate_evidence' "${remote_script}" | tail -1 | cut -d: -f1)"
+recovery_clear_line="$(grep -nF "recovery_path=''" "${remote_script}" | cut -d: -f1)"
+if [[ ! "${namespace_cleanup_line}" =~ ^[0-9]+$ || ! "${cleanup_disable_line}" =~ ^[0-9]+$ ||
+  ! "${final_posture_line}" =~ ^[0-9]+$ || ! "${evidence_validation_line}" =~ ^[0-9]+$ ||
+  ! "${recovery_clear_line}" =~ ^[0-9]+$ ]] ||
+  ((namespace_cleanup_line >= cleanup_disable_line || cleanup_disable_line >= final_posture_line ||
+    final_posture_line >= evidence_validation_line || evidence_validation_line >= recovery_clear_line)); then
+  fail 'late finalization failures are not guaranteed to preserve recovery evidence'
+fi
 
 for marker in \
   'source "${ssh_control_script}"' \
@@ -111,14 +134,17 @@ namespace_observed_definition="$(awk '/^namespace_uid_observed\(\) \{/ { capture
 inventory_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${namespace_observed_definition}"$'\n'"${inventory_definition}"$'\n''run_id=m2c5-fixture fixture_name=initial-fixture namespace=cs-m2c5-fixture'$'\n''kctl() {
   case "$*" in
     "get namespace cs-m2c5-fixture --ignore-not-found -o jsonpath={.metadata.uid}") printf "%s" "11111111-1111-1111-1111-111111111111" ;;
-    "api-resources --namespaced=true --verbs=list -o name") printf "%s\n" pods services configmaps serviceaccounts secrets ciliumendpoints.cilium.io pods.metrics.k8s.io ;;
+    "api-resources --namespaced=true --verbs=list -o name") printf "%s\n" pods services configmaps serviceaccounts secrets endpointslices.discovery.k8s.io ciliumendpoints.cilium.io pods.metrics.k8s.io ;;
     "-n cs-m2c5-fixture get pods --ignore-not-found -o name") printf "%s\n" pod/initial-fixture ;;
     "-n cs-m2c5-fixture get services --ignore-not-found -o name") printf "%s\n" service/initial-fixture ;;
     "-n cs-m2c5-fixture get configmaps --ignore-not-found -o name") printf "%s\n" configmap/kube-root-ca.crt ;;
     "-n cs-m2c5-fixture get serviceaccounts --ignore-not-found -o name") printf "%s\n" serviceaccount/default ;;
     "-n cs-m2c5-fixture get secrets --ignore-not-found -o name") printf "%s" "${SECRET_INVENTORY:-}" ;;
+    "-n cs-m2c5-fixture get endpointslices.discovery.k8s.io --ignore-not-found -o name") printf "%s" endpointslice.discovery.k8s.io/initial-fixture-abc ;;
     "-n cs-m2c5-fixture get ciliumendpoints.cilium.io --ignore-not-found -o name") printf "%s" ciliumendpoint.cilium.io/initial-fixture ;;
     "-n cs-m2c5-fixture get pods.metrics.k8s.io --ignore-not-found -o name") printf "%s" podmetrics.metrics.k8s.io/initial-fixture ;;
+    "-n cs-m2c5-fixture get endpointslice.discovery.k8s.io/initial-fixture-abc -o jsonpath={.metadata.ownerReferences[0].uid}") printf "%s" "${ENDPOINTSLICE_OWNER_UID:-33333333-3333-3333-3333-333333333333}" ;;
+    *"get endpointslice.discovery.k8s.io/initial-fixture-abc -o jsonpath="*service-name*) printf "%s" "${ENDPOINTSLICE_SERVICE_NAME:-initial-fixture}" ;;
     "-n cs-m2c5-fixture get ciliumendpoint.cilium.io/initial-fixture -o jsonpath={.metadata.ownerReferences[0].uid}") printf "%s" "22222222-2222-2222-2222-222222222222" ;;
     "-n cs-m2c5-fixture get pod/initial-fixture --ignore-not-found -o name") printf "%s" pod/initial-fixture ;;
     "-n cs-m2c5-fixture get service/initial-fixture --ignore-not-found -o name") printf "%s" service/initial-fixture ;;
@@ -136,6 +162,12 @@ SECRET_INVENTORY='' bash -c "${inventory_program}" ||
   fail 'namespace inventory validator rejected its exact fixture'
 if SECRET_INVENTORY='secret/foreign' bash -c "${inventory_program}" >/dev/null 2>&1; then
   fail 'namespace inventory validator accepted a foreign Secret name'
+fi
+if ENDPOINTSLICE_OWNER_UID='44444444-4444-4444-4444-444444444444' bash -c "${inventory_program}" >/dev/null 2>&1; then
+  fail 'namespace inventory validator accepted a foreign EndpointSlice owner'
+fi
+if ENDPOINTSLICE_SERVICE_NAME='foreign-service' bash -c "${inventory_program}" >/dev/null 2>&1; then
+  fail 'namespace inventory validator accepted a foreign EndpointSlice service label'
 fi
 grep -F 'api-resources --namespaced=true --verbs=list -o name' "${remote_script}" >/dev/null ||
   fail 'namespace inventory does not dynamically cover every listable namespaced kind'
@@ -202,7 +234,14 @@ passive_definition="$(awk '/^validate_passive_posture\(\) \{/ { capture=1 } capt
 passive_program=$'set -euo pipefail\n''fail() { printf "%s\n" "$*" >&2; return 1; }'$'\n'"${passive_definition}"$'\n''namespace=cs-m2c5-fixture fixture_name=initial-fixture
 kctl() {
   [[ "${KCTL_FAIL:-0}" == 0 ]] || return 1
-  printf "%s" "${K8S_OUTPUT:-}"
+  case "$*" in
+    "get all,networkpolicy -A -l app.kubernetes.io/part-of=canarysting "*) printf "%s" "${K8S_OUTPUT:-}" ;;
+    "get cnp,ccnp -A -l app.kubernetes.io/part-of=canarysting "*)
+      [[ "${CILIUM_FAIL:-0}" == 0 ]] || return 1
+      printf "%s" "${CILIUM_OUTPUT:-}"
+      ;;
+    *) return 1 ;;
+  esac
 }
 ps() {
   [[ "${PS_FAIL:-0}" == 0 ]] || return 1
@@ -218,9 +257,11 @@ bash -c "${passive_program}" || fail 'passive-posture validator rejected an empt
 fixture_passive_program="${passive_program%validate_passive_posture}"$'validate_passive_posture yes'
 K8S_OUTPUT=$'cs-m2c5-fixture\tPod/initial-fixture\ncs-m2c5-fixture\tService/initial-fixture' \
   bash -c "${fixture_passive_program}" || fail 'passive-posture validator rejected only its owned fixture during execution'
-for unsafe in kctl ps runtime bpf; do
+for unsafe in kctl cilium-api cilium-policy ps runtime bpf; do
   case "${unsafe}" in
     kctl) environment=(KCTL_FAIL=1) ;;
+    cilium-api) environment=(CILIUM_FAIL=1) ;;
+    cilium-policy) environment=(CILIUM_OUTPUT=$'\tCiliumClusterwideNetworkPolicy/canarysting-deny') ;;
     ps) environment=(PS_FAIL=1) ;;
     runtime) environment=(PS_OUTPUT=engine) ;;
     bpf) environment=(BPF_OUTPUT='1: sock_ops name canary_sockops') ;;

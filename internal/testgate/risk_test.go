@@ -197,7 +197,7 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		"manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator",
 		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants", "attacker-executor-invariants", "attacker-planner-invariants", "attacker-scenario-invariants",
 		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "frontend-playwright", "bpf-compile", "bpf-object-assert",
-		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce",
+		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce", "dgx-harness:attackerscenariospike",
 	}
 	manifest := Manifest{Version: 1}
 	for _, id := range ids {
@@ -262,7 +262,7 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertSelected(t, scenarioScriptChecks, "attacker-scenario-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
+	assertSelected(t, scenarioScriptChecks, "attacker-scenario-invariants", "dgx-harness:attackerscenariospike", "security-invariants", "go-test-race", "adversarial:fixture")
 	scenarioScriptFastChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-fast"}, []string{"scripts/dgx/attackerscenariospike_test.sh"})
 	if err != nil {
 		t.Fatal(err)

@@ -148,7 +148,7 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 			addAvailable(selected, all, "attacker-executor-invariants")
 			selectAdversarial(selected, all, files)
 		case isAttackerScenarioPath(file):
-			addAvailable(selected, all, "attacker-scenario-invariants")
+			addAvailable(selected, all, "attacker-scenario-invariants", "dgx-harness:attackerscenariospike")
 			selectAdversarial(selected, all, files)
 		case isFrontendPath(file):
 			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")

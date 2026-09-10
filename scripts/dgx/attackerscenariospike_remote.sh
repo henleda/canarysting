@@ -8,6 +8,7 @@ mode="$2"
 [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid remote run ID'
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
 [[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected scenario host'
+[[ "$(id -u)" == '1000' ]] || fail 'unexpected scenario user'
 for tool in awk bpftool cmp date env find flock grep hostname id mkdir mv ps rm rmdir sha256sum sleep sort stat sudo timeout tr uname wc; do
   command -v "${tool}" >/dev/null 2>&1 || fail "missing remote prerequisite: ${tool}"
 done
@@ -26,7 +27,7 @@ fixture_name='initial-fixture'
 image='docker.io/rancher/mirrored-pause@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4'
 readonly root stage evidence working namespace artifact_relative artifact scenario_id fixture_name image
 posture_lease_acquired=0
-posture_lock_root="/run/user/$(id -u)"
+posture_lock_root='/run/user/1000'
 posture_lock_file="${posture_lock_root}/canarysting-response-posture.lock"
 readonly posture_lock_root posture_lock_file
 
@@ -78,7 +79,7 @@ validate_namespace_identity() {
 
 validate_namespace_inventory() {
   local require_fixture="$1" resource_type entry actual='' discovered='' has_pod=0 has_service=0
-  local namespace_uid pod_uid='' service_uid='' related_uid
+  local namespace_uid pod_uid='' service_uid='' related_uid related_name
   namespace_uid="$(namespace_uid_observed)" || return 1
   [[ -n "${namespace_uid}" ]] || validation_error 'cannot inventory an absent scenario namespace' || return 1
   for entry in pod/${fixture_name} service/${fixture_name}; do
@@ -113,7 +114,15 @@ validate_namespace_inventory() {
       configmap/kube-root-ca.crt|serviceaccount/default) ;;
       pod/${fixture_name}) has_pod=1 ;;
       service/${fixture_name}) has_service=1 ;;
-      endpoints/${fixture_name}|endpointslice.discovery.k8s.io/${fixture_name}-*) ;;
+      endpoints/${fixture_name}) ;;
+      endpointslice.discovery.k8s.io/${fixture_name}-*)
+        related_uid="$(kctl -n "${namespace}" get "${entry}" -o jsonpath='{.metadata.ownerReferences[0].uid}')" ||
+          validation_error 'unable to inspect EndpointSlice ownership' || return 1
+        related_name="$(kctl -n "${namespace}" get "${entry}" -o 'jsonpath={.metadata.labels.kubernetes\.io/service-name}')" ||
+          validation_error 'unable to inspect EndpointSlice service label' || return 1
+        [[ -n "${service_uid}" && "${related_uid}" == "${service_uid}" && "${related_name}" == "${fixture_name}" ]] ||
+          validation_error 'EndpointSlice is not owned by the fixture Service' || return 1
+        ;;
       ciliumendpoint.cilium.io/${fixture_name})
         related_uid="$(kctl -n "${namespace}" get "${entry}" -o jsonpath='{.metadata.ownerReferences[0].uid}')" ||
           validation_error 'unable to inspect CiliumEndpoint ownership' || return 1
@@ -230,7 +239,7 @@ cleanup_working() {
 }
 
 validate_passive_posture() {
-  local allow_fixture="${1:-no}" canarysting_resources entry host_processes bpf_programs
+  local allow_fixture="${1:-no}" canarysting_resources cilium_policies entry host_processes bpf_programs
   canarysting_resources="$(kctl get all,networkpolicy -A -l app.kubernetes.io/part-of=canarysting \
     -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.kind}{"/"}{.metadata.name}{"\n"}{end}')" ||
     fail 'unable to inventory CanarySting Kubernetes runtime state'
@@ -241,6 +250,13 @@ validate_passive_posture() {
     fi
     fail "CanarySting Kubernetes runtime is present; passive posture is not proven: ${entry}"
   done <<<"${canarysting_resources}"
+  cilium_policies="$(kctl get cnp,ccnp -A -l app.kubernetes.io/part-of=canarysting \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.kind}{"/"}{.metadata.name}{"\n"}{end}')" ||
+    fail 'unable to inventory CanarySting Cilium policy state'
+  while IFS= read -r entry; do
+    [[ -z "${entry}" ]] && continue
+    fail "CanarySting Cilium policy is present; passive posture is not proven: ${entry}"
+  done <<<"${cilium_policies}"
   host_processes="$(ps -eo comm=)" || fail 'unable to inventory host process state'
   if grep -Eq '^[[:space:]]*(engine|envoy-adapter|canarysting[^[:space:]]*)[[:space:]]*$' <<<"${host_processes}"; then
     fail 'CanarySting host runtime is present; passive posture is not proven'
@@ -402,16 +418,24 @@ validate_passive_posture no
 umask 077
 mkdir -m 0700 "${working}"
 cleanup_required=1
+recovery_path="${working}"
 cleanup_on_exit() {
   local status=$?
   trap - EXIT HUP INT TERM
   if ((cleanup_required)); then
     if cleanup_namespace no; then
-      cleanup_working || status=1
+      cleanup_required=0
+      if ((status == 0)); then
+        cleanup_working || status=1
+      else
+        printf 'scenario_recovery_state=preserved namespace=%s recovery=%s stage=%s\n' "${namespace}" "${recovery_path}" "${stage}" >&2
+      fi
     else
       status=1
-      printf 'scenario_recovery_state=preserved namespace=%s workspace=%s stage=%s\n' "${namespace}" "${working}" "${stage}" >&2
+      printf 'scenario_recovery_state=preserved namespace=%s recovery=%s stage=%s\n' "${namespace}" "${recovery_path}" "${stage}" >&2
     fi
+  elif ((status != 0)); then
+    printf 'scenario_recovery_state=preserved namespace=%s recovery=%s stage=%s\n' "${namespace}" "${recovery_path}" "${stage}" >&2
   fi
   release_posture_lease || status=1
   exit "${status}"
@@ -566,6 +590,7 @@ namespace_uid="$(owned_namespace_uid)" || fail 'captured namespace UID is unavai
 validate_namespace_identity "${namespace_uid}" || fail 'namespace identity changed before cleanup'
 validate_namespace_inventory yes || fail 'namespace inventory changed before cleanup'
 cleanup_namespace yes || fail 'namespace cleanup failed; preserving the recovery workspace and artifact stage'
+cleanup_required=0
 validate_posture_lease || fail 'response-posture lease was lost before final passive check'
 validate_passive_posture no
 
@@ -590,9 +615,10 @@ proof_sha256="$(sha256sum "${working}/proof.log" | awk '{print $1}')"
 mv "${working}/.result.tsv.tmp" "${working}/result.tsv"
 chmod 0600 "${working}/corpus-1.json" "${working}/corpus-2.json" "${working}/proof.log" "${working}/result.tsv"
 mv "${working}" "${evidence}"
-cleanup_required=0
+recovery_path="${evidence}"
 release_posture_lease || fail 'could not release the response-posture lease'
 validate_evidence
+recovery_path=''
 trap - EXIT HUP INT TERM
 printf 'PASS: reproducible attacker scenario proof completed\n'
 printf 'evidence=%s\n' "${evidence}"

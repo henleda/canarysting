@@ -83,7 +83,8 @@ grep -Fqx 'artifact_transfer_count=0' <<<"${attacker_check_output}"
 grep -Fq 'attacker-lab inspection contract passed; DGX was not accessed' <<<"${attacker_check_output}"
 
 cleanup_policy_definition="$(awk '/^should_run_generic_cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
-[[ -n "${cleanup_policy_definition}" ]] || { echo 'FAIL: DGX cleanup policy is not independently testable' >&2; exit 1; }
+preserve_failed_definition="$(awk '/^should_preserve_failed_scenario\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+[[ -n "${cleanup_policy_definition}" && -n "${preserve_failed_definition}" ]] || { echo 'FAIL: DGX cleanup policy is not independently testable' >&2; exit 1; }
 bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 0'
 if bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 1'; then
   echo 'FAIL: attacker-loop cleanup failure permits generic stage deletion' >&2
@@ -94,7 +95,40 @@ if bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attack
   exit 1
 fi
 bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup kernel-full 1'
+if bash -c "${preserve_failed_definition}"$'\n''should_preserve_failed_scenario attacker-scenarios 0'; then
+  echo 'FAIL: successful attacker-scenarios run preserves disposable recovery state' >&2
+  exit 1
+fi
+bash -c "${preserve_failed_definition}"$'\n''should_preserve_failed_scenario attacker-scenarios 1'
+if bash -c "${preserve_failed_definition}"$'\n''should_preserve_failed_scenario kernel-full 1'; then
+  echo 'FAIL: unrelated failed profile bypasses its exact cleanup' >&2
+  exit 1
+fi
 grep -Fq 'if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then' "${script_dir}/pr.sh"
+grep -Fq 'if should_preserve_failed_scenario "${profile}" "${initial_status}"; then' "${script_dir}/pr.sh"
+
+pr_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
+set +e
+failed_scenario_cleanup_output="$(bash -c "${cleanup_policy_definition}"$'\n'"${preserve_failed_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+cleanup_required=1
+scenario_count=1
+scenarios=(missing-scenario)
+profile=attacker-scenarios
+run_id=failed-scenario
+script_dir=/does-not-exist
+proof_file=/does-not-exist
+work_root=""
+CANARYSTING_DGX_SSH_CONTROL_OWNED=0
+trap cleanup EXIT
+exit 71
+' 2>&1)"
+failed_scenario_cleanup_status=$?
+set -e
+[[ "${failed_scenario_cleanup_status}" -eq 71 &&
+  "${failed_scenario_cleanup_output}" == *'preserving attacker-scenarios recovery state and stage after failed run'* ]] || {
+  echo 'FAIL: failed attacker-scenarios coordinator run did not preserve its recovery state and original status' >&2
+  exit 1
+}
 
 ssh_transport_definition="$(awk '/^ssh\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 scp_transport_definition="$(awk '/^scp\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
@@ -457,7 +491,6 @@ if kill -0 "${surviving_master_pid}" 2>/dev/null; then
   exit 1
 fi
 
-pr_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 batch_close_transport_definition="$(awk '/^close_profile_transport\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr-batch.sh")"
 batch_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr-batch.sh")"
 [[ -n "${pr_cleanup_definition}" && -n "${batch_close_transport_definition}" && -n "${batch_cleanup_definition}" ]] || {
@@ -573,7 +606,7 @@ standalone_control_log="${fixture_root}/standalone-control-log"
 standalone_master_pid_file="${fixture_root}/standalone-master-pid"
 standalone_master_pids="${fixture_root}/standalone-master-pids"
 set +e
-bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n'"${close_transport_definition}"$'\n'"${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n'"${close_transport_definition}"$'\n'"${cleanup_policy_definition}"$'\n'"${preserve_failed_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
 dgx_wait_before_ssh_retry() { :; }
 work_root="$2"
 artifact_dir="${work_root}/artifacts"
@@ -626,7 +659,7 @@ for signal_case in 'INT 130' 'TERM 143'; do
   signal_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
   signal_log="${fixture_root}/pr-${signal_name}-cleanup-log"
   set +e
-  SIGNAL_CLEANUP_LOG="${signal_log}" bash -c "${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+  SIGNAL_CLEANUP_LOG="${signal_log}" bash -c "${cleanup_policy_definition}"$'\n'"${preserve_failed_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
 work_root="$1"
 artifact_dir="${work_root}/artifacts"
 proof_file="${work_root}/preflight.proof"
