@@ -4,10 +4,11 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
 proof_script="${script_dir}/attackerloopspike.sh"
+pr_script="${script_dir}/pr.sh"
 remote_proof_script="${script_dir}/attackerloopspike_remote.sh"
 remote_finalize_script="${script_dir}/attackerloopspike_finalize_remote.sh"
 lock_supervisor_script="${script_dir}/attackerloopspike_lock_remote.sh"
-readonly proof_script remote_proof_script remote_finalize_script lock_supervisor_script
+readonly proof_script pr_script remote_proof_script remote_finalize_script lock_supervisor_script
 readonly -a proof_sources=("${proof_script}" "${remote_proof_script}" "${remote_finalize_script}" "${lock_supervisor_script}")
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -83,13 +84,19 @@ value_definition="$(awk '/^result_value\(\) \{/ { capture=1 } capture { print } 
 timestamp_definition="$(awk '/^validate_timestamps\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_proof_script}")"
 cleanup_stage_definition="$(awk '/^cleanup_stage_from_inventory\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 terminate_proof_definition="$(awk '/^terminate_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+release_lock_definition="$(awk '/^release_model_lock\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+ssh_transport_definition="$(awk '/^ssh\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${pr_script}")"
 assert_lock_definition="$(awk '/^assert_model_lock_held\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 wait_proof_definition="$(awk '/^wait_for_remote_proof\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 wait_finalize_definition="$(awk '/^wait_for_remote_finalization\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
 supervisor_terminate_definition="$(awk '/^terminate_proof_group\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${lock_supervisor_script}")"
 supervise_program_definition="$(awk '/^supervise_program\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${lock_supervisor_script}")"
 finalize_marker_state_definition="$(awk '/^model_load_marker_state\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_finalize_script}")"
-[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${unloaded_report_definition}" && -n "${marker_state_definition}" && -n "${cleanup_model_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" && -n "${wait_finalize_definition}" && -n "${supervisor_terminate_definition}" && -n "${supervise_program_definition}" && -n "${finalize_marker_state_definition}" ]] || fail 'proof validators are not independently testable'
+[[ -n "${identity_report_definition}" && -n "${report_definition}" && -n "${unloaded_report_definition}" && -n "${marker_state_definition}" && -n "${cleanup_model_definition}" && -n "${schema_definition}" && -n "${value_definition}" && -n "${timestamp_definition}" && -n "${cleanup_stage_definition}" && -n "${terminate_proof_definition}" && -n "${release_lock_definition}" && -n "${ssh_transport_definition}" && -n "${assert_lock_definition}" && -n "${wait_proof_definition}" && -n "${wait_finalize_definition}" && -n "${supervisor_terminate_definition}" && -n "${supervise_program_definition}" && -n "${finalize_marker_state_definition}" ]] || fail 'proof validators are not independently testable'
+grep -Fq 'CANARYSTING_DGX_SSH_EXEC_CHILD=1' "${proof_script}" ||
+  fail 'model-lock client does not request directly owned SSH execution'
+grep -Fq 'exec "${dgx_ssh_command[@]}"' "${pr_script}" ||
+  fail 'coordinator SSH wrapper cannot replace the asynchronous client process'
 
 valid_report=$'memory_available_kib=83886080\ngpu_count=1\ngpu_probe_status=ok\nntp_synchronized=true\nollama_listener_probe_status=ok\nollama_binding=loopback_only\nollama_api_probe_status=ok\nollama_inventory_status=ok\nexpected_model=qwen3-coder:30b-a3b-q8_0\nexpected_model_present=true\nexpected_model_id=7b438a19895a\nloaded_model_count=0\nsafety_status=safe\nm2c1_inspection=PASS'
 report_program="${identity_report_definition}"$'\n'"${unloaded_report_definition}"$'\n'"${report_definition}"$'\n''expected_model=qwen3-coder:30b-a3b-q8_0 expected_model_id=7b438a19895a minimum_available_memory_kib=41943040'
@@ -232,6 +239,107 @@ kill -TERM "${model_lock_pid}" 2>/dev/null || true
 wait "${model_lock_pid}" 2>/dev/null || true
 [[ "${finalize_status}" -eq 0 && "${model_lock_lost_during_execution}" == false && "${remote_proof_active}" == false ]]
 ' -- "${monitor_root}/report" || fail 'finalization monitor rejected finalize-first cleanup completion'
+
+lock_client_probe="${monitor_root}/lock-client-probe"
+cat >"${lock_client_probe}" <<'PROBE'
+#!/usr/bin/env bash
+trap 'printf "TERM\n" >"${LOCK_CLIENT_SIGNAL_FILE}"; exit 143' TERM
+printf '%s\n' "$$" >"${LOCK_CLIENT_ACTUAL_PID_FILE}"
+printf 'ready\n' >"${LOCK_CLIENT_READY_FILE}"
+while :; do :; done
+PROBE
+chmod 0700 "${lock_client_probe}"
+for signal_name in INT TERM; do
+  lock_client_root="${monitor_root}/lock-client-${signal_name}"
+  mkdir -m 0700 "${lock_client_root}"
+  mkfifo -m 0600 "${lock_client_root}/hold"
+  : >"${lock_client_root}/report"
+  chmod 0600 "${lock_client_root}/report"
+  lock_client_recorded_pid_file="${monitor_root}/lock-client-${signal_name}-recorded-pid"
+  lock_client_actual_pid_file="${monitor_root}/lock-client-${signal_name}-actual-pid"
+  lock_client_ready_file="${monitor_root}/lock-client-${signal_name}-ready"
+  lock_client_signal_file="${monitor_root}/lock-client-${signal_name}-signal"
+  set +e
+  LOCK_CLIENT_ACTUAL_PID_FILE="${lock_client_actual_pid_file}" \
+  LOCK_CLIENT_READY_FILE="${lock_client_ready_file}" \
+  LOCK_CLIENT_SIGNAL_FILE="${lock_client_signal_file}" \
+    bash -c "${ssh_transport_definition}"$'\n'"${terminate_proof_definition}"$'\n'"${release_lock_definition}"$'\n''
+CANARYSTING_DGX_REAL_SSH="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="$2/unused-control"
+model_lock_directory="$2"
+model_lock_fifo="$2/hold"
+model_lock_report_file="$2/report"
+model_lock_hold_open=true
+remote_proof_active=true
+exec 9<>"${model_lock_fifo}"
+CANARYSTING_DGX_SSH_EXEC_CHILD=1 ssh falcon1 ignored <"${model_lock_fifo}" >"${model_lock_report_file}" 9>&- &
+model_lock_pid=$!
+printf "%s\n" "${model_lock_pid}" >"$3"
+for ((attempt = 0; attempt < 100; attempt++)); do
+  [[ -s "$4" ]] && break
+  kill -0 "${model_lock_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+[[ -s "$4" && "$(<"$5")" == "${model_lock_pid}" ]]
+trap "release_model_lock >/dev/null 2>&1 || true" EXIT
+trap "exit 130" INT TERM
+kill -s "$6" "$$"
+' -- "${lock_client_probe}" "${lock_client_root}" "${lock_client_recorded_pid_file}" \
+      "${lock_client_ready_file}" "${lock_client_actual_pid_file}" "${signal_name}"
+  lock_client_status=$?
+  set -e
+  lock_client_pid="$(<"${lock_client_recorded_pid_file}")"
+  [[ "${lock_client_status}" -eq 130 && "${lock_client_pid}" == "$(<"${lock_client_actual_pid_file}")" &&
+    "$(<"${lock_client_signal_file}")" == 'TERM' && ! -e "${lock_client_root}" && ! -L "${lock_client_root}" ]] ||
+    fail "${signal_name} cancellation did not reap the directly owned SSH lock client and clean local state"
+  if kill -0 "${lock_client_pid}" 2>/dev/null; then
+    fail "${signal_name} cancellation left the directly owned SSH lock client alive"
+  fi
+done
+
+release_rm_root="${monitor_root}/release-rm-failure"
+mkdir -m 0700 "${release_rm_root}"
+mkfifo -m 0600 "${release_rm_root}/hold"
+: >"${release_rm_root}/report"
+release_rm_state="$(bash -c "${terminate_proof_definition}"$'\n'"${release_lock_definition}"$'\n''
+rm() { return 88; }
+model_lock_directory="$1"
+model_lock_fifo="$1/hold"
+model_lock_report_file="$1/report"
+model_lock_hold_open=false
+model_lock_pid=""
+remote_proof_active=false
+set +e
+release_model_lock
+release_status=$?
+set -e
+printf "%s\t%s\t%s\t%s\n" "${release_status}" "${model_lock_directory}" "${model_lock_fifo}" "${model_lock_report_file}"
+' -- "${release_rm_root}")"
+[[ "${release_rm_state}" == "88"$'\t'"${release_rm_root}"$'\t'"${release_rm_root}/hold"$'\t'"${release_rm_root}/report" &&
+  -p "${release_rm_root}/hold" && -f "${release_rm_root}/report" ]] ||
+  fail 'model-lock cleanup masked file-removal failure or discarded retry paths'
+
+release_rmdir_root="${monitor_root}/release-rmdir-failure"
+mkdir -m 0700 "${release_rmdir_root}"
+mkfifo -m 0600 "${release_rmdir_root}/hold"
+: >"${release_rmdir_root}/report"
+release_rmdir_state="$(bash -c "${terminate_proof_definition}"$'\n'"${release_lock_definition}"$'\n''
+rmdir() { return 89; }
+model_lock_directory="$1"
+model_lock_fifo="$1/hold"
+model_lock_report_file="$1/report"
+model_lock_hold_open=false
+model_lock_pid=""
+remote_proof_active=false
+set +e
+release_model_lock
+release_status=$?
+set -e
+printf "%s\t%s\t%s\t%s\n" "${release_status}" "${model_lock_directory}" "${model_lock_fifo}" "${model_lock_report_file}"
+' -- "${release_rmdir_root}")"
+[[ "${release_rmdir_state}" == "89"$'\t'"${release_rmdir_root}"$'\t\t' &&
+  -d "${release_rmdir_root}" && ! -e "${release_rmdir_root}/hold" && ! -e "${release_rmdir_root}/report" ]] ||
+  fail 'model-lock cleanup masked directory-removal failure or discarded its retry path'
 
 if command -v flock >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
   supervisor_fifo="${monitor_root}/supervisor-input"

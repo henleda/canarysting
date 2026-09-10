@@ -5,6 +5,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
 # shellcheck source=scripts/dgx/ssh-control.sh
 source "${script_dir}/ssh-control.sh"
+# This internal one-call mode is set only by the reviewed asynchronous
+# attacker-loop client below this coordinator. Ambient state cannot opt other
+# child SSH calls into process replacement.
+unset CANARYSTING_DGX_SSH_EXEC_CHILD
 
 fail() {
   printf 'dgx-pr: %s\n' "$*" >&2
@@ -16,7 +20,7 @@ fail() {
 # and SCP share one host-key-verified connection instead of repeatedly exposing
 # that profile to proxy handshakes.
 ssh() {
-  "${CANARYSTING_DGX_REAL_SSH}" \
+  local -a dgx_ssh_command=("${CANARYSTING_DGX_REAL_SSH}" \
     -o ControlMaster=no \
     -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
     -o ProxyCommand=/usr/bin/false \
@@ -30,7 +34,14 @@ ssh() {
     -o ForkAfterAuthentication=no \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
-    "$@"
+    "$@")
+  # The attacker-loop lock client is asynchronous. Let that one reviewed call
+  # replace its background function process so $! is the real OpenSSH PID,
+  # which the coordinator can terminate and reap without leaving a descendant.
+  if [[ "${CANARYSTING_DGX_SSH_EXEC_CHILD:-0}" == '1' ]]; then
+    exec "${dgx_ssh_command[@]}"
+  fi
+  "${dgx_ssh_command[@]}"
 }
 
 scp() {

@@ -78,9 +78,14 @@ fi
 
 transport_root=''
 CANARYSTING_DGX_BATCH_CONTROL_PATH=''
+transport_cleanup_failed=0
 close_profile_transport() {
   local close_status=0
   local removal_status=0
+  if ((transport_cleanup_failed)); then
+    printf 'dgx-pr-batch: retaining unverified profile transport root %s\n' "${transport_root}" >&2
+    return 1
+  fi
   if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" ]]; then
     if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
       dgx_close_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || close_status=$?
@@ -89,22 +94,35 @@ close_profile_transport() {
     fi
   fi
   if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+    transport_cleanup_failed=1
+    printf 'dgx-pr-batch: retaining unverified profile transport root %s\n' "${transport_root}" >&2
     return 1
   fi
   if ((close_status != 0)); then
+    transport_cleanup_failed=1
     printf 'dgx-pr-batch: retaining unverified profile transport root %s\n' "${transport_root}" >&2
     return "${close_status}"
   fi
   if [[ -n "${transport_root}" ]]; then
     if [[ ! "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ || -L "${transport_root}" ]]; then
+      transport_cleanup_failed=1
       return 1
     fi
     if [[ -e "${transport_root}" ]]; then
-      [[ -d "${transport_root}" && -O "${transport_root}" ]] || return 1
+      if [[ ! -d "${transport_root}" || ! -O "${transport_root}" ]]; then
+        transport_cleanup_failed=1
+        return 1
+      fi
       rm -rf -- "${transport_root}" || removal_status=$?
-      ((removal_status == 0)) || return "${removal_status}"
+      if ((removal_status != 0)); then
+        transport_cleanup_failed=1
+        return "${removal_status}"
+      fi
     fi
-    [[ ! -e "${transport_root}" && ! -L "${transport_root}" ]] || return 1
+    if [[ -e "${transport_root}" || -L "${transport_root}" ]]; then
+      transport_cleanup_failed=1
+      return 1
+    fi
   fi
   CANARYSTING_DGX_BATCH_CONTROL_PATH=''
   transport_root=''

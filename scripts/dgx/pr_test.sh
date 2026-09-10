@@ -95,9 +95,19 @@ close_control_definition="$(awk '/^dgx_close_ssh_control\(\) \{/ { capture=1 } c
   echo 'FAIL: shared DGX transport functions are not independently testable' >&2
   exit 1
 }
+grep -Fqx 'unset CANARYSTING_DGX_SSH_EXEC_CHILD' "${script_dir}/pr.sh" || {
+  echo 'FAIL: ambient state can opt ordinary child SSH calls into process replacement' >&2
+  exit 1
+}
 transport_probe="${fixture_root}/transport-probe"
 cat >"${transport_probe}" <<'PROBE'
 #!/usr/bin/env bash
+if [[ -n "${TRANSPORT_HOLD_PID_FILE:-}" ]]; then
+  trap 'printf "TERM\n" >"${TRANSPORT_HOLD_SIGNAL_FILE}"; exit 143' TERM
+  printf '%s\n' "$$" >"${TRANSPORT_HOLD_PID_FILE}"
+  printf 'ready\n' >"${TRANSPORT_HOLD_READY_FILE}"
+  while :; do :; done
+fi
 if [[ -n "${TRANSPORT_PROBE_LOG:-}" ]]; then
   printf '%s\n' "$@" >"${TRANSPORT_PROBE_LOG}"
   if [[ -n "${TRANSPORT_MASTER_PID:-}" ]]; then
@@ -149,6 +159,43 @@ expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o
   echo 'FAIL: SSH does not prepend the bounded shared-control options' >&2
   exit 1
 }
+transport_hold_pid_file="${fixture_root}/transport-hold-pid"
+transport_hold_recorded_pid_file="${fixture_root}/transport-hold-recorded-pid"
+transport_hold_ready_file="${fixture_root}/transport-hold-ready"
+transport_hold_signal_file="${fixture_root}/transport-hold-signal"
+TRANSPORT_HOLD_PID_FILE="${transport_hold_pid_file}" \
+TRANSPORT_HOLD_READY_FILE="${transport_hold_ready_file}" \
+TRANSPORT_HOLD_SIGNAL_FILE="${transport_hold_signal_file}" \
+  bash -c "${ssh_transport_definition}"$'\n''
+CANARYSTING_DGX_REAL_SSH="$1"
+CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
+CANARYSTING_DGX_SSH_EXEC_CHILD=1 ssh -o BatchMode=yes falcon1 true &
+owned_pid=$!
+printf "%s\n" "${owned_pid}" >"$3"
+for ((attempt = 0; attempt < 100; attempt++)); do
+  [[ -s "$4" ]] && break
+  kill -0 "${owned_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+[[ -s "$4" && "$(<"$5")" == "${owned_pid}" ]]
+kill -TERM "${owned_pid}"
+set +e
+wait "${owned_pid}"
+hold_status=$?
+set -e
+[[ "${hold_status}" -eq 143 ]]
+' -- "${transport_probe}" "${control_path}" "${transport_hold_recorded_pid_file}" \
+    "${transport_hold_ready_file}" "${transport_hold_pid_file}"
+transport_hold_pid="$(<"${transport_hold_recorded_pid_file}")"
+[[ "${transport_hold_pid}" == "$(<"${transport_hold_pid_file}")" &&
+  "$(<"${transport_hold_signal_file}")" == 'TERM' ]] || {
+  echo 'FAIL: executable SSH child mode did not expose the directly owned client PID' >&2
+  exit 1
+}
+if kill -0 "${transport_hold_pid}" 2>/dev/null; then
+  echo 'FAIL: executable SSH child mode left its owned client alive' >&2
+  exit 1
+fi
 [[ "${scp_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nsource\nfalcon1:/target' ]] || {
   echo 'FAIL: SCP does not reuse the bounded shared-control options' >&2
   exit 1
@@ -439,6 +486,33 @@ printf "%s\t%s\t%s\n" "${close_status}" "${transport_root}" "${CANARYSTING_DGX_B
   exit 1
 }
 rm -rf -- "${profile_unsafe_root}"
+
+profile_sticky_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
+profile_sticky_master_pid_file="${fixture_root}/profile-sticky-master-pid"
+set +e
+bash -c "${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n'"${batch_cleanup_definition}"$'\n''
+dgx_run_ssh_control_operation() { return 91; }
+transport_root="$1"
+transport_cleanup_failed=0
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
+bash -c "trap '\''exit 0'\'' TERM; while :; do sleep 1; done" &
+CANARYSTING_DGX_SSH_MASTER_PID=$!
+printf "%s\n" "${CANARYSTING_DGX_SSH_MASTER_PID}" >"$2"
+trap cleanup EXIT
+close_profile_transport || exit 41
+' -- "${profile_sticky_root}" "${profile_sticky_master_pid_file}" 2>/dev/null
+profile_sticky_status=$?
+set -e
+[[ "${profile_sticky_status}" -eq 41 && -d "${profile_sticky_root}" && ! -L "${profile_sticky_root}" ]] || {
+  echo 'FAIL: failed explicit batch close was not sticky across its EXIT cleanup' >&2
+  exit 1
+}
+profile_sticky_master_pid="$(<"${profile_sticky_master_pid_file}")"
+if kill -0 "${profile_sticky_master_pid}" 2>/dev/null; then
+  echo 'FAIL: sticky failed-close cleanup left its owned master alive' >&2
+  exit 1
+fi
+rm -rf -- "${profile_sticky_root}"
 
 profile_removal_failure_state="$(bash -c "${remove_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n''
 rm() { return 88; }

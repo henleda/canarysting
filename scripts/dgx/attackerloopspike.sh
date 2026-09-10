@@ -121,9 +121,9 @@ terminate_remote_proof() {
   return "${lock_status}"
 }
 release_model_lock() {
-  local lock_status=0
+  local lock_status=0 removal_status=0
   trap - EXIT INT TERM
-  terminate_remote_proof >/dev/null 2>&1 || true
+  terminate_remote_proof >/dev/null 2>&1 || lock_status=$?
   if [[ "${model_lock_hold_open}" == 'true' ]]; then
     exec 9>&-
     model_lock_hold_open='false'
@@ -133,15 +133,27 @@ release_model_lock() {
     model_lock_pid=''
   fi
   if [[ -n "${model_lock_fifo}" || -n "${model_lock_report_file}" ]]; then
-    rm -f -- "${model_lock_fifo}" "${model_lock_report_file}"
-    model_lock_fifo=''
-    model_lock_report_file=''
+    rm -f -- "${model_lock_fifo}" "${model_lock_report_file}" || removal_status=$?
+    if ((removal_status == 0)) &&
+      [[ ! -e "${model_lock_fifo}" && ! -L "${model_lock_fifo}" &&
+        ! -e "${model_lock_report_file}" && ! -L "${model_lock_report_file}" ]]; then
+      model_lock_fifo=''
+      model_lock_report_file=''
+    else
+      ((removal_status != 0)) || removal_status=1
+    fi
   fi
-  if [[ -n "${model_lock_directory}" ]]; then
-    rmdir "${model_lock_directory}"
-    model_lock_directory=''
+  if ((removal_status == 0)) && [[ -n "${model_lock_directory}" ]]; then
+    rmdir "${model_lock_directory}" || removal_status=$?
+    if ((removal_status == 0)) &&
+      [[ ! -e "${model_lock_directory}" && ! -L "${model_lock_directory}" ]]; then
+      model_lock_directory=''
+    else
+      ((removal_status != 0)) || removal_status=1
+    fi
   fi
-  return "${lock_status}"
+  ((lock_status != 0)) && return "${lock_status}"
+  return "${removal_status}"
 }
 assert_model_lock_held() {
   [[ -n "${model_lock_pid}" ]] && kill -0 "${model_lock_pid}" 2>/dev/null
@@ -264,10 +276,9 @@ acquire_model_lock() {
   chmod 0600 "${model_lock_report_file}"
   exec 9<>"${model_lock_fifo}"
   model_lock_hold_open='true'
-  (
-    exec 9>&-
-    ssh "${ssh_options[@]}" "${dgx_host}" "${remote_model_lock_command}" <"${model_lock_fifo}" >"${model_lock_report_file}"
-  ) &
+  CANARYSTING_DGX_SSH_EXEC_CHILD=1 \
+    ssh "${ssh_options[@]}" "${dgx_host}" "${remote_model_lock_command}" \
+      <"${model_lock_fifo}" >"${model_lock_report_file}" 9>&- &
   model_lock_pid=$!
   for ((attempt = 0; attempt < 200; attempt++)); do
     if [[ -s "${model_lock_report_file}" ]]; then
