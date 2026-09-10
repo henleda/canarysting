@@ -27,6 +27,7 @@ ssh() {
     -o Tunnel=no \
     -o PermitLocalCommand=no \
     -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
@@ -44,6 +45,7 @@ scp() {
     -o Tunnel=no \
     -o PermitLocalCommand=no \
     -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
     -o ServerAliveInterval=5 \
     -o ServerAliveCountMax=3 \
     "$@"
@@ -202,7 +204,7 @@ should_run_generic_cleanup() {
   [[ "${selected_profile}" != 'attacker-loop' || "${scenario_cleanup_failed}" -eq 0 ]]
 }
 cleanup() {
-  local status=$? scenario_cleanup_failed=0
+  local status=$? scenario_cleanup_failed=0 transport_cleanup_failed=0 removal_status=0
   trap - EXIT INT TERM
   if ((cleanup_required)); then
     for ((index=scenario_count-1; index>=0; index--)); do
@@ -219,13 +221,26 @@ cleanup() {
       printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
     fi
   fi
-  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' && -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
-    if ! close_ssh_control && ((status == 0)); then
-      status=1
+  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then
+    if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+      if ! close_ssh_control; then
+        transport_cleanup_failed=1
+        ((status != 0)) || status=1
+      fi
+    elif [[ -n "${CANARYSTING_DGX_SSH_CONTROL_PATH:-}" ]] &&
+      ! dgx_remove_ssh_control_socket "${CANARYSTING_DGX_SSH_CONTROL_PATH}"; then
+      transport_cleanup_failed=1
+      ((status != 0)) || status=1
     fi
   fi
-  if [[ -z "${CANARYSTING_DGX_SSH_MASTER_PID:-}" && -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
-    rm -rf -- "${work_root}"
+  if ((transport_cleanup_failed == 0)) && [[ -z "${CANARYSTING_DGX_SSH_MASTER_PID:-}" && -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
+    rm -rf -- "${work_root}" || removal_status=$?
+    if ((removal_status != 0)) || [[ -e "${work_root}" || -L "${work_root}" ]]; then
+      ((status != 0)) || status=1
+    fi
+  fi
+  if ((transport_cleanup_failed != 0)); then
+    printf 'dgx-pr: retaining unverified standalone transport root %s\n' "${work_root}" >&2
   fi
   exit "${status}"
 }

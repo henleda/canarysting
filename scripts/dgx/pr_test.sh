@@ -144,7 +144,7 @@ CANARYSTING_DGX_REAL_SCP="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
 scp -o BatchMode=yes source falcon1:/target
 ' -- "${transport_probe}" "${control_path}")"
-expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
+expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nForkAfterAuthentication=no\n-o\nServerAliveInterval=5\n-o\nServerAliveCountMax=3'
 [[ "${ssh_arguments}" == "${expected_prefix}"$'\n-o\nBatchMode=yes\nfalcon1\ntrue' ]] || {
   echo 'FAIL: SSH does not prepend the bounded shared-control options' >&2
   exit 1
@@ -164,7 +164,7 @@ export TRANSPORT_MASTER_PID
 close_ssh_control
 [[ -z "${CANARYSTING_DGX_SSH_MASTER_PID}" ]]
 ' -- "${transport_probe}" "${control_path}"
-expected_close=$'-o\nBatchMode=yes\n-o\nConnectTimeout=5\n-o\nConnectionAttempts=1\n-o\nStrictHostKeyChecking=yes\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
+expected_close=$'-o\nBatchMode=yes\n-o\nConnectTimeout=5\n-o\nConnectionAttempts=1\n-o\nStrictHostKeyChecking=yes\n-o\nProxyCommand=/usr/bin/false\n-o\nClearAllForwardings=yes\n-o\nForwardAgent=no\n-o\nForwardX11=no\n-o\nGSSAPIDelegateCredentials=no\n-o\nTunnel=no\n-o\nPermitLocalCommand=no\n-o\nRequestTTY=no\n-o\nForkAfterAuthentication=no\n-o\nControlPath='"${control_path}"$'\n-O\nexit\nfalcon1'
 [[ "$(<"${close_arguments_file}")" == "${expected_close}" ]] || {
   echo 'FAIL: coordinator cleanup does not close the exact run-scoped SSH control connection' >&2
   exit 1
@@ -184,6 +184,7 @@ Host falcon1
   PermitLocalCommand yes
   LocalCommand /usr/bin/false
   RequestTTY force
+  ForkAfterAuthentication yes
 CONFIG
 effective_ssh_config="$(/usr/bin/ssh -G -F "${hostile_ssh_config}" \
   -o ClearAllForwardings=yes \
@@ -193,10 +194,11 @@ effective_ssh_config="$(/usr/bin/ssh -G -F "${hostile_ssh_config}" \
   -o Tunnel=no \
   -o PermitLocalCommand=no \
   -o RequestTTY=no \
+  -o ForkAfterAuthentication=no \
   falcon1 2>/dev/null)"
 for required_setting in 'clearallforwardings yes' 'forwardagent no' 'forwardx11 no' \
   'gssapidelegatecredentials no' \
-  'tunnel false' 'permitlocalcommand no' 'requesttty false'; do
+  'tunnel false' 'permitlocalcommand no' 'requesttty false' 'forkafterauthentication no'; do
   grep -Fqx "${required_setting}" <<<"${effective_ssh_config}" || {
     echo "FAIL: hostile SSH configuration retained ${required_setting}" >&2
     exit 1
@@ -274,6 +276,7 @@ dgx_close_ssh_control "$5"
 for required_option in 'BatchMode=yes' 'ConnectTimeout=20' 'ConnectionAttempts=1' \
   'StrictHostKeyChecking=yes' 'ClearAllForwardings=yes' 'ForwardAgent=no' \
   'ForwardX11=no' 'GSSAPIDelegateCredentials=no' 'Tunnel=no' 'PermitLocalCommand=no' 'RequestTTY=no' \
+  'ForkAfterAuthentication=no' \
   'ControlMaster=yes' 'ControlPersist=no' \
   "ControlPath=${control_path}" 'ServerAliveInterval=5' 'ServerAliveCountMax=3'; do
   [[ "$(grep -Fxc -- "${required_option}" "${bootstrap_log}")" == '3' ]] || {
@@ -293,7 +296,7 @@ done
 for required_option in 'BatchMode=yes' 'ConnectTimeout=5' 'ConnectionAttempts=1' \
   'StrictHostKeyChecking=yes' 'ProxyCommand=/usr/bin/false' \
   'ClearAllForwardings=yes' 'ForwardAgent=no' 'ForwardX11=no' 'GSSAPIDelegateCredentials=no' 'Tunnel=no' \
-  'PermitLocalCommand=no' 'RequestTTY=no' "ControlPath=${control_path}"; do
+  'PermitLocalCommand=no' 'RequestTTY=no' 'ForkAfterAuthentication=no' "ControlPath=${control_path}"; do
   grep -Fqx -- "${required_option}" "${bootstrap_control_log}" || {
     echo "FAIL: bounded mux operations did not force ${required_option}" >&2
     exit 1
@@ -418,7 +421,26 @@ printf "%s\t%s\t%s\n" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}
   exit 1
 }
 
-profile_removal_failure_state="$(bash -c "${batch_close_transport_definition}"$'\n''
+profile_unsafe_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
+printf 'not a socket\n' >"${profile_unsafe_root}/ssh-control"
+profile_unsafe_state="$(bash -c "${remove_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n''
+transport_root="$1"
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
+CANARYSTING_DGX_SSH_MASTER_PID=""
+set +e
+close_profile_transport 2>/dev/null
+close_status=$?
+set -e
+printf "%s\t%s\t%s\n" "${close_status}" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}"
+' -- "${profile_unsafe_root}")"
+[[ "${profile_unsafe_state}" == "1"$'\t'"${profile_unsafe_root}"$'\t'"${profile_unsafe_root}/ssh-control" &&
+  -f "${profile_unsafe_root}/ssh-control" && ! -L "${profile_unsafe_root}/ssh-control" ]] || {
+  echo 'FAIL: outer batch cleanup erased or forgot a refused control-path entry' >&2
+  exit 1
+}
+rm -rf -- "${profile_unsafe_root}"
+
+profile_removal_failure_state="$(bash -c "${remove_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n''
 rm() { return 88; }
 transport_root="$1"
 CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
@@ -433,6 +455,26 @@ printf "%s\t%s\t%s\n" "${close_status}" "${transport_root}" "${CANARYSTING_DGX_B
   echo 'FAIL: failed profile-root removal was reported as success or discarded cleanup state' >&2
   exit 1
 }
+
+standalone_unsafe_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
+printf 'not a socket\n' >"${standalone_unsafe_root}/ssh-control"
+set +e
+bash -c "${remove_control_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+work_root="$1"
+cleanup_required=0
+CANARYSTING_DGX_SSH_CONTROL_OWNED=1
+CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-control"
+CANARYSTING_DGX_SSH_MASTER_PID=""
+cleanup
+' -- "${standalone_unsafe_root}" 2>/dev/null
+standalone_unsafe_status=$?
+set -e
+[[ "${standalone_unsafe_status}" -eq 1 && -f "${standalone_unsafe_root}/ssh-control" &&
+  ! -L "${standalone_unsafe_root}/ssh-control" ]] || {
+  echo 'FAIL: outer standalone cleanup erased or accepted a refused control-path entry' >&2
+  exit 1
+}
+rm -rf -- "${standalone_unsafe_root}"
 
 standalone_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 standalone_count="${fixture_root}/standalone-bootstrap-count"
@@ -538,8 +580,8 @@ kill -s "$2" "$$"
 ' -- "${batch_signal_root}" "${signal_name}" "${batch_signal_pid_file}"
   batch_signal_status=$?
   set -e
-  [[ "${batch_signal_status}" -eq "${expected_status}" && ! -e "${batch_signal_root}" && ! -L "${batch_signal_root}" ]] || {
-    echo "FAIL: batch ${signal_name} did not preserve failure status and exact local cleanup" >&2
+  [[ "${batch_signal_status}" -eq "${expected_status}" && -d "${batch_signal_root}" && ! -L "${batch_signal_root}" ]] || {
+    echo "FAIL: batch ${signal_name} did not preserve its signal status and failed-shutdown root" >&2
     exit 1
   }
   batch_signal_master_pid="$(<"${batch_signal_pid_file}")"
@@ -547,6 +589,7 @@ kill -s "$2" "$$"
     echo "FAIL: batch ${signal_name} cleanup left its owned master alive" >&2
     exit 1
   fi
+  rm -rf -- "${batch_signal_root}"
 done
 
 pr_trap_line="$(grep -nFx 'trap cleanup EXIT' "${script_dir}/pr.sh" | cut -d: -f1)"
@@ -599,7 +642,8 @@ configure_ssh_control "$1"
 fi
 chmod 0700 "${batch_fixture}"
 grep -Fq 'export -f ssh scp' "${script_dir}/pr.sh"
-grep -Fqx '    if ! close_ssh_control && ((status == 0)); then' "${script_dir}/pr.sh"
+grep -Fqx '      if ! close_ssh_control; then' "${script_dir}/pr.sh"
+grep -Fqx '  if ((transport_cleanup_failed != 0)); then' "${script_dir}/pr.sh"
 bootstrap_line="$(grep -nF 'dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}"' "${script_dir}/pr-batch.sh" | cut -d: -f1)"
 profile_loop_line="$(grep -nF 'for index in "${!selected_profiles[@]}"; do' "${script_dir}/pr-batch.sh" | tail -1 | cut -d: -f1)"
 profile_root_line="$(grep -nF 'transport_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"' "${script_dir}/pr-batch.sh" | cut -d: -f1)"

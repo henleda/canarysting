@@ -30,6 +30,7 @@ dgx_run_ssh_control_operation() {
     -o Tunnel=no \
     -o PermitLocalCommand=no \
     -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
     -o "ControlPath=${control_path}" \
     -O "${operation}" falcon1 >/dev/null 2>&1 &
   command_pid=$!
@@ -143,6 +144,7 @@ dgx_open_ssh_control() {
     -o Tunnel=no \
     -o PermitLocalCommand=no \
     -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
     -o ControlMaster=yes \
     -o ControlPersist=no \
     -o "ControlPath=${control_path}" \
