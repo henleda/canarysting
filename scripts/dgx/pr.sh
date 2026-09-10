@@ -73,13 +73,13 @@ configure_ssh_control() {
   local batch_root=''
 
   CANARYSTING_DGX_SSH_CONTROL_OWNED=1
-  CANARYSTING_DGX_SSH_CONTROL_PATH="${coordinator_root}/ssh-%C"
+  CANARYSTING_DGX_SSH_CONTROL_PATH="${coordinator_root}/ssh-control"
   if [[ -z "${batch_path}" ]]; then
     return
   fi
-  [[ "${batch_path}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+/ssh-%C$ ]] || \
+  [[ "${batch_path}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+/ssh-control$ ]] || \
     fail 'shared SSH control path is outside a bounded DGX batch root'
-  batch_root="${batch_path%/ssh-%C}"
+  batch_root="${batch_path%/ssh-control}"
   [[ -d "${batch_root}" && ! -L "${batch_root}" && -O "${batch_root}" && "$(directory_mode "${batch_root}")" == '700' ]] || \
     fail 'shared SSH control root is unavailable, non-private, or not owned by this user'
   CANARYSTING_DGX_SSH_CONTROL_OWNED=0

@@ -125,7 +125,7 @@ for index in "${!selected_profiles[@]}"; do
   [[ "${transport_root}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+$ && -d "${transport_root}" && ! -L "${transport_root}" && -O "${transport_root}" ]] || \
     fail 'unsafe DGX profile transport root'
   chmod 0700 "${transport_root}"
-  CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+  CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
   export CANARYSTING_DGX_BATCH_CONTROL_PATH
   dgx_open_ssh_control "${CANARYSTING_DGX_BATCH_CONTROL_PATH}" || \
     fail "unable to establish bounded DGX transport for profile ${selected_profiles[index]} after three pre-mutation attempts"

@@ -88,9 +88,10 @@ directory_mode_definition="$(awk '/^directory_mode\(\) \{/ { capture=1 } capture
 fail_definition="$(awk '/^fail\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/pr.sh")"
 control_operation_definition="$(awk '/^dgx_run_ssh_control_operation\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
 retry_wait_definition="$(awk '/^dgx_wait_before_ssh_retry\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
+remove_control_definition="$(awk '/^dgx_remove_ssh_control_socket\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
 terminate_master_definition="$(awk '/^dgx_terminate_ssh_master\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
 close_control_definition="$(awk '/^dgx_close_ssh_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${script_dir}/ssh-control.sh")"
-[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" && -n "${configure_transport_definition}" && -n "${directory_mode_definition}" && -n "${fail_definition}" && -n "${control_operation_definition}" && -n "${retry_wait_definition}" && -n "${terminate_master_definition}" && -n "${close_control_definition}" ]] || {
+[[ -n "${ssh_transport_definition}" && -n "${scp_transport_definition}" && -n "${close_transport_definition}" && -n "${configure_transport_definition}" && -n "${directory_mode_definition}" && -n "${fail_definition}" && -n "${control_operation_definition}" && -n "${retry_wait_definition}" && -n "${remove_control_definition}" && -n "${terminate_master_definition}" && -n "${close_control_definition}" ]] || {
   echo 'FAIL: shared DGX transport functions are not independently testable' >&2
   exit 1
 }
@@ -107,7 +108,32 @@ fi
 printf '%s\n' "$@"
 PROBE
 chmod 0700 "${transport_probe}"
-control_path="${fixture_root}/ssh-%C"
+control_path="${fixture_root}/ssh-control"
+if ! bash -c "${remove_control_definition}"$'\n''dgx_remove_ssh_control_socket "$1"' -- "${control_path}"; then
+  echo 'FAIL: absent socket in a private owned root was not accepted' >&2
+  exit 1
+fi
+unsafe_control_root="${fixture_root}/unsafe-control-root"
+mkdir -m 0700 "${unsafe_control_root}"
+printf 'not a socket\n' >"${unsafe_control_root}/ssh-control"
+if bash -c "${remove_control_definition}"$'\n''dgx_remove_ssh_control_socket "$1"' -- "${unsafe_control_root}/ssh-control"; then
+  echo 'FAIL: non-socket control-path entry was removed or accepted' >&2
+  exit 1
+fi
+[[ -f "${unsafe_control_root}/ssh-control" && ! -L "${unsafe_control_root}/ssh-control" ]] || {
+  echo 'FAIL: non-socket control-path entry was mutated' >&2
+  exit 1
+}
+rm -f -- "${unsafe_control_root}/ssh-control"
+ln -s /tmp "${unsafe_control_root}/ssh-control"
+if bash -c "${remove_control_definition}"$'\n''dgx_remove_ssh_control_socket "$1"' -- "${unsafe_control_root}/ssh-control"; then
+  echo 'FAIL: symlink control-path entry was removed or accepted' >&2
+  exit 1
+fi
+[[ -L "${unsafe_control_root}/ssh-control" ]] || {
+  echo 'FAIL: symlink control-path entry was mutated' >&2
+  exit 1
+}
 ssh_arguments="$(bash -c "${ssh_transport_definition}"$'\n''
 CANARYSTING_DGX_REAL_SSH="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
@@ -128,7 +154,7 @@ expected_prefix=$'-o\nControlMaster=no\n-o\nControlPath='"${control_path}"$'\n-o
   exit 1
 }
 close_arguments_file="${fixture_root}/close-arguments"
-TRANSPORT_PROBE_LOG="${close_arguments_file}" bash -c "${control_operation_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${close_transport_definition}"$'\n''
+TRANSPORT_PROBE_LOG="${close_arguments_file}" bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${close_transport_definition}"$'\n''
 CANARYSTING_DGX_REAL_SSH="$1"
 CANARYSTING_DGX_SSH_CONTROL_PATH="$2"
 bash -c "trap '\''exit 0'\'' TERM; while :; do sleep 1; done" &
@@ -227,7 +253,7 @@ bootstrap_log="${fixture_root}/bootstrap-log"
 bootstrap_control_log="${fixture_root}/bootstrap-control-log"
 bootstrap_master_pid_file="${fixture_root}/bootstrap-master-pid"
 bootstrap_master_pids="${fixture_root}/bootstrap-master-pids"
-bash -c "${control_operation_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n''
+bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n''
 dgx_wait_before_ssh_retry() { :; }
 CANARYSTING_DGX_REAL_SSH="$1"
 BOOTSTRAP_PROBE_COUNT="$2"
@@ -248,13 +274,17 @@ dgx_close_ssh_control "$5"
 for required_option in 'BatchMode=yes' 'ConnectTimeout=20' 'ConnectionAttempts=1' \
   'StrictHostKeyChecking=yes' 'ClearAllForwardings=yes' 'ForwardAgent=no' \
   'ForwardX11=no' 'GSSAPIDelegateCredentials=no' 'Tunnel=no' 'PermitLocalCommand=no' 'RequestTTY=no' \
-  'ControlMaster=yes' 'ControlPersist=1200' \
+  'ControlMaster=yes' 'ControlPersist=no' \
   "ControlPath=${control_path}" 'ServerAliveInterval=5' 'ServerAliveCountMax=3'; do
   [[ "$(grep -Fxc -- "${required_option}" "${bootstrap_log}")" == '3' ]] || {
     echo "FAIL: DGX transport bootstrap did not apply ${required_option} to every attempt" >&2
     exit 1
   }
 done
+[[ "$(grep -Fxc -- 'ControlPersist=1200' "${bootstrap_log}" || true)" == '0' ]] || {
+  echo 'FAIL: DGX transport bootstrap can self-daemonize through ControlPersist' >&2
+  exit 1
+}
 [[ "$(grep -Fxc -- '-n' "${bootstrap_log}")" == '3' && "$(grep -Fxc -- '-N' "${bootstrap_log}")" == '3' &&
   "$(grep -Fxc -- '-f' "${bootstrap_log}")" == '0' ]] || {
   echo 'FAIL: DGX transport bootstrap did not retain ownership of its no-command master process' >&2
@@ -284,7 +314,7 @@ bootstrap_failure_log="${fixture_root}/bootstrap-failure-log"
 bootstrap_failure_control_log="${fixture_root}/bootstrap-failure-control-log"
 bootstrap_failure_master_pid_file="${fixture_root}/bootstrap-failure-master-pid"
 bootstrap_failure_master_pids="${fixture_root}/bootstrap-failure-master-pids"
-if bash -c "${control_operation_definition}"$'\n'"${terminate_master_definition}"$'\n'"${bootstrap_definition}"$'\n''
+if bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${bootstrap_definition}"$'\n''
 dgx_wait_before_ssh_retry() { :; }
 CANARYSTING_DGX_REAL_SSH="$1"
 BOOTSTRAP_PROBE_COUNT="$2"
@@ -341,7 +371,7 @@ dgx_run_ssh_control_operation "$2" "$3" 1
 done
 
 surviving_master_pid_file="${fixture_root}/surviving-master-pid"
-bash -c "${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n''
+bash -c "${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n''
 dgx_run_ssh_control_operation() { return 91; }
 bash -c "trap '\''\'' TERM; while :; do :; done" &
 CANARYSTING_DGX_SSH_MASTER_PID=$!
@@ -372,10 +402,10 @@ batch_cleanup_definition="$(awk '/^cleanup\(\) \{/ { capture=1 } capture { print
 profile_close_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
 profile_close_log="${fixture_root}/profile-close-log"
 profile_close_state="$(TRANSPORT_PROBE_LOG="${profile_close_log}" bash -c \
-  "${control_operation_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n''
+  "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n''
 CANARYSTING_DGX_REAL_SSH="$1"
 transport_root="$2"
-CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
 bash -c "trap '\''exit 0'\'' TERM; while :; do sleep 1; done" &
 CANARYSTING_DGX_SSH_MASTER_PID=$!
 TRANSPORT_MASTER_PID="${CANARYSTING_DGX_SSH_MASTER_PID}"
@@ -391,7 +421,7 @@ printf "%s\t%s\t%s\n" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}
 profile_removal_failure_state="$(bash -c "${batch_close_transport_definition}"$'\n''
 rm() { return 88; }
 transport_root="$1"
-CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
 CANARYSTING_DGX_SSH_MASTER_PID=""
 set +e
 close_profile_transport
@@ -399,7 +429,7 @@ close_status=$?
 set -e
 printf "%s\t%s\t%s\n" "${close_status}" "${transport_root}" "${CANARYSTING_DGX_BATCH_CONTROL_PATH}"
 ' -- "${batch_fixture}")"
-[[ "${profile_removal_failure_state}" == "88"$'\t'"${batch_fixture}"$'\t'"${batch_fixture}/ssh-%C" && -d "${batch_fixture}" && ! -L "${batch_fixture}" ]] || {
+[[ "${profile_removal_failure_state}" == "88"$'\t'"${batch_fixture}"$'\t'"${batch_fixture}/ssh-control" && -d "${batch_fixture}" && ! -L "${batch_fixture}" ]] || {
   echo 'FAIL: failed profile-root removal was reported as success or discarded cleanup state' >&2
   exit 1
 }
@@ -411,7 +441,7 @@ standalone_control_log="${fixture_root}/standalone-control-log"
 standalone_master_pid_file="${fixture_root}/standalone-master-pid"
 standalone_master_pids="${fixture_root}/standalone-master-pids"
 set +e
-bash -c "${control_operation_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n'"${close_transport_definition}"$'\n'"${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
+bash -c "${control_operation_definition}"$'\n'"${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${bootstrap_definition}"$'\n'"${close_transport_definition}"$'\n'"${cleanup_policy_definition}"$'\n'"${pr_cleanup_definition}"$'\n''
 dgx_wait_before_ssh_retry() { :; }
 work_root="$2"
 artifact_dir="${work_root}/artifacts"
@@ -423,7 +453,7 @@ profile=preflight
 run_id=standalone-bootstrap-failure
 script_dir="$3"
 CANARYSTING_DGX_REAL_SSH="$1"
-CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-%C"
+CANARYSTING_DGX_SSH_CONTROL_PATH="${work_root}/ssh-control"
 CANARYSTING_DGX_SSH_CONTROL_OWNED=1
 BOOTSTRAP_PROBE_COUNT="$4"
 BOOTSTRAP_PROBE_LOG="$5"
@@ -494,10 +524,10 @@ kill -s "$3" "$$"
   batch_signal_root="$(mktemp -d "/tmp/canarysting-dgx-batch.XXXXXX")"
   batch_signal_pid_file="${fixture_root}/batch-${signal_name}-master-pid"
   set +e
-  bash -c "${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n'"${batch_cleanup_definition}"$'\n''
+  bash -c "${remove_control_definition}"$'\n'"${terminate_master_definition}"$'\n'"${close_control_definition}"$'\n'"${batch_close_transport_definition}"$'\n'"${batch_cleanup_definition}"$'\n''
 dgx_run_ssh_control_operation() { return 91; }
 transport_root="$1"
-CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-%C"
+CANARYSTING_DGX_BATCH_CONTROL_PATH="${transport_root}/ssh-control"
 bash -c "trap '\''\'' TERM; while :; do :; done" &
 CANARYSTING_DGX_SSH_MASTER_PID=$!
 printf "%s\n" "${CANARYSTING_DGX_SSH_MASTER_PID}" >"$3"
@@ -538,11 +568,11 @@ own_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'
 configure_ssh_control "$1"
 printf "%s\t%s\n" "${CANARYSTING_DGX_SSH_CONTROL_PATH}" "${CANARYSTING_DGX_SSH_CONTROL_OWNED}"
 ' -- "${fixture_root}")"
-[[ "${own_control}" == "${fixture_root}/ssh-%C"$'\t1' ]] || {
+[[ "${own_control}" == "${fixture_root}/ssh-control"$'\t1' ]] || {
   echo 'FAIL: standalone coordinator does not own a private control path' >&2
   exit 1
 }
-shared_control_path="${batch_fixture}/ssh-%C"
+shared_control_path="${batch_fixture}/ssh-control"
 shared_control="$(bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
 CANARYSTING_DGX_BATCH_CONTROL_PATH="$2"
 configure_ssh_control "$1"
@@ -555,7 +585,7 @@ printf "%s\t%s\n" "${CANARYSTING_DGX_SSH_CONTROL_PATH}" "${CANARYSTING_DGX_SSH_C
 if bash -c "${fail_definition}"$'\n'"${directory_mode_definition}"$'\n'"${configure_transport_definition}"$'\n''
 CANARYSTING_DGX_BATCH_CONTROL_PATH="$2"
 configure_ssh_control "$1"
-' -- "${fixture_root}" "${fixture_root}/ssh-%C" >/dev/null 2>&1; then
+' -- "${fixture_root}" "${fixture_root}/ssh-control" >/dev/null 2>&1; then
   echo 'FAIL: coordinator accepted a shared control path outside the bounded batch root' >&2
   exit 1
 fi
