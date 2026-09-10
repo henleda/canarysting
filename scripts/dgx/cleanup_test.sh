@@ -26,23 +26,25 @@ expect_failure() {
 [[ -x "${cleanup_script}" ]] || fail "cleanup script is missing or not executable: ${cleanup_script}"
 grep -F 'f:test/correlationspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits correlationspike'
-grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits correlationspike'
 grep -F 'f:test/tracespike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits tracespike'
-grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits tracespike'
 grep -F 'f:test/attackerexecutorspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits attackerexecutorspike'
 grep -F 'f:test/attackerloopspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits attackerloopspike'
+grep -F 'f:test/attackerscenariospike' "${cleanup_script}" >/dev/null ||
+  fail 'cleanup artifact inventory omits attackerscenariospike'
 grep -F 'f:model-load-owned)' "${cleanup_script}" >/dev/null ||
   fail 'generic inspector cannot recognize bounded-loop model ownership'
 grep -F 'active model ownership marker requires attacker-loop cleanup' "${cleanup_script}" >/dev/null ||
   fail 'generic mutation does not refuse bounded-loop model ownership'
 grep -F "evidence_state='model-owned'" "${cleanup_script}" >/dev/null ||
   fail 'generic inspector does not report bounded-loop model ownership'
-grep -F 'test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits attackerexecutorspike'
 
 marker_validator_definition="$(awk '/^validate_model_load_marker\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${cleanup_script}")"

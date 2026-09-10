@@ -94,6 +94,9 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			if isAttackerExecutorPath(file) {
 				addAvailable(selected, all, "attacker-executor-invariants")
 			}
+			if isAttackerScenarioPath(file) {
+				addAvailable(selected, all, "attacker-scenario-invariants")
+			}
 			if isSecurityPath(file) {
 				addAvailable(selected, all, "selfcheck-sting", "selfcheck-envoy")
 				selectAdversarial(selected, all, files)
@@ -139,6 +142,9 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 			selectAdversarial(selected, all, files)
 		case isAttackerExecutorPath(file):
 			addAvailable(selected, all, "attacker-executor-invariants")
+			selectAdversarial(selected, all, files)
+		case isAttackerScenarioPath(file):
+			addAvailable(selected, all, "attacker-scenario-invariants")
 			selectAdversarial(selected, all, files)
 		case isFrontendPath(file):
 			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")

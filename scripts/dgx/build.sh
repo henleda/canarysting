@@ -38,6 +38,7 @@ target_record() {
     tracespike) printf 'test\ttracespike\t./cmd/tracespike\n' ;;
     attackerexecutorspike) printf 'test\tattackerexecutorspike\t./cmd/attackerexecutorspike\n' ;;
     attackerloopspike) printf 'test\tattackerloopspike\t./cmd/attackerloopspike\n' ;;
+    attackerscenariospike) printf 'test\tattackerscenariospike\t./cmd/attackerscenariospike\n' ;;
     *) return 1 ;;
   esac
 }
@@ -94,6 +95,7 @@ readonly -a all_targets=(
   tracespike
   attackerexecutorspike
   attackerloopspike
+  attackerscenariospike
 )
 
 output_dir=""

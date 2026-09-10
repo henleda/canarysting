@@ -144,7 +144,7 @@ validate_artifact_tree() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike|f:test/attackerloopspike)
+      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike|f:test/attackerloopspike|f:test/attackerscenariospike)
         ;;
       *)
         fail "artifact candidate contains an undeclared entry: ${path}/${entry#*:}"
@@ -159,7 +159,7 @@ validate_artifact_tree() {
       [[ "${digest}" =~ ^[0-9a-f]{64}$ && -n "${relative_path}" && -z "${extra:-}" ]] ||
         fail "stage has a malformed checksum entry: ${path}"
       case "${relative_path}" in
-        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)
+        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)
           ;;
         *) fail "stage checksum inventory contains an undeclared path: ${relative_path}" ;;
       esac
@@ -196,7 +196,7 @@ validate_evidence() {
   local entry marker_present='false'
   while IFS= read -r entry; do
     case "${entry}" in
-      f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:stdout.log|f:stderr.log|f:observations.ndjson|f:corpus-1.json|f:corpus-2.json|f:proof.log|f:result.tsv|f:.result.tsv.tmp) ;;
       f:model-load-owned)
         marker_present='true'
         ;;

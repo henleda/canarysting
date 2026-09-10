@@ -62,6 +62,13 @@ grep -Fqx 'artifact_build_count=1' <<<"${attacker_loop_output}"
 grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_loop_output}"
 grep -Fq 'bounded Ollama planner proof contract passed; DGX was not accessed' <<<"${attacker_loop_output}"
 
+attacker_scenario_output="$("${script_dir}/pr.sh" --profile attacker-scenarios --run-id ci-attacker-scenarios --dry-run)"
+grep -Fqx 'profile=attacker-scenarios' <<<"${attacker_scenario_output}"
+grep -Fqx 'preflight_count=1' <<<"${attacker_scenario_output}"
+grep -Fqx 'artifact_build_count=1' <<<"${attacker_scenario_output}"
+grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_scenario_output}"
+grep -Fq 'reproducible attacker scenario contract passed; DGX was not accessed' <<<"${attacker_scenario_output}"
+
 attacker_check_output="$("${script_dir}/pr.sh" --profile attacker-check --run-id ci-attacker-check --dry-run)"
 grep -Fqx 'profile=attacker-check' <<<"${attacker_check_output}"
 grep -Fqx 'preflight_count=0' <<<"${attacker_check_output}"
@@ -732,15 +739,16 @@ if [[ -z "${bootstrap_line}" || -z "${profile_loop_line}" || -z "${profile_root_
 fi
 
 batch_output="$("${script_dir}/pr-batch.sh" \
-  --profiles 'attacker-executor attacker-loop preflight kernel-full' \
+  --profiles 'attacker-executor attacker-loop attacker-scenarios preflight kernel-full' \
   --run-prefix ci-risk-batch \
   --dry-run)"
-grep -Fqx 'batch_profile_count=4' <<<"${batch_output}"
+grep -Fqx 'batch_profile_count=5' <<<"${batch_output}"
 grep -Fqx 'run_prefix=ci-risk-batch' <<<"${batch_output}"
 grep -Fqx 'run_id=ci-risk-batch-1' <<<"${batch_output}"
 grep -Fqx 'run_id=ci-risk-batch-2' <<<"${batch_output}"
 grep -Fqx 'run_id=ci-risk-batch-3' <<<"${batch_output}"
 grep -Fqx 'run_id=ci-risk-batch-4' <<<"${batch_output}"
+grep -Fqx 'run_id=ci-risk-batch-5' <<<"${batch_output}"
 grep -Fq 'DGX batch transport was not created' <<<"${batch_output}"
 if "${script_dir}/pr-batch.sh" --profiles 'preflight preflight' --run-prefix ci-duplicate --dry-run >/dev/null 2>&1; then
   echo 'FAIL: DGX profile batch accepted a duplicate profile' >&2
