@@ -66,6 +66,9 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			report.FrontendAffected = true
 		}
 		switch {
+		case isAttackerLoopPath(path):
+			profiles["dgx-attacker-loop"] = true
+			report.RequiresLiveQwen = true
 		case strings.HasPrefix(path, "internal/canaryattacker/executor/"), strings.HasPrefix(path, "cmd/attackerexecutorspike/"):
 			profiles["dgx-attacker-executor"] = true
 		case strings.HasPrefix(path, "cmd/tracespike/"):
@@ -79,14 +82,20 @@ func ClassifyRisk(files []string, manual string) (RiskReport, error) {
 			profiles["dgx-enforcement"] = true
 		case strings.HasPrefix(path, "scripts/dgx/"):
 			switch {
+			case strings.Contains(path, "attackerloopspike"):
+				profiles["dgx-attacker-loop"] = true
+				report.RequiresLiveQwen = true
 			case strings.Contains(path, "attackerexecutorspike"):
 				profiles["dgx-attacker-executor"] = true
 			case strings.Contains(path, "tracespike"):
 				profiles["dgx-trace"] = true
 			case strings.Contains(path, "attackercheck"):
 				profiles["dgx-attacker-check"] = true
+			case strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"), strings.HasSuffix(path, "/pr-batch.sh"), strings.HasSuffix(path, "/ssh-control.sh"):
+				profiles["dgx-kernel"] = true
+				profiles["dgx-attacker-loop"] = true
+				report.RequiresLiveQwen = true
 			case strings.Contains(path, "cookiespike"), strings.Contains(path, "enforcespike"),
-				strings.HasSuffix(path, "/cleanup.sh"), strings.HasSuffix(path, "/pr.sh"),
 				strings.HasSuffix(path, "/preflight-proof.sh"):
 				profiles["dgx-kernel"] = true
 			default:
@@ -134,6 +143,8 @@ func classifyPath(path string) (RiskLevel, string, bool) {
 	switch {
 	case path == "":
 		return RiskHigh, "empty or unknown path defaults to HIGH", true
+	case isAttackerLoopPath(path):
+		return RiskCritical, "untrusted live-model planner and attacker execution safety boundary", true
 	case strings.HasPrefix(path, "internal/canaryattacker/executor/"), strings.HasPrefix(path, "cmd/attackerexecutorspike/"):
 		return RiskCritical, "bounded attacker execution authority and network safety boundary", true
 	case strings.HasPrefix(path, "internal/canaryattacker/"):
@@ -159,6 +170,12 @@ func classifyPath(path string) (RiskLevel, string, bool) {
 	default:
 		return RiskHigh, "unmapped path defaults conservatively to HIGH", true
 	}
+}
+
+func isAttackerLoopPath(path string) bool {
+	return strings.HasPrefix(path, "internal/canaryattacker/planner/") ||
+		strings.HasPrefix(path, "internal/canaryattacker/ollama/") ||
+		strings.HasPrefix(path, "cmd/attackerloopspike/")
 }
 
 func isGatePath(path string) bool {

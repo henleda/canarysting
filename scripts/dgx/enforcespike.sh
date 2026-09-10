@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly remote_alias='falcon1'
+readonly -a ssh_options=(-o BatchMode=yes -o ConnectTimeout=12 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes)
 readonly remote_root='/var/tmp/canarysting'
 readonly remote_evidence_root='/run/user/1000/canarysting'
 readonly cgroup_parent='/sys/fs/cgroup/canarysting-dgx'
@@ -109,7 +110,7 @@ if [[ "${mode}" == 'run' ]]; then
   CANARYSTING_DGX_HOST="${remote_alias}" "${copy_script}" --verify-only --run-id "${run_id}"
 fi
 
-ssh -T "${remote_alias}" bash -s -- "${mode}" "${run_id}" <<'REMOTE'
+ssh -T "${ssh_options[@]}" "${remote_alias}" bash -s -- "${mode}" "${run_id}" <<'REMOTE'
 set -euo pipefail
 
 mode="$1"

@@ -62,6 +62,24 @@ func TestBoundedAttackerExecutorIsCriticalWithExactDGXProfile(t *testing.T) {
 	}
 }
 
+func TestBoundedAttackerLoopIsCriticalAndRequiresLiveQwen(t *testing.T) {
+	for _, path := range []string{
+		"internal/canaryattacker/planner/run.go",
+		"internal/canaryattacker/ollama/client.go",
+		"cmd/attackerloopspike/main.go",
+		"scripts/dgx/attackerloopspike.sh",
+	} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || !report.RequiresLiveQwen ||
+			len(report.RemoteProfiles) != 1 || report.RemoteProfiles[0] != "dgx-attacker-loop" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
 func TestManualRiskCanIncreaseButNeverReduce(t *testing.T) {
 	increased, err := ClassifyRisk([]string{"docs/README.md"}, "CRITICAL")
 	if err != nil {
@@ -113,6 +131,19 @@ func TestCombinedCriticalChangesRetainEveryDGXProfile(t *testing.T) {
 	}
 }
 
+func TestSharedDGXCleanupPathsSelectKernelAndLiveQwen(t *testing.T) {
+	for _, path := range []string{"scripts/dgx/cleanup.sh", "scripts/dgx/pr.sh", "scripts/dgx/pr-batch.sh", "scripts/dgx/ssh-control.sh"} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || !report.RequiresLiveQwen ||
+			strings.Join(report.RemoteProfiles, ",") != "dgx-attacker-loop,dgx-kernel" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
 func TestGoBackedTracePathsSelectFrontendValidation(t *testing.T) {
 	for _, path := range []string{
 		"test/fixtures/tracebackend/main.go",
@@ -147,7 +178,7 @@ func TestTimingBudgetsDependOnLevelAndRisk(t *testing.T) {
 func TestPRSelectionByRiskAndPath(t *testing.T) {
 	ids := []string{
 		"manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator",
-		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants", "attacker-executor-invariants",
+		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants", "attacker-executor-invariants", "attacker-planner-invariants",
 		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "frontend-playwright", "bpf-compile", "bpf-object-assert",
 		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce",
 	}
@@ -197,6 +228,12 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSelected(t, executor, "attacker-executor-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
+
+	plannerChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"internal/canaryattacker/planner/run.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, plannerChecks, "attacker-planner-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
 
 	critical, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"bpf/enforce/enforce.bpf.c"})
 	if err != nil {

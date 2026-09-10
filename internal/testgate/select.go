@@ -88,6 +88,9 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			}
 		case strings.HasSuffix(file, ".go"), file == "go.mod", file == "go.sum":
 			addAvailable(selected, all, "affected-go-build", "affected-go-test", "go-vet", "security-invariants")
+			if isAttackerLoopPath(file) {
+				addAvailable(selected, all, "attacker-planner-invariants")
+			}
 			if isAttackerExecutorPath(file) {
 				addAvailable(selected, all, "attacker-executor-invariants")
 			}
@@ -131,6 +134,9 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 	}
 	for _, file := range files {
 		switch {
+		case isAttackerLoopPath(file):
+			addAvailable(selected, all, "attacker-planner-invariants")
+			selectAdversarial(selected, all, files)
 		case isAttackerExecutorPath(file):
 			addAvailable(selected, all, "attacker-executor-invariants")
 			selectAdversarial(selected, all, files)

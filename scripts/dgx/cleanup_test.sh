@@ -26,16 +26,41 @@ expect_failure() {
 [[ -x "${cleanup_script}" ]] || fail "cleanup script is missing or not executable: ${cleanup_script}"
 grep -F 'f:test/correlationspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits correlationspike'
-grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits correlationspike'
 grep -F 'f:test/tracespike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits tracespike'
-grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits tracespike'
 grep -F 'f:test/attackerexecutorspike' "${cleanup_script}" >/dev/null ||
   fail 'cleanup artifact inventory omits attackerexecutorspike'
-grep -F 'test/tracespike|test/attackerexecutorspike)' "${cleanup_script}" >/dev/null ||
+grep -F 'f:test/attackerloopspike' "${cleanup_script}" >/dev/null ||
+  fail 'cleanup artifact inventory omits attackerloopspike'
+grep -F 'f:model-load-owned)' "${cleanup_script}" >/dev/null ||
+  fail 'generic inspector cannot recognize bounded-loop model ownership'
+grep -F 'active model ownership marker requires attacker-loop cleanup' "${cleanup_script}" >/dev/null ||
+  fail 'generic mutation does not refuse bounded-loop model ownership'
+grep -F "evidence_state='model-owned'" "${cleanup_script}" >/dev/null ||
+  fail 'generic inspector does not report bounded-loop model ownership'
+grep -F 'test/tracespike|test/attackerexecutorspike|test/attackerloopspike)' "${cleanup_script}" >/dev/null ||
   fail 'cleanup checksum inventory omits attackerexecutorspike'
+
+marker_validator_definition="$(awk '/^validate_model_load_marker\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${cleanup_script}")"
+evidence_validator_definition="$(awk '/^validate_evidence\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${cleanup_script}")"
+[[ -n "${marker_validator_definition}" && -n "${evidence_validator_definition}" ]] ||
+  fail 'model-owned recovery validators are not independently testable'
+recovery_root="$(mktemp -d "${TMPDIR:-/tmp}/canarysting-cleanup-marker.XXXXXX")"
+trap 'rm -rf -- "${recovery_root}"' EXIT INT TERM
+recovery_stage="${recovery_root}/stage"
+recovery_evidence="${recovery_root}/evidence"
+mkdir -m 0700 "${recovery_stage}" "${recovery_evidence}"
+printf 'canarysting-model-load-owned-v1\n' >"${recovery_evidence}/model-load-owned"
+chmod 0600 "${recovery_evidence}/model-load-owned"
+recovery_program=$'set -euo pipefail\nmode="$1"\nstage="$2"\nevidence="$3"\nfail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }\nvalidate_common() { return 0; }\nfind() { printf "f:model-load-owned\\n"; }\nstat() {\n  [[ "$1" == "-c" ]] || return 1\n  if [[ "$2" == "%a" && "$3" == "${evidence}" ]]; then printf "700\\n"; return 0; fi\n  if [[ "$2" == "%a" && "$3" == "${evidence}/model-load-owned" ]]; then printf "600\\n"; return 0; fi\n  if [[ "$2" == "%s" && "$3" == "${evidence}/model-load-owned" ]]; then printf "32\\n"; return 0; fi\n  return 1\n}\n'"${marker_validator_definition}"$'\n'"${evidence_validator_definition}"$'\nvalidate_evidence "${evidence}"'
+bash -c "${recovery_program}" -- inspect "${recovery_stage}" "${recovery_evidence}" ||
+  fail 'read-only inspection rejected an exact active model-ownership marker'
+expect_failure active_model_owner 'active model ownership marker requires attacker-loop cleanup' \
+  bash -c "${recovery_program}" -- cleanup "${recovery_stage}" "${recovery_evidence}"
 
 awk '
   /^ssh .*<<.REMOTE./ { capture = 1; next }

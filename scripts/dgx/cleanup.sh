@@ -144,7 +144,7 @@ validate_artifact_tree() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike)
+      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike|f:test/attackerloopspike)
         ;;
       *)
         fail "artifact candidate contains an undeclared entry: ${path}/${entry#*:}"
@@ -159,7 +159,7 @@ validate_artifact_tree() {
       [[ "${digest}" =~ ^[0-9a-f]{64}$ && -n "${relative_path}" && -z "${extra:-}" ]] ||
         fail "stage has a malformed checksum entry: ${path}"
       case "${relative_path}" in
-        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike)
+        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)
           ;;
         *) fail "stage checksum inventory contains an undeclared path: ${relative_path}" ;;
       esac
@@ -177,16 +177,36 @@ validate_artifact_tree() {
   fi
 }
 
+validate_model_load_marker() {
+  local path="$1" marker="${path}/model-load-owned"
+  [[ "${mode}" == 'inspect' ]] ||
+    fail 'active model ownership marker requires attacker-loop cleanup'
+  [[ -d "${path}" && ! -L "${path}" && -O "${path}" && "$(stat -c %a "${path}")" == '700' ]] ||
+    fail 'model ownership evidence directory is unsafe'
+  [[ -f "${marker}" && ! -L "${marker}" && -O "${marker}" &&
+    "$(stat -c %a "${marker}")" == '600' && "$(stat -c %s "${marker}")" == '32' ]] ||
+    fail 'model ownership marker is unsafe'
+  [[ "$(<"${marker}")" == 'canarysting-model-load-owned-v1' ]] ||
+    fail 'model ownership marker is malformed'
+}
+
 validate_evidence() {
   local path="$1"
   validate_common "${path}"
-  local entry
+  local entry marker_present='false'
   while IFS= read -r entry; do
     case "${entry}" in
       f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:model-load-owned)
+        marker_present='true'
+        ;;
       *) fail "evidence candidate contains an undeclared entry: ${path}/${entry#*:}" ;;
     esac
   done < <(cd "${path}" && find . -mindepth 1 -printf '%y:%P\n' | LC_ALL=C sort)
+
+  if [[ "${marker_present}" == 'true' ]]; then
+    validate_model_load_marker "${path}"
+  fi
 
   if [[ -f "${path}/result.tsv" ]]; then
     awk -F '\t' -v expected="${run_id}" '
@@ -213,7 +233,11 @@ if [[ -e "${stage}" || -L "${stage}" ]]; then
 fi
 if [[ -e "${evidence}" || -L "${evidence}" ]]; then
   validate_evidence "${evidence}"
-  evidence_state='validated'
+  if [[ -e "${evidence}/model-load-owned" || -L "${evidence}/model-load-owned" ]]; then
+    evidence_state='model-owned'
+  else
+    evidence_state='validated'
+  fi
 fi
 
 printf 'mode=%s\nrun_id=%s\nincoming=%s\nstage=%s\nevidence=%s\n' \

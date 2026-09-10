@@ -37,6 +37,7 @@ target_record() {
     correlationspike) printf 'test\tcorrelationspike\t./cmd/correlationspike\n' ;;
     tracespike) printf 'test\ttracespike\t./cmd/tracespike\n' ;;
     attackerexecutorspike) printf 'test\tattackerexecutorspike\t./cmd/attackerexecutorspike\n' ;;
+    attackerloopspike) printf 'test\tattackerloopspike\t./cmd/attackerloopspike\n' ;;
     *) return 1 ;;
   esac
 }
@@ -92,6 +93,7 @@ readonly -a all_targets=(
   correlationspike
   tracespike
   attackerexecutorspike
+  attackerloopspike
 )
 
 output_dir=""

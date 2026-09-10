@@ -3,10 +3,116 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly script_dir
+# shellcheck source=scripts/dgx/ssh-control.sh
+source "${script_dir}/ssh-control.sh"
+# This internal one-call mode is set only by the reviewed asynchronous
+# attacker-loop client below this coordinator. Ambient state cannot opt other
+# child SSH calls into process replacement.
+unset CANARYSTING_DGX_SSH_EXEC_CHILD
 
 fail() {
   printf 'dgx-pr: %s\n' "$*" >&2
   exit 1
+}
+
+# The NVIDIA Sync ProxyCommand used by the pinned DGX alias is intentionally
+# paid once per profile. Every child harness inherits these functions, so SSH
+# and SCP share one host-key-verified connection instead of repeatedly exposing
+# that profile to proxy handshakes.
+ssh() {
+  local -a dgx_ssh_command=("${CANARYSTING_DGX_REAL_SSH}" \
+    -o ControlMaster=no \
+    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ProxyCommand=/usr/bin/false \
+    -o ClearAllForwardings=yes \
+    -o ForwardAgent=no \
+    -o ForwardX11=no \
+    -o GSSAPIDelegateCredentials=no \
+    -o Tunnel=no \
+    -o PermitLocalCommand=no \
+    -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    "$@")
+  # The attacker-loop lock client is asynchronous. Let that one reviewed call
+  # replace its background function process so $! is the real OpenSSH PID,
+  # which the coordinator can terminate and reap without leaving a descendant.
+  if [[ "${CANARYSTING_DGX_SSH_EXEC_CHILD:-0}" == '1' ]]; then
+    exec "${dgx_ssh_command[@]}"
+  fi
+  "${dgx_ssh_command[@]}"
+}
+
+scp() {
+  "${CANARYSTING_DGX_REAL_SCP}" \
+    -o ControlMaster=no \
+    -o "ControlPath=${CANARYSTING_DGX_SSH_CONTROL_PATH}" \
+    -o ProxyCommand=/usr/bin/false \
+    -o ClearAllForwardings=yes \
+    -o ForwardAgent=no \
+    -o ForwardX11=no \
+    -o GSSAPIDelegateCredentials=no \
+    -o Tunnel=no \
+    -o PermitLocalCommand=no \
+    -o RequestTTY=no \
+    -o ForkAfterAuthentication=no \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    "$@"
+}
+
+close_ssh_control() {
+  dgx_close_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}"
+}
+
+directory_mode() {
+  local path="$1"
+  local mode=''
+  if mode="$(/usr/bin/stat -f '%Lp' "${path}" 2>/dev/null)"; then
+    :
+  elif mode="$(/usr/bin/stat -c '%a' "${path}" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  [[ "${mode}" =~ ^0?700$ ]] || return 1
+  printf '700\n'
+}
+
+configure_ssh_control() {
+  local coordinator_root="$1"
+  local batch_path="${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}"
+  local batch_root=''
+
+  CANARYSTING_DGX_SSH_CONTROL_OWNED=1
+  CANARYSTING_DGX_SSH_CONTROL_PATH="${coordinator_root}/ssh-control"
+  if [[ -z "${batch_path}" ]]; then
+    return
+  fi
+  [[ "${batch_path}" =~ ^/tmp/canarysting-dgx-batch\.[A-Za-z0-9]+/ssh-control$ ]] || \
+    fail 'shared SSH control path is outside a bounded DGX batch root'
+  batch_root="${batch_path%/ssh-control}"
+  [[ -d "${batch_root}" && ! -L "${batch_root}" && -O "${batch_root}" && "$(directory_mode "${batch_root}")" == '700' ]] || \
+    fail 'shared SSH control root is unavailable, non-private, or not owned by this user'
+  CANARYSTING_DGX_SSH_CONTROL_OWNED=0
+  CANARYSTING_DGX_SSH_CONTROL_PATH="${batch_path}"
+}
+
+initialize_ssh_control() {
+  local coordinator_root="$1"
+  [[ -x /usr/bin/ssh && -x /usr/bin/scp && -x /usr/bin/false ]] || fail 'fixed OpenSSH client paths are unavailable'
+  CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'
+  CANARYSTING_DGX_REAL_SCP='/usr/bin/scp'
+  CANARYSTING_DGX_SSH_MASTER_PID=''
+  configure_ssh_control "${coordinator_root}"
+  if ((CANARYSTING_DGX_SSH_CONTROL_OWNED)); then
+    dgx_open_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}" || \
+      fail 'unable to establish bounded standalone DGX transport after three pre-mutation attempts'
+  fi
+  readonly CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
+  export CANARYSTING_DGX_REAL_SSH CANARYSTING_DGX_REAL_SCP CANARYSTING_DGX_SSH_CONTROL_PATH CANARYSTING_DGX_SSH_CONTROL_OWNED
+  export -f ssh scp
 }
 
 usage() {
@@ -14,7 +120,7 @@ usage() {
 Usage:
   scripts/dgx/pr.sh --profile PROFILE --run-id ID [--dry-run]
 
-Profiles: preflight, attacker-check, attacker-executor, cookie, enforcement,
+Profiles: preflight, attacker-check, attacker-executor, attacker-loop, cookie, enforcement,
 kernel-full, stack, correlation, trace.
 
 The coordinator performs one DGX preflight before artifact-backed scenarios.
@@ -62,6 +168,7 @@ case "${profile}" in
   preflight) targets=(); scenarios=() ;;
   attacker-check) targets=(); scenarios=(); read_only_check='attackercheck'; preflight_count=0 ;;
   attacker-executor) targets=(attackerexecutorspike); scenarios=(attackerexecutorspike); target_count=1; scenario_count=1 ;;
+  attacker-loop) targets=(attackerloopspike); scenarios=(attackerloopspike); target_count=1; scenario_count=1 ;;
   cookie) targets=(cookiespike); scenarios=(cookiespike); target_count=1; scenario_count=1 ;;
   enforcement) targets=(enforcespike); scenarios=(enforcespike); target_count=1; scenario_count=1 ;;
   kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike); target_count=2; scenario_count=2 ;;
@@ -71,7 +178,7 @@ case "${profile}" in
   dgx-kubernetes|dgx-attacker-smoke|campaign)
     fail "profile ${profile} is not implemented by the bounded DGX harness; refusing to substitute weaker coverage"
     ;;
-  *) fail 'profile must be preflight, attacker-check, attacker-executor, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
+  *) fail 'profile must be preflight, attacker-check, attacker-executor, attacker-loop, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
 esac
 
 printf 'profile=%s\nrun_id=%s\npreflight_count=%s\nread_only_check_count=%s\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \
@@ -89,34 +196,76 @@ if ((dry_run)); then
   exit 0
 fi
 
+if [[ -n "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
+  initialize_ssh_control '/tmp'
+fi
+
 if [[ -n "${read_only_check}" ]]; then
   "${script_dir}/${read_only_check}.sh" --summary
   printf 'PASS: passive DGX inspection profile completed\n'
   exit 0
 fi
 
+work_root=''
+artifact_dir=''
+proof_file=''
+cleanup_required=0
+should_run_generic_cleanup() {
+  local selected_profile="$1" scenario_cleanup_failed="$2"
+  [[ "${selected_profile}" != 'attacker-loop' || "${scenario_cleanup_failed}" -eq 0 ]]
+}
+cleanup() {
+  local status=$? scenario_cleanup_failed=0 transport_cleanup_failed=0 removal_status=0
+  trap - EXIT INT TERM
+  if ((cleanup_required)); then
+    for ((index=scenario_count-1; index>=0; index--)); do
+      if ! CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+        "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup; then
+        status=1
+        scenario_cleanup_failed=1
+      fi
+    done
+    if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then
+      CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+        "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
+    else
+      printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
+    fi
+  fi
+  if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then
+    if [[ -n "${CANARYSTING_DGX_SSH_MASTER_PID:-}" ]]; then
+      if ! close_ssh_control; then
+        transport_cleanup_failed=1
+        ((status != 0)) || status=1
+      fi
+    elif [[ -n "${CANARYSTING_DGX_SSH_CONTROL_PATH:-}" ]] &&
+      ! dgx_remove_ssh_control_socket "${CANARYSTING_DGX_SSH_CONTROL_PATH}"; then
+      transport_cleanup_failed=1
+      ((status != 0)) || status=1
+    fi
+  fi
+  if ((transport_cleanup_failed == 0)) && [[ -z "${CANARYSTING_DGX_SSH_MASTER_PID:-}" && -n "${work_root}" && -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
+    rm -rf -- "${work_root}" || removal_status=$?
+    if ((removal_status != 0)) || [[ -e "${work_root}" || -L "${work_root}" ]]; then
+      ((status != 0)) || status=1
+    fi
+  fi
+  if ((transport_cleanup_failed != 0)); then
+    printf 'dgx-pr: retaining unverified standalone transport root %s\n' "${work_root}" >&2
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 work_root="$(mktemp -d "/tmp/canarysting-dgx-pr.XXXXXX")"
 [[ "${work_root}" == /tmp/canarysting-dgx-pr.* ]] || fail 'unsafe temporary work root'
 artifact_dir="${work_root}/artifacts"
 proof_file="${work_root}/preflight.proof"
-cleanup_required=0
-cleanup() {
-  local status=$?
-  trap - EXIT INT TERM
-  if ((cleanup_required)); then
-    for ((index=scenario_count-1; index>=0; index--)); do
-      CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-        "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup || status=1
-    done
-    CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-      "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
-  fi
-  if [[ -d "${work_root}" && ! -L "${work_root}" && "${work_root}" == /tmp/canarysting-dgx-pr.* ]]; then
-    rm -rf -- "${work_root}"
-  fi
-  exit "${status}"
-}
-trap cleanup EXIT INT TERM
+if [[ -z "${CANARYSTING_DGX_BATCH_CONTROL_PATH:-}" ]]; then
+  initialize_ssh_control "${work_root}"
+fi
 
 "${script_dir}/preflight-proof.sh" --create --run-id "${run_id}" --proof-file "${proof_file}"
 if ((target_count == 0)); then

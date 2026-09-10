@@ -130,6 +130,10 @@ fi
 [[ "$(<"${capture_state}")" == 'truncated' ]] || fail 'bounded capture did not report discarded output'
 if grep -Fq 'ulimit -f ' "${subject}"; then fail 'evidence cap still depends on an inherited file-size limit'; fi
 grep -Fq 'command -v ssh' "${subject}" || fail 'SSH prerequisite is not resolved through PATH'
+grep -Fq 'ConnectTimeout=12' "${subject}" || fail 'SSH connect timeout is not fixed'
+grep -Fq 'ServerAliveInterval=5' "${subject}" || fail 'SSH keepalive interval is not fixed'
+grep -Fq 'ServerAliveCountMax=3' "${subject}" || fail 'SSH keepalive failure bound is not fixed'
+grep -Fq 'StrictHostKeyChecking=yes' "${subject}" || fail 'SSH host-key checking is not strict'
 grep -Fq "grep -q 'enforce_egress'" "${subject}" || fail 'live observer does not match the real egress program name'
 grep -Fq "grep -q 'enforce_release'" "${subject}" || fail 'live observer does not match the real release program name'
 grep -Fq 'control_map_entry=absent' cmd/enforcespike/main.go || fail 'binary does not report control map-miss proof'
