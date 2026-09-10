@@ -187,7 +187,8 @@ func isAttackerLoopPath(path string) bool {
 
 func isAttackerScenarioPath(path string) bool {
 	return strings.HasPrefix(path, "internal/canaryattacker/scenarios/") ||
-		strings.HasPrefix(path, "cmd/attackerscenariospike/")
+		strings.HasPrefix(path, "cmd/attackerscenariospike/") ||
+		strings.HasPrefix(path, "scripts/dgx/attackerscenariospike")
 }
 
 func isGatePath(path string) bool {

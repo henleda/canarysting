@@ -213,7 +213,7 @@ proof_file=''
 cleanup_required=0
 should_run_generic_cleanup() {
   local selected_profile="$1" scenario_cleanup_failed="$2"
-  [[ "${selected_profile}" != 'attacker-loop' || "${scenario_cleanup_failed}" -eq 0 ]]
+  [[ "${scenario_cleanup_failed}" -eq 0 || ( "${selected_profile}" != 'attacker-loop' && "${selected_profile}" != 'attacker-scenarios' ) ]]
 }
 cleanup() {
   local status=$? scenario_cleanup_failed=0 transport_cleanup_failed=0 removal_status=0
@@ -230,7 +230,7 @@ cleanup() {
       CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
         "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
     else
-      printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
+      printf 'dgx-pr: preserving %s stage after scenario-specific cleanup failure\n' "${profile}" >&2
     fi
   fi
   if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then

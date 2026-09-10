@@ -106,6 +106,10 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			selectAdversarial(selected, all, files)
 		case strings.HasPrefix(file, "scripts/dgx/"):
 			selectDGXHarnessForPath(selected, all, file)
+			if isAttackerScenarioPath(file) {
+				addAvailable(selected, all, "attacker-scenario-invariants", "security-invariants")
+				selectAdversarial(selected, all, files)
+			}
 		case strings.HasPrefix(file, "api/proto/"), strings.HasPrefix(file, "internal/operator/api/"):
 			addAvailable(selected, all, "generated-proto", "generated-operator", "affected-go-build", "affected-go-test", "security-invariants")
 		case strings.HasPrefix(file, "docs/"), file == ".gitignore", file == "AGENTS.md", strings.HasPrefix(file, ".agents/skills/"):

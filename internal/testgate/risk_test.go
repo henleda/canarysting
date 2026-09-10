@@ -258,6 +258,17 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 	}
 	assertSelected(t, scenarioChecks, "attacker-scenario-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
 
+	scenarioScriptChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"scripts/dgx/attackerscenariospike_remote.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, scenarioScriptChecks, "attacker-scenario-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
+	scenarioScriptFastChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-fast"}, []string{"scripts/dgx/attackerscenariospike_test.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, scenarioScriptFastChecks, "attacker-scenario-invariants", "security-invariants", "adversarial:fixture")
+
 	critical, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"bpf/enforce/enforce.bpf.c"})
 	if err != nil {
 		t.Fatal(err)

@@ -28,11 +28,17 @@ output="$(${proof_script} --run-id m2c5-contract --dry-run)"
 
 expect_failure missing_run_id '--run-id is required' "${proof_script}" --dry-run
 expect_failure invalid_run_id 'run ID must be' "${proof_script}" --run-id '../escape' --dry-run
-expect_failure long_run_id 'run ID must be' "${proof_script}" --run-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --dry-run
+valid_run_id_48='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+invalid_run_id_49='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+"${proof_script}" --run-id "${valid_run_id_48}" --dry-run >/dev/null
+expect_failure long_run_id 'run ID must be' "${proof_script}" --run-id "${invalid_run_id_49}" --dry-run
 expect_failure duplicate_mode 'choose at most one mode' "${proof_script}" --run-id m2c5-modes --dry-run --inspect
 expect_failure arbitrary_target 'unknown argument: --target' "${proof_script}" --run-id m2c5-target --target 10.0.0.1 --dry-run
 expect_failure arbitrary_namespace 'unknown argument: --namespace' "${proof_script}" --run-id m2c5-namespace --namespace default --dry-run
 expect_failure arbitrary_command 'unknown argument: --command' "${proof_script}" --run-id m2c5-command --command id --dry-run
+expect_failure spoofed_inherited_transport 'inherited DGX transport is unavailable' env \
+  CANARYSTING_DGX_REAL_SSH=/usr/bin/ssh CANARYSTING_DGX_SSH_CONTROL_PATH=/tmp/unreviewed/ssh-control \
+  "${proof_script}" --run-id m2c5-transport --inspect
 
 for marker in \
   'imagePullPolicy: Never' \
@@ -47,13 +53,38 @@ for marker in \
   "fail 'unable to inventory CanarySting Kubernetes runtime state'" \
   "fail 'unable to inventory eBPF program state'" \
   'namespace_uid\t%s' \
+  'delete --raw "/api/v1/namespaces/${namespace}" -f -' \
+  '"preconditions":{"uid":"${expected_uid}"}' \
+  'response_posture_lease=acquired' \
+  'scenario_recovery_state=preserved' \
   'cleanup_namespace yes' \
   'raw_fixture_log_retained\tfalse' \
   'sting_posture\tnot-deployed'; do
   grep -F "${marker}" "${remote_script}" >/dev/null || fail "scenario safety marker missing: ${marker}"
 done
-[[ "$(grep -c '^validate_passive_posture$' "${remote_script}")" == '2' ]] ||
-  fail 'scenario must prove passive posture before and after the fixture'
+[[ "$(grep -Ec '^ *validate_passive_posture (no|yes)$' "${remote_script}")" -ge 4 ]] ||
+  fail 'scenario must repeatedly prove passive posture while its exclusive lease is held'
+
+for marker in \
+  'source "${ssh_control_script}"' \
+  "CANARYSTING_DGX_REAL_SSH='/usr/bin/ssh'" \
+  '-o ProxyCommand=/usr/bin/false' \
+  '-o ControlMaster=no' \
+  'dgx_open_ssh_control "${CANARYSTING_DGX_SSH_CONTROL_PATH}"' \
+  '^/(private/)?tmp/canarysting-dgx-(pr|batch)' \
+  "trap cleanup_transport EXIT"; do
+  grep -F -- "${marker}" "${proof_script}" >/dev/null || fail "standalone transport marker missing: ${marker}"
+done
+open_line="$(grep -nF 'initialize_transport' "${proof_script}" | tail -1 | cut -d: -f1)"
+remote_line="$(grep -nF 'ssh "${ssh_options[@]}" "${dgx_host}" bash -s' "${proof_script}" | head -1 | cut -d: -f1)"
+[[ "${open_line}" =~ ^[0-9]+$ && "${remote_line}" =~ ^[0-9]+$ && "${open_line}" -lt "${remote_line}" ]] ||
+  fail 'standalone transport is not initialized before remote access'
+directory_mode_definition="$(awk '/^directory_mode\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+mode_test_root="$(mktemp -d)"
+chmod 0700 "${mode_test_root}"
+[[ "$(bash -c 'readonly mode=inspect'$'\n'"${directory_mode_definition}"$'\n''directory_mode "$1"' -- "${mode_test_root}")" == '700' ]] ||
+  fail 'transport directory validation collides with the readonly execution mode or omits its normalized value'
+rmdir "${mode_test_root}"
 
 if grep -E 'kubectl.*get.*secrets?|kctl.*get.*secrets?' "${remote_script}" >/dev/null; then
   fail 'scenario fixture reads Kubernetes Secrets'
@@ -74,28 +105,102 @@ grep -F "' \"\${path}\" || return 1" "${remote_script}" >/dev/null ||
   fail 'result-schema parser failure is not propagated by the validator'
 
 inventory_definition="$(awk '/^validate_namespace_inventory\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
-[[ -n "${inventory_definition}" ]] || fail 'namespace inventory validator is not independently testable'
-inventory_program=$'set -euo pipefail\n''fail() { printf "%s\n" "$*" >&2; return 1; }'$'\n'"${inventory_definition}"$'\n''run_id=m2c5-fixture fixture_name=initial-fixture namespace=cs-m2c5-fixture'$'\n''kctl() {
+validation_error_definition="$(awk '/^validation_error\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+namespace_observed_definition="$(awk '/^namespace_uid_observed\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+[[ -n "${inventory_definition}" && -n "${validation_error_definition}" && -n "${namespace_observed_definition}" ]] || fail 'namespace validators are not independently testable'
+inventory_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${namespace_observed_definition}"$'\n'"${inventory_definition}"$'\n''run_id=m2c5-fixture fixture_name=initial-fixture namespace=cs-m2c5-fixture'$'\n''kctl() {
   case "$*" in
-    *"get all,configmap,serviceaccount,networkpolicy,role,rolebinding -o name"*) printf "%s\n" "$INVENTORY" ;;
+    "get namespace cs-m2c5-fixture --ignore-not-found -o jsonpath={.metadata.uid}") printf "%s" "11111111-1111-1111-1111-111111111111" ;;
+    "api-resources --namespaced=true --verbs=list -o name") printf "%s\n" pods services configmaps serviceaccounts secrets ciliumendpoints.cilium.io pods.metrics.k8s.io ;;
+    "-n cs-m2c5-fixture get pods --ignore-not-found -o name") printf "%s\n" pod/initial-fixture ;;
+    "-n cs-m2c5-fixture get services --ignore-not-found -o name") printf "%s\n" service/initial-fixture ;;
+    "-n cs-m2c5-fixture get configmaps --ignore-not-found -o name") printf "%s\n" configmap/kube-root-ca.crt ;;
+    "-n cs-m2c5-fixture get serviceaccounts --ignore-not-found -o name") printf "%s\n" serviceaccount/default ;;
+    "-n cs-m2c5-fixture get secrets --ignore-not-found -o name") printf "%s" "${SECRET_INVENTORY:-}" ;;
+    "-n cs-m2c5-fixture get ciliumendpoints.cilium.io --ignore-not-found -o name") printf "%s" ciliumendpoint.cilium.io/initial-fixture ;;
+    "-n cs-m2c5-fixture get pods.metrics.k8s.io --ignore-not-found -o name") printf "%s" podmetrics.metrics.k8s.io/initial-fixture ;;
+    "-n cs-m2c5-fixture get ciliumendpoint.cilium.io/initial-fixture -o jsonpath={.metadata.ownerReferences[0].uid}") printf "%s" "22222222-2222-2222-2222-222222222222" ;;
+    "-n cs-m2c5-fixture get pod/initial-fixture --ignore-not-found -o name") printf "%s" pod/initial-fixture ;;
+    "-n cs-m2c5-fixture get service/initial-fixture --ignore-not-found -o name") printf "%s" service/initial-fixture ;;
+    "-n cs-m2c5-fixture get pod/initial-fixture -o jsonpath={.metadata.uid}") printf "%s" "22222222-2222-2222-2222-222222222222" ;;
+    "-n cs-m2c5-fixture get service/initial-fixture -o jsonpath={.metadata.uid}") printf "%s" "33333333-3333-3333-3333-333333333333" ;;
     *"get pod/initial-fixture -o jsonpath="*run-id*) printf "%s" "$run_id" ;;
     *"get pod/initial-fixture -o jsonpath="*fixture*) printf "%s" "$fixture_name" ;;
     *"get service/initial-fixture -o jsonpath="*run-id*) printf "%s" "$run_id" ;;
     *"get service/initial-fixture -o jsonpath="*fixture*) printf "%s" "$fixture_name" ;;
-    *"get pod/initial-fixture"*|*"get service/initial-fixture"*) return 0 ;;
     *) return 1 ;;
   esac
 }
 validate_namespace_inventory yes'
-INVENTORY=$'configmap/kube-root-ca.crt\npod/initial-fixture\nservice/initial-fixture\nserviceaccount/default' bash -c "${inventory_program}" ||
+SECRET_INVENTORY='' bash -c "${inventory_program}" ||
   fail 'namespace inventory validator rejected its exact fixture'
-if INVENTORY=$'configmap/foreign\npod/initial-fixture\nservice/initial-fixture\nserviceaccount/default' bash -c "${inventory_program}" >/dev/null 2>&1; then
-  fail 'namespace inventory validator accepted a foreign resource'
+if SECRET_INVENTORY='secret/foreign' bash -c "${inventory_program}" >/dev/null 2>&1; then
+  fail 'namespace inventory validator accepted a foreign Secret name'
 fi
+grep -F 'api-resources --namespaced=true --verbs=list -o name' "${remote_script}" >/dev/null ||
+  fail 'namespace inventory does not dynamically cover every listable namespaced kind'
+
+namespace_state_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${namespace_observed_definition}"$'\n''namespace=cs-m2c5-fixture
+kctl() {
+  case "${NAMESPACE_STATE}" in
+    absent) return 0 ;;
+    present) printf "%s" "11111111-1111-1111-1111-111111111111" ;;
+    error) return 1 ;;
+  esac
+}
+namespace_uid_observed'
+[[ -z "$(NAMESPACE_STATE=absent bash -c "${namespace_state_program}")" ]] || fail 'NotFound did not map to confirmed namespace absence'
+[[ "$(NAMESPACE_STATE=present bash -c "${namespace_state_program}")" == '11111111-1111-1111-1111-111111111111' ]] || fail 'present namespace UID was not observed'
+if NAMESPACE_STATE=error bash -c "${namespace_state_program}" >/dev/null 2>&1; then
+  fail 'Kubernetes API failure was treated as namespace absence'
+fi
+
+cleanup_definition="$(awk '/^cleanup_namespace\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+[[ -n "${cleanup_definition}" ]] || fail 'namespace cleanup is not independently testable'
+uid_mismatch_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${cleanup_definition}"$'\n''namespace=cs-m2c5-fixture
+namespace_uid_observed() { printf "%s" "11111111-1111-1111-1111-111111111111"; }
+owned_namespace_uid() { printf "%s" "22222222-2222-2222-2222-222222222222"; }
+validate_namespace_identity() { return 0; }
+validate_namespace_inventory() { return 0; }
+kctl() { printf "delete-called\n" >>"$DELETE_LOG"; }
+cleanup_namespace no'
+delete_log="$(mktemp)"
+if DELETE_LOG="${delete_log}" bash -c "${uid_mismatch_program}" >/dev/null 2>&1; then
+  fail 'namespace cleanup accepted a replacement namespace UID'
+fi
+[[ ! -s "${delete_log}" ]] || fail 'namespace cleanup issued a delete after UID mismatch'
+rm -f "${delete_log}"
+
+acquire_lease_definition="$(awk '/^acquire_posture_lease\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+validate_lease_definition="$(awk '/^validate_posture_lease\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+release_lease_definition="$(awk '/^release_posture_lease\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+[[ -n "${acquire_lease_definition}" && -n "${validate_lease_definition}" && -n "${release_lease_definition}" ]] ||
+  fail 'response-posture lease is not independently testable'
+lease_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${acquire_lease_definition}"$'\n'"${validate_lease_definition}"$'\n'"${release_lease_definition}"$'\n''posture_lease_acquired=0
+posture_lock_root="$LEASE_ROOT"
+posture_lock_file="${posture_lock_root}/canarysting-response-posture.lock"
+stat() {
+  case "$*" in
+    *"%a"*) printf "600\n" ;;
+    *"%d:%i"*) printf "1:2\n" ;;
+    *) return 1 ;;
+  esac
+}
+flock() { [[ "${LOCK_BUSY:-0}" == 0 ]]; }
+acquire_posture_lease
+release_posture_lease'
+lease_root="$(mktemp -d)"
+LEASE_ROOT="${lease_root}" LOCK_BUSY=0 bash -c "${lease_program}" >/dev/null || fail 'response-posture lease rejected an exclusive acquisition'
+if LEASE_ROOT="${lease_root}" LOCK_BUSY=1 bash -c "${lease_program}" >/dev/null 2>&1; then
+  fail 'response-posture lease accepted a simulated concurrent holder'
+fi
+rm -f "${lease_root}/canarysting-response-posture.lock"
+rmdir "${lease_root}"
 
 passive_definition="$(awk '/^validate_passive_posture\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 [[ -n "${passive_definition}" ]] || fail 'passive-posture validator is not independently testable'
-passive_program=$'set -euo pipefail\n''fail() { printf "%s\n" "$*" >&2; return 1; }'$'\n'"${passive_definition}"$'\n''kctl() {
+passive_program=$'set -euo pipefail\n''fail() { printf "%s\n" "$*" >&2; return 1; }'$'\n'"${passive_definition}"$'\n''namespace=cs-m2c5-fixture fixture_name=initial-fixture
+kctl() {
   [[ "${KCTL_FAIL:-0}" == 0 ]] || return 1
   printf "%s" "${K8S_OUTPUT:-}"
 }
@@ -110,6 +215,9 @@ sudo() {
 }
 validate_passive_posture'
 bash -c "${passive_program}" || fail 'passive-posture validator rejected an empty safe baseline'
+fixture_passive_program="${passive_program%validate_passive_posture}"$'validate_passive_posture yes'
+K8S_OUTPUT=$'cs-m2c5-fixture\tPod/initial-fixture\ncs-m2c5-fixture\tService/initial-fixture' \
+  bash -c "${fixture_passive_program}" || fail 'passive-posture validator rejected only its owned fixture during execution'
 for unsafe in kctl ps runtime bpf; do
   case "${unsafe}" in
     kctl) environment=(KCTL_FAIL=1) ;;

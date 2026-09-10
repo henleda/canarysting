@@ -68,6 +68,11 @@ grep -Fqx 'preflight_count=1' <<<"${attacker_scenario_output}"
 grep -Fqx 'artifact_build_count=1' <<<"${attacker_scenario_output}"
 grep -Fqx 'artifact_transfer_count=1' <<<"${attacker_scenario_output}"
 grep -Fq 'reproducible attacker scenario contract passed; DGX was not accessed' <<<"${attacker_scenario_output}"
+"${script_dir}/pr.sh" --profile attacker-scenarios --run-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --dry-run >/dev/null
+if "${script_dir}/pr.sh" --profile attacker-scenarios --run-id aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --dry-run >/dev/null 2>&1; then
+  echo 'FAIL: DGX coordinator accepted a 49-character run ID' >&2
+  exit 1
+fi
 
 attacker_check_output="$("${script_dir}/pr.sh" --profile attacker-check --run-id ci-attacker-check --dry-run)"
 grep -Fqx 'profile=attacker-check' <<<"${attacker_check_output}"
@@ -82,6 +87,10 @@ cleanup_policy_definition="$(awk '/^should_run_generic_cleanup\(\) \{/ { capture
 bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 0'
 if bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-loop 1'; then
   echo 'FAIL: attacker-loop cleanup failure permits generic stage deletion' >&2
+  exit 1
+fi
+if bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup attacker-scenarios 1'; then
+  echo 'FAIL: attacker-scenarios cleanup failure permits generic stage deletion' >&2
   exit 1
 fi
 bash -c "${cleanup_policy_definition}"$'\n''should_run_generic_cleanup kernel-full 1'
