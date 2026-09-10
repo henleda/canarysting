@@ -42,6 +42,10 @@ grep -F 'f:model-load-owned)' "${cleanup_script}" >/dev/null ||
   fail 'generic inspector cannot recognize bounded-loop model ownership'
 grep -F 'active model ownership marker requires attacker-loop cleanup' "${cleanup_script}" >/dev/null ||
   fail 'generic mutation does not refuse bounded-loop model ownership'
+grep -F 'active attacker-scenario recovery workspace requires scenario-specific cleanup' "${cleanup_script}" >/dev/null ||
+  fail 'generic mutation does not refuse an attacker-scenario recovery workspace'
+grep -F 'active attacker-scenario recovery marker requires scenario-specific cleanup' "${cleanup_script}" >/dev/null ||
+  fail 'generic mutation does not refuse published attacker-scenario recovery'
 grep -F "evidence_state='model-owned'" "${cleanup_script}" >/dev/null ||
   fail 'generic inspector does not report bounded-loop model ownership'
 grep -F 'test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)' "${cleanup_script}" >/dev/null ||
@@ -63,6 +67,28 @@ bash -c "${recovery_program}" -- inspect "${recovery_stage}" "${recovery_evidenc
   fail 'read-only inspection rejected an exact active model-ownership marker'
 expect_failure active_model_owner 'active model ownership marker requires attacker-loop cleanup' \
   bash -c "${recovery_program}" -- cleanup "${recovery_stage}" "${recovery_evidence}"
+
+workspace_guard_definition="$(awk '/^guard_attacker_scenario_workspace\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${cleanup_script}")"
+scenario_marker_validator_definition="$(awk '/^validate_attacker_scenario_recovery_marker\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${cleanup_script}")"
+[[ -n "${workspace_guard_definition}" && -n "${scenario_marker_validator_definition}" ]] ||
+  fail 'attacker-scenario recovery guards are not independently testable'
+scenario_working="${recovery_root}/.attackerscenario-cleanup-marker"
+mkdir -m 0700 "${scenario_working}"
+workspace_guard_program=$'set -euo pipefail\nmode="$1"\nattacker_scenario_working="$2"\nfail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }\nvalidate_common() { return 0; }\n'"${workspace_guard_definition}"$'\nguard_attacker_scenario_workspace'
+expect_failure active_scenario_workspace 'active attacker-scenario recovery workspace requires scenario-specific cleanup' \
+  bash -c "${workspace_guard_program}" -- cleanup "${scenario_working}"
+bash -c "${workspace_guard_program}" -- inspect "${scenario_working}" ||
+  fail 'generic read-only inspection rejected an owned attacker-scenario recovery workspace'
+rmdir "${scenario_working}"
+
+printf 'canarysting-attacker-scenario-recovery-v1\n' >"${recovery_evidence}/attacker-scenario-recovery"
+chmod 0600 "${recovery_evidence}/attacker-scenario-recovery"
+scenario_recovery_program=$'set -euo pipefail\nmode="$1"\nstage="$2"\nevidence="$3"\nfail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }\nvalidate_common() { return 0; }\nfind() { printf "f:attacker-scenario-recovery\\n"; }\nstat() {\n  [[ "$1" == "-c" ]] || return 1\n  if [[ "$2" == "%a" && "$3" == "${evidence}" ]]; then printf "700\\n"; return 0; fi\n  if [[ "$2" == "%a" && "$3" == "${evidence}/attacker-scenario-recovery" ]]; then printf "600\\n"; return 0; fi\n  return 1\n}\n'"${marker_validator_definition}"$'\n'"${scenario_marker_validator_definition}"$'\n'"${evidence_validator_definition}"$'\nvalidate_evidence "${evidence}"'
+bash -c "${scenario_recovery_program}" -- inspect "${recovery_stage}" "${recovery_evidence}" ||
+  fail 'generic read-only inspection rejected an exact attacker-scenario recovery marker'
+expect_failure active_scenario_evidence 'active attacker-scenario recovery marker requires scenario-specific cleanup' \
+  bash -c "${scenario_recovery_program}" -- cleanup "${recovery_stage}" "${recovery_evidence}"
+rm -f "${recovery_evidence}/attacker-scenario-recovery"
 
 awk '
   /^ssh .*<<.REMOTE./ { capture = 1; next }

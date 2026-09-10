@@ -61,13 +61,14 @@ root='/var/tmp/canarysting'
 stage="${root}/${run_id}"
 evidence="${root}/execution-${run_id}"
 working="${root}/.attackerscenario-${run_id}"
+recovery_marker_name='attacker-scenario-recovery'
 namespace="cs-m2c5-${run_id}"
 artifact_relative='test/attackerscenariospike'
 artifact="${stage}/${artifact_relative}"
 scenario_id='m2c5-initial-journey'
 fixture_name='initial-fixture'
 image='docker.io/rancher/mirrored-pause@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4'
-readonly root stage evidence working namespace artifact_relative artifact scenario_id fixture_name image
+readonly root stage evidence working recovery_marker_name namespace artifact_relative artifact scenario_id fixture_name image
 posture_lease_acquired=0
 namespace_delete_attempted=0
 posture_lock_root='/run/user/1000'
@@ -350,7 +351,7 @@ cleanup_working() {
   [[ -d "${working}" && ! -L "${working}" && -O "${working}" ]] || validation_error 'partial scenario workspace is unsafe' || return 1
   while IFS= read -r entry; do
     case "${entry}" in
-      f:namespace.owner|f:.namespace.owner.tmp|f:namespace.uid|f:.namespace.uid.tmp|f:corpus-1.json|f:corpus-2.json|f:proof-1.log|f:proof-2.log|f:fixture.log|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:${recovery_marker_name}|f:.${recovery_marker_name}.tmp|f:namespace.owner|f:.namespace.owner.tmp|f:namespace.uid|f:.namespace.uid.tmp|f:corpus-1.json|f:corpus-2.json|f:proof-1.log|f:proof-2.log|f:fixture.log|f:result.tsv|f:.result.tsv.tmp) ;;
       *) validation_error "partial scenario workspace contains an undeclared entry: ${entry}" || return 1 ;;
     esac
   done < <(cd "${working}" && find . -mindepth 1 -printf '%y:%P\n' | LC_ALL=C sort) || return 1
@@ -358,6 +359,33 @@ cleanup_working() {
     validation_error 'unable to remove run-owned scenario workspace files' || return 1
   rmdir "${working}" || validation_error 'unable to remove empty scenario workspace' || return 1
   printf 'scenario_workspace_removed=%s\n' "${working}"
+}
+
+create_recovery_marker() {
+  local marker="${working}/${recovery_marker_name}" temporary="${working}/.${recovery_marker_name}.tmp"
+  [[ ! -e "${marker}" && ! -L "${marker}" && ! -e "${temporary}" && ! -L "${temporary}" ]] ||
+    validation_error 'scenario recovery marker path already exists' || return 1
+  printf 'canarysting-attacker-scenario-recovery-v1\n' >"${temporary}" || return 1
+  chmod 0600 "${temporary}" || return 1
+  mv "${temporary}" "${marker}" || return 1
+}
+
+validate_recovery_marker() {
+  local parent="$1" marker="${1}/${recovery_marker_name}"
+  [[ -d "${parent}" && ! -L "${parent}" && -O "${parent}" && "$(stat -c %a "${parent}")" == '700' ]] ||
+    validation_error 'scenario recovery marker parent is unsafe' || return 1
+  [[ -f "${marker}" && ! -L "${marker}" && -O "${marker}" && "$(stat -c %a "${marker}")" == '600' ]] ||
+    validation_error 'scenario recovery marker is unsafe' || return 1
+  [[ "$(<"${marker}")" == 'canarysting-attacker-scenario-recovery-v1' ]] ||
+    validation_error 'scenario recovery marker is malformed' || return 1
+}
+
+retire_published_recovery() {
+  local marker="${evidence}/${recovery_marker_name}"
+  validate_evidence recovery || return 1
+  rm -f -- "${marker}" || validation_error 'unable to retire published scenario recovery marker' || return 1
+  [[ ! -e "${marker}" && ! -L "${marker}" ]] ||
+    validation_error 'published scenario recovery marker remains after retirement' || return 1
 }
 
 validate_passive_posture() {
@@ -388,17 +416,10 @@ validate_passive_posture() {
     fail 'CanarySting eBPF response program is present; passive posture is not proven'
 }
 
-if [[ "${mode}" == 'cleanup' ]]; then
-  if [[ ! -e "${root}" && ! -L "${root}" ]]; then
-    observed_uid="$(namespace_uid_observed)" || fail 'could not prove cleanup namespace absence'
-    [[ -z "${observed_uid}" ]] || fail 'scenario namespace exists without its run-owned UID record'
-    printf 'scenario_root=absent\nscenario_namespace=absent\nscenario_workspace=absent\n'
-    printf 'PASS: reproducible attacker scenario cleanup completed\n'
-    exit 0
-  fi
-  validate_root || fail 'remote root validation failed before cleanup'
-  cleanup_namespace no || fail 'namespace cleanup failed; preserving the recovery workspace and artifact stage'
-  cleanup_working || fail 'workspace cleanup failed after namespace cleanup'
+if [[ "${mode}" == 'cleanup' && ! -e "${root}" && ! -L "${root}" ]]; then
+  observed_uid="$(namespace_uid_observed)" || fail 'could not prove cleanup namespace absence'
+  [[ -z "${observed_uid}" ]] || fail 'scenario namespace exists without its run-owned UID record'
+  printf 'scenario_root=absent\nscenario_namespace=absent\nscenario_workspace=absent\n'
   printf 'PASS: reproducible attacker scenario cleanup completed\n'
   exit 0
 fi
@@ -501,9 +522,23 @@ validate_result() {
 }
 
 validate_evidence() {
+  local recovery_state="${1:-final}" recovery_marker_present=0
+  [[ "${recovery_state}" == 'final' || "${recovery_state}" == 'recovery' ]] || fail 'invalid scenario evidence validation mode'
   [[ -d "${evidence}" && ! -L "${evidence}" && -O "${evidence}" && "$(stat -c %a "${evidence}")" == '700' ]] || fail 'published evidence is unsafe'
-  [[ "$(cd "${evidence}" && find . -mindepth 1 -maxdepth 1 -printf '%y:%P\n' | LC_ALL=C sort)" == $'f:corpus-1.json\nf:corpus-2.json\nf:proof.log\nf:result.tsv' ]] ||
-    fail 'published evidence inventory is not exact'
+  local entry
+  while IFS= read -r entry; do
+    case "${entry}" in
+      f:corpus-1.json|f:corpus-2.json|f:proof.log|f:result.tsv) ;;
+      f:${recovery_marker_name}) recovery_marker_present=1 ;;
+      *) fail "published evidence contains an undeclared entry: ${entry}" ;;
+    esac
+  done < <(cd "${evidence}" && find . -mindepth 1 -maxdepth 1 -printf '%y:%P\n' | LC_ALL=C sort)
+  if [[ "${recovery_state}" == 'recovery' ]]; then
+    ((recovery_marker_present == 1)) || fail 'published scenario recovery marker is missing'
+    validate_recovery_marker "${evidence}" || fail 'published scenario recovery marker is invalid'
+  else
+    ((recovery_marker_present == 0)) || fail 'published scenario recovery marker requires scenario-specific cleanup'
+  fi
   for file in corpus-1.json corpus-2.json proof.log result.tsv; do
     [[ -f "${evidence}/${file}" && ! -L "${evidence}/${file}" && -O "${evidence}/${file}" && "$(stat -c %a "${evidence}/${file}")" == '600' ]] ||
       fail "published evidence file is unsafe: ${file}"
@@ -520,6 +555,16 @@ validate_evidence() {
   observed_uid="$(namespace_uid_observed)" || fail 'could not prove published scenario namespace absence'
   [[ -z "${observed_uid}" ]] || fail 'scenario namespace remains after publication'
 }
+
+if [[ "${mode}" == 'cleanup' ]]; then
+  cleanup_namespace no || fail 'namespace cleanup failed; preserving the recovery workspace and artifact stage'
+  cleanup_working || fail 'workspace cleanup failed after namespace cleanup'
+  if [[ -e "${evidence}/${recovery_marker_name}" || -L "${evidence}/${recovery_marker_name}" ]]; then
+    retire_published_recovery || fail 'published recovery retirement failed; preserving evidence and artifact stage'
+  fi
+  printf 'PASS: reproducible attacker scenario cleanup completed\n'
+  exit 0
+fi
 
 if [[ "${mode}" == 'inspect' ]]; then
   validate_evidence
@@ -566,6 +611,7 @@ trap cleanup_on_exit EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+create_recovery_marker || fail 'could not establish durable scenario recovery ownership'
 
 started_epoch="$(date -u +%s)"
 started_utc="$(date -u -d "@${started_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
@@ -741,7 +787,7 @@ chmod 0600 "${working}/corpus-1.json" "${working}/corpus-2.json" "${working}/pro
 mv "${working}" "${evidence}"
 recovery_path="${evidence}"
 release_posture_lease || fail 'could not release the response-posture lease'
-validate_evidence
+retire_published_recovery || fail 'could not validate and retire published scenario recovery state'
 recovery_path=''
 trap - EXIT HUP INT TERM
 printf 'PASS: reproducible attacker scenario proof completed\n'

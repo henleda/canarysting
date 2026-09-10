@@ -9,6 +9,13 @@ enforce_script="${script_dir}/enforcespike.sh"
 readonly proof_script remote_script enforce_script
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+portable_file_mode() {
+  case "$(/usr/bin/uname -s)" in
+    Darwin) /usr/bin/stat -f %Lp "$1" ;;
+    Linux) /usr/bin/stat -c %a "$1" ;;
+    *) return 1 ;;
+  esac
+}
 expect_failure() {
   local name="$1" expected="$2" output
   shift 2
@@ -82,7 +89,7 @@ grep -Fq "posture_lock='/run/user/1000/canarysting-response-posture.lock'" "${en
 namespace_cleanup_line="$(grep -nF "cleanup_namespace yes || fail 'namespace cleanup failed; preserving the recovery workspace and artifact stage'" "${remote_script}" | cut -d: -f1)"
 cleanup_disable_line="$(grep -nE '^cleanup_required=0$' "${remote_script}" | cut -d: -f1)"
 final_posture_line="$(grep -nF "validate_posture_lease || fail 'response-posture lease was lost before final passive check'" "${remote_script}" | cut -d: -f1)"
-evidence_validation_line="$(grep -nF 'validate_evidence' "${remote_script}" | tail -1 | cut -d: -f1)"
+evidence_validation_line="$(grep -nF "retire_published_recovery || fail 'could not validate and retire published scenario recovery state'" "${remote_script}" | cut -d: -f1)"
 recovery_clear_line="$(grep -nF "recovery_path=''" "${remote_script}" | cut -d: -f1)"
 if [[ ! "${namespace_cleanup_line}" =~ ^[0-9]+$ || ! "${cleanup_disable_line}" =~ ^[0-9]+$ ||
   ! "${final_posture_line}" =~ ^[0-9]+$ || ! "${evidence_validation_line}" =~ ^[0-9]+$ ||
@@ -302,17 +309,14 @@ persist_uid_definition="$(awk '/^persist_namespace_uid\(\) \{/ { capture=1 } cap
 recover_uid_definition="$(awk '/^recover_namespace_uid\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 [[ -n "${ownership_digest_definition}" && -n "${owned_uid_definition}" && -n "${persist_uid_definition}" && -n "${recover_uid_definition}" ]] ||
   fail 'namespace UID recovery functions are not independently testable'
-recovery_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${owned_uid_definition}"$'\n'"${ownership_digest_definition}"$'\n'"${persist_uid_definition}"$'\n'"${recover_uid_definition}"$'\n''
+portable_mode_definition="$(declare -f portable_file_mode)"
+recovery_program=$'set -euo pipefail\n'"${portable_mode_definition}"$'\n'"${validation_error_definition}"$'\n'"${owned_uid_definition}"$'\n'"${ownership_digest_definition}"$'\n'"${persist_uid_definition}"$'\n'"${recover_uid_definition}"$'\n''
 working="$1"
 run_id=m2c5-fixture
 fixture_name=initial-fixture
 stat() {
   [[ "$1" == -c && "$2" == %a ]] || return 1
-  case "$(/usr/bin/uname -s)" in
-    Darwin) /usr/bin/stat -f %Lp "$3" ;;
-    Linux) /usr/bin/stat -c %a "$3" ;;
-    *) return 1 ;;
-  esac
+  portable_file_mode "$3"
 }
 namespace_annotation() { printf "%s" "${OBSERVED_OWNER_DIGEST}"; }
 namespace_label() { case "$1" in run-id) printf "%s" "${run_id}" ;; fixture) printf "%s" "${fixture_name}" ;; *) return 1 ;; esac; }
@@ -328,7 +332,7 @@ recovered_uid="$(OBSERVED_OWNER_DIGEST="${owner_digest}" bash -c "${recovery_pro
   fail 'post-create namespace UID recovery rejected its private ownership token'
 [[ "${recovered_uid}" == '55555555-5555-5555-5555-555555555555' &&
   "$(<"${recovery_root}/namespace.uid")" == "${recovered_uid}" &&
-  "$(/usr/bin/stat -f %Lp "${recovery_root}/namespace.uid")" == '600' ]] ||
+  "$(portable_file_mode "${recovery_root}/namespace.uid")" == '600' ]] ||
   fail 'post-create namespace UID recovery did not persist the exact observed UID safely'
 rm -f "${recovery_root}/namespace.uid"
 printf '%s' '55555555-5555-5555' >"${recovery_root}/.namespace.uid.tmp"
