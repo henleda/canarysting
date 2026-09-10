@@ -60,6 +60,7 @@ for marker in \
   'canarysting.dev/ownership-token-sha256: ${namespace_owner_sha256}' \
   'recover_namespace_uid "${observed_uid}"' \
   'timeout --signal=TERM --kill-after=2s "${wall_seconds}s"' \
+  'profile_deadline_epoch' \
   'response_posture_lease=acquired' \
   'scenario_recovery_state=preserved' \
   'cleanup_namespace yes' \
@@ -129,10 +130,22 @@ grep -Fq -- '-o ServerAliveInterval=5' "${disconnect_log}" || fail 'disconnected
 grep -Fq -- '-o ServerAliveCountMax=3' "${disconnect_log}" || fail 'disconnected SSH operation omitted its liveness count'
 rm -f "${disconnect_log}"
 
+remote_wall_definition="$(awk '/^remote_wall_seconds_for_mode\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+[[ -n "${remote_wall_definition}" ]] || fail 'absolute remote scenario deadline is not independently testable'
+[[ "$(bash -c "${remote_wall_definition}"$'\n''remote_wall_seconds_for_mode run')" == '720' &&
+  "$(bash -c "${remote_wall_definition}"$'\n''remote_wall_seconds_for_mode inspect')" == '180' &&
+  "$(bash -c "${remote_wall_definition}"$'\n''remote_wall_seconds_for_mode cleanup')" == '360' ]] ||
+  fail 'remote scenario mode deadlines changed unexpectedly'
+if bash -c "${remote_wall_definition}"$'\n''remote_wall_seconds_for_mode arbitrary' >/dev/null 2>&1; then
+  fail 'remote scenario deadline accepted an arbitrary mode'
+fi
+grep -Fq 'timeout --foreground --signal=TERM --kill-after=5s "${remote_wall_seconds}s"' "${proof_script}" ||
+  fail 'remote scenario invocation is missing its absolute wall bound'
+
 kctl_once_definition="$(awk '/^kctl_once\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 kctl_definition="$(awk '/^kctl\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 [[ -n "${kctl_once_definition}" && -n "${kctl_definition}" ]] || fail 'bounded Kubernetes client is not independently testable'
-api_timeout_program="${kctl_once_definition}"$'\n'"${kctl_definition}"$'\n''
+api_timeout_program=$'profile_deadline_epoch=253402300799\n'"${kctl_once_definition}"$'\n'"${kctl_definition}"$'\n''
 timeout() { printf "%s\n" "$*" >>"${API_TIMEOUT_LOG}"; return 124; }
 sleep() { :; }
 kctl "$@"
@@ -158,9 +171,44 @@ fi
 [[ "$(wc -l <"${wait_timeout_log}" | tr -d '[:space:]')" == '1' ]] || fail 'bounded Kubernetes wait was retried'
 grep -Fq -- '--request-timeout=65s wait' "${wait_timeout_log}" || fail 'Kubernetes wait request timeout is missing'
 grep -Fq -- '--kill-after=2s 70s' "${wait_timeout_log}" || fail 'Kubernetes wait wall timeout is missing'
-rm -f "${read_timeout_log}" "${mutation_timeout_log}" "${wait_timeout_log}"
+retry_success_log="$(mktemp)"
+retry_success_program=$'profile_deadline_epoch=105\n'"${kctl_once_definition}"$'\n'"${kctl_definition}"$'\n''
+date() {
+  if [[ ! -s "${API_TIMEOUT_LOG}" ]]; then printf "100\n"; else printf "102\n"; fi
+}
+timeout() {
+  printf "%s\n" "$*" >>"${API_TIMEOUT_LOG}"
+  [[ "$(wc -l <"${API_TIMEOUT_LOG}" | tr -d "[:space:]")" == 2 ]]
+}
+sleep() { :; }
+kctl get namespace fixture
+'
+API_TIMEOUT_LOG="${retry_success_log}" bash -c "${retry_success_program}" >/dev/null ||
+  fail 'read-only Kubernetes API retry did not accept a delayed bounded success'
+[[ "$(wc -l <"${retry_success_log}" | tr -d '[:space:]')" == '2' ]] ||
+  fail 'delayed-success Kubernetes read did not use exactly two attempts'
+grep -Fq -- '--request-timeout=5s get namespace fixture' "${retry_success_log}" ||
+  fail 'Kubernetes request timeout was not capped by the profile deadline'
+grep -Fq -- '--kill-after=2s 5s' "${retry_success_log}" ||
+  fail 'Kubernetes wall timeout was not capped by the profile deadline'
+grep -Fq -- '--request-timeout=3s get namespace fixture' "${retry_success_log}" ||
+  fail 'delayed Kubernetes retry did not consume the shared profile deadline'
+grep -Fq -- '--kill-after=2s 3s' "${retry_success_log}" ||
+  fail 'delayed Kubernetes retry did not reduce its remaining wall bound'
+expired_deadline_log="$(mktemp)"
+expired_deadline_program=$'profile_deadline_epoch=100\n'"${kctl_once_definition}"$'\n'"${kctl_definition}"$'\n''
+date() { printf "100\n"; }
+timeout() { printf "%s\n" "$*" >>"${API_TIMEOUT_LOG}"; return 0; }
+sleep() { :; }
+kctl get namespace fixture
+'
+if API_TIMEOUT_LOG="${expired_deadline_log}" bash -c "${expired_deadline_program}" >/dev/null 2>&1; then
+  fail 'expired Kubernetes profile deadline permitted an API call'
+fi
+[[ ! -s "${expired_deadline_log}" ]] || fail 'expired Kubernetes profile deadline invoked the API client'
+rm -f "${read_timeout_log}" "${mutation_timeout_log}" "${wait_timeout_log}" "${retry_success_log}" "${expired_deadline_log}"
 open_line="$(grep -nF 'initialize_transport' "${proof_script}" | tail -1 | cut -d: -f1)"
-remote_line="$(grep -nF 'ssh "${ssh_options[@]}" "${dgx_host}" bash -s' "${proof_script}" | head -1 | cut -d: -f1)"
+remote_line="$(grep -nF 'run_remote "${mode}"' "${proof_script}" | tail -1 | cut -d: -f1)"
 [[ "${open_line}" =~ ^[0-9]+$ && "${remote_line}" =~ ^[0-9]+$ && "${open_line}" -lt "${remote_line}" ]] ||
   fail 'standalone transport is not initialized before remote access'
 directory_mode_definition="$(awk '/^directory_mode\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
@@ -258,7 +306,14 @@ recovery_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${o
 working="$1"
 run_id=m2c5-fixture
 fixture_name=initial-fixture
-stat() { [[ "$1" == -c && "$2" == %a ]] || return 1; /usr/bin/stat -f %Lp "$3"; }
+stat() {
+  [[ "$1" == -c && "$2" == %a ]] || return 1
+  case "$(/usr/bin/uname -s)" in
+    Darwin) /usr/bin/stat -f %Lp "$3" ;;
+    Linux) /usr/bin/stat -c %a "$3" ;;
+    *) return 1 ;;
+  esac
+}
 namespace_annotation() { printf "%s" "${OBSERVED_OWNER_DIGEST}"; }
 namespace_label() { case "$1" in run-id) printf "%s" "${run_id}" ;; fixture) printf "%s" "${fixture_name}" ;; *) return 1 ;; esac; }
 validate_namespace_inventory() { [[ "$1" == no ]]; }
@@ -276,6 +331,23 @@ recovered_uid="$(OBSERVED_OWNER_DIGEST="${owner_digest}" bash -c "${recovery_pro
   "$(/usr/bin/stat -f %Lp "${recovery_root}/namespace.uid")" == '600' ]] ||
   fail 'post-create namespace UID recovery did not persist the exact observed UID safely'
 rm -f "${recovery_root}/namespace.uid"
+printf '%s' '55555555-5555-5555' >"${recovery_root}/.namespace.uid.tmp"
+chmod 0600 "${recovery_root}/.namespace.uid.tmp"
+recovered_uid="$(OBSERVED_OWNER_DIGEST="${owner_digest}" bash -c "${recovery_program}" -- "${recovery_root}")" ||
+  fail 'post-create namespace UID recovery rejected a safe prefix-truncated temporary record'
+[[ "${recovered_uid}" == '55555555-5555-5555-5555-555555555555' &&
+  "$(<"${recovery_root}/namespace.uid")" == "${recovered_uid}" &&
+  ! -e "${recovery_root}/.namespace.uid.tmp" ]] ||
+  fail 'post-create namespace UID recovery did not replace a safe prefix-truncated temporary record'
+rm -f "${recovery_root}/namespace.uid"
+printf '%s' '99999999-9999-9999-9999-999999999999' >"${recovery_root}/.namespace.uid.tmp"
+chmod 0600 "${recovery_root}/.namespace.uid.tmp"
+if OBSERVED_OWNER_DIGEST="${owner_digest}" bash -c "${recovery_program}" -- "${recovery_root}" >/dev/null 2>&1; then
+  fail 'namespace UID recovery accepted a complete but different temporary UID'
+fi
+[[ ! -e "${recovery_root}/namespace.uid" && -f "${recovery_root}/.namespace.uid.tmp" ]] ||
+  fail 'failed partial UID recovery did not preserve its recovery state'
+rm -f "${recovery_root}/.namespace.uid.tmp"
 if OBSERVED_OWNER_DIGEST='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
   bash -c "${recovery_program}" -- "${recovery_root}" >/dev/null 2>&1; then
   fail 'namespace UID recovery accepted a mismatched ownership annotation'
@@ -288,6 +360,7 @@ rmdir "${recovery_root}"
 cleanup_definition="$(awk '/^cleanup_namespace\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 [[ -n "${cleanup_definition}" ]] || fail 'namespace cleanup is not independently testable'
 uid_mismatch_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${cleanup_definition}"$'\n''namespace=cs-m2c5-fixture
+namespace_delete_attempted=0
 namespace_uid_observed() { printf "%s" "11111111-1111-1111-1111-111111111111"; }
 owned_namespace_uid() { printf "%s" "22222222-2222-2222-2222-222222222222"; }
 validate_namespace_identity() { return 0; }
@@ -300,6 +373,37 @@ if DELETE_LOG="${delete_log}" bash -c "${uid_mismatch_program}" >/dev/null 2>&1;
 fi
 [[ ! -s "${delete_log}" ]] || fail 'namespace cleanup issued a delete after UID mismatch'
 rm -f "${delete_log}"
+
+delete_once_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${cleanup_definition}"$'\n''namespace=cs-m2c5-fixture
+working="$1"
+namespace_delete_attempted=0
+namespace_uid_observed() { printf "%s" "11111111-1111-1111-1111-111111111111"; }
+owned_namespace_uid() { printf "%s" "11111111-1111-1111-1111-111111111111"; }
+validate_namespace_identity() { return 0; }
+validate_namespace_inventory() { return 0; }
+kctl() { printf "delete-called\n" >>"$DELETE_LOG"; return 124; }
+cleanup_required=1
+cleanup_on_exit() {
+  local status=$?
+  trap - EXIT
+  if ((cleanup_required)); then cleanup_namespace no || :; fi
+  exit "${status}"
+}
+trap cleanup_on_exit EXIT
+cleanup_namespace no
+cleanup_required=0'
+delete_once_root="$(mktemp -d)"
+printf '%s' '11111111-1111-1111-1111-111111111111' >"${delete_once_root}/namespace.uid"
+delete_log="$(mktemp)"
+set +e
+DELETE_LOG="${delete_log}" bash -c "${delete_once_program}" -- "${delete_once_root}" >/dev/null 2>&1
+delete_once_status=$?
+set -e
+[[ "${delete_once_status}" -ne 0 ]] || fail 'ambiguous normal-path namespace deletion unexpectedly succeeded'
+[[ "$(wc -l <"${delete_log}" | tr -d '[:space:]')" == '1' ]] ||
+  fail 'EXIT cleanup retried an ambiguous normal-path deletion in the same process'
+rm -f "${delete_log}" "${delete_once_root}/namespace.uid"
+rmdir "${delete_once_root}"
 
 acquire_lease_definition="$(awk '/^acquire_posture_lease\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 validate_lease_definition="$(awk '/^validate_posture_lease\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"

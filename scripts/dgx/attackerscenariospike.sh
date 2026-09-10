@@ -205,8 +205,25 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 initialize_transport
 
+remote_wall_seconds_for_mode() {
+  case "$1" in
+    run) printf '720\n' ;;
+    inspect) printf '180\n' ;;
+    cleanup) printf '360\n' ;;
+    *) return 2 ;;
+  esac
+}
+
+run_remote() {
+  local requested_mode="$1" remote_wall_seconds
+  remote_wall_seconds="$(remote_wall_seconds_for_mode "${requested_mode}")" || return 2
+  ssh "${ssh_options[@]}" "${dgx_host}" \
+    timeout --foreground --signal=TERM --kill-after=5s "${remote_wall_seconds}s" \
+    bash -s -- "${run_id}" "${requested_mode}" <"${remote_script}"
+}
+
 if [[ "${mode}" == 'cleanup' ]]; then
-  ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" cleanup <"${remote_script}"
+  run_remote cleanup
   "${cleanup_script}" --run-id "${run_id}"
   exit 0
 fi
@@ -221,7 +238,7 @@ else
 fi
 "${copy_script}" --verify-only --run-id "${run_id}"
 
-ssh "${ssh_options[@]}" "${dgx_host}" bash -s -- "${run_id}" "${mode}" <"${remote_script}"
+run_remote "${mode}"
 
 printf 'post_attacker_scenario_check=begin\n'
 CANARYSTING_DGX_HOST="${dgx_host}" "${check_script}"

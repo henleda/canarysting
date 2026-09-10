@@ -12,10 +12,24 @@ mode="$2"
 for tool in awk bpftool cmp date env find flock grep hostname id mkdir mv od ps rm rmdir sha256sum sleep sort stat sudo timeout tr uname wc; do
   command -v "${tool}" >/dev/null 2>&1 || fail "missing remote prerequisite: ${tool}"
 done
+case "${mode}" in
+  run) profile_deadline_seconds=690 ;;
+  inspect) profile_deadline_seconds=150 ;;
+  cleanup) profile_deadline_seconds=330 ;;
+esac
+profile_deadline_epoch="$(($(date -u +%s) + profile_deadline_seconds))"
+readonly profile_deadline_seconds profile_deadline_epoch
 
 kctl_once() {
-  local request_seconds="$1" wall_seconds="$2"
+  local request_seconds="$1" wall_seconds="$2" remaining_seconds
   shift 2
+  remaining_seconds="$((profile_deadline_epoch - $(date -u +%s)))"
+  if ((remaining_seconds <= 0)); then
+    printf 'FAIL: Kubernetes profile deadline expired\n' >&2
+    return 124
+  fi
+  ((wall_seconds <= remaining_seconds)) || wall_seconds="${remaining_seconds}"
+  ((request_seconds <= wall_seconds)) || request_seconds="${wall_seconds}"
   timeout --signal=TERM --kill-after=2s "${wall_seconds}s" \
     sudo -n k3s kubectl "--request-timeout=${request_seconds}s" "$@"
 }
@@ -55,6 +69,7 @@ fixture_name='initial-fixture'
 image='docker.io/rancher/mirrored-pause@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4'
 readonly root stage evidence working namespace artifact_relative artifact scenario_id fixture_name image
 posture_lease_acquired=0
+namespace_delete_attempted=0
 posture_lock_root='/run/user/1000'
 posture_lock_file="${posture_lock_root}/canarysting-response-posture.lock"
 readonly posture_lock_root posture_lock_file
@@ -127,15 +142,22 @@ prepare_namespace_ownership() {
 }
 
 persist_namespace_uid() {
-  local uid="$1" path="${working}/namespace.uid" temporary="${working}/.namespace.uid.tmp" existing
+  local uid="$1" recovery="${2:-no}" path="${working}/namespace.uid" temporary="${working}/.namespace.uid.tmp" existing
   [[ "${uid}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
     validation_error 'refusing to persist a malformed namespace UID' || return 1
+  [[ "${recovery}" == 'no' || "${recovery}" == 'verified-prefix' ]] ||
+    validation_error 'invalid namespace UID persistence mode' || return 1
   [[ ! -e "${path}" && ! -L "${path}" ]] || validation_error 'namespace UID record already exists' || return 1
   if [[ -e "${temporary}" || -L "${temporary}" ]]; then
     [[ -f "${temporary}" && ! -L "${temporary}" && -O "${temporary}" && "$(stat -c %a "${temporary}")" == '600' ]] ||
       validation_error 'partial namespace UID record is unsafe' || return 1
     existing="$(<"${temporary}")"
-    [[ "${existing}" == "${uid}" ]] || validation_error 'partial namespace UID record does not match the observed namespace' || return 1
+    if [[ "${existing}" != "${uid}" ]]; then
+      [[ "${recovery}" == 'verified-prefix' && "${uid}" == "${existing}"* ]] ||
+        validation_error 'partial namespace UID record does not match the observed namespace' || return 1
+      printf '%s' "${uid}" >"${temporary}" || return 1
+      chmod 0600 "${temporary}" || return 1
+    fi
   else
     printf '%s' "${uid}" >"${temporary}" || return 1
     chmod 0600 "${temporary}" || return 1
@@ -157,7 +179,7 @@ recover_namespace_uid() {
   [[ "$(namespace_label run-id)" == "${run_id}" && "$(namespace_label fixture)" == "${fixture_name}" ]] ||
     validation_error 'namespace labels do not match during UID recovery' || return 1
   validate_namespace_inventory no || return 1
-  persist_namespace_uid "${observed_uid}" || return 1
+  persist_namespace_uid "${observed_uid}" verified-prefix || return 1
   printf '%s' "${observed_uid}"
 }
 
@@ -289,6 +311,8 @@ release_posture_lease() {
 
 cleanup_namespace() {
   local require_fixture="$1" observed_uid expected_uid attempt
+  ((namespace_delete_attempted == 0)) ||
+    validation_error 'refusing to repeat a scenario namespace deletion in one process' || return 1
   observed_uid="$(namespace_uid_observed)" || return 1
   if [[ -z "${observed_uid}" ]]; then
     printf 'scenario_namespace=absent\n'
@@ -302,6 +326,7 @@ cleanup_namespace() {
   [[ "${observed_uid}" == "${expected_uid}" ]] || validation_error 'refusing to delete a replacement namespace' || return 1
   validate_namespace_identity "${expected_uid}" || return 1
   validate_namespace_inventory "${require_fixture}" || return 1
+  namespace_delete_attempted=1
   kctl delete --raw "/api/v1/namespaces/${namespace}" -f - >/dev/null <<JSON ||
 {"apiVersion":"v1","kind":"DeleteOptions","propagationPolicy":"Background","preconditions":{"uid":"${expected_uid}"}}
 JSON
