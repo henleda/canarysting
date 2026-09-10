@@ -57,6 +57,9 @@ for marker in \
   'namespace_uid\t%s' \
   'delete --raw "/api/v1/namespaces/${namespace}" -f -' \
   '"preconditions":{"uid":"${expected_uid}"}' \
+  'canarysting.dev/ownership-token-sha256: ${namespace_owner_sha256}' \
+  'recover_namespace_uid "${observed_uid}"' \
+  'timeout --signal=TERM --kill-after=2s "${wall_seconds}s"' \
   'response_posture_lease=acquired' \
   'scenario_recovery_state=preserved' \
   'cleanup_namespace yes' \
@@ -87,6 +90,14 @@ if [[ ! "${namespace_cleanup_line}" =~ ^[0-9]+$ || ! "${cleanup_disable_line}" =
     final_posture_line >= evidence_validation_line || evidence_validation_line >= recovery_clear_line)); then
   fail 'late finalization failures are not guaranteed to preserve recovery evidence'
 fi
+ownership_prepare_line="$(grep -nF 'namespace_owner_sha256="$(prepare_namespace_ownership)"' "${remote_script}" | cut -d: -f1)"
+namespace_create_line="$(grep -nF 'namespace_uid="$(kctl create' "${remote_script}" | cut -d: -f1)"
+namespace_persist_line="$(grep -nF 'persist_namespace_uid "${namespace_uid}"' "${remote_script}" | cut -d: -f1)"
+if [[ ! "${ownership_prepare_line}" =~ ^[0-9]+$ || ! "${namespace_create_line}" =~ ^[0-9]+$ ||
+  ! "${namespace_persist_line}" =~ ^[0-9]+$ ]] ||
+  ((ownership_prepare_line >= namespace_create_line || namespace_create_line >= namespace_persist_line)); then
+  fail 'private namespace recovery ownership is not established before creation and UID persistence'
+fi
 
 for marker in \
   'source "${ssh_control_script}"' \
@@ -98,6 +109,56 @@ for marker in \
   "trap cleanup_transport EXIT"; do
   grep -F -- "${marker}" "${proof_script}" >/dev/null || fail "standalone transport marker missing: ${marker}"
 done
+ssh_definition="$(awk '/^ssh\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${proof_script}")"
+[[ -n "${ssh_definition}" ]] || fail 'bounded SSH wrapper is not independently testable'
+disconnect_log="$(mktemp)"
+set +e
+DISCONNECT_LOG="${disconnect_log}" bash -c "${ssh_definition}"$'\n''
+transport_probe() { printf "%s\n" "$*" >>"${DISCONNECT_LOG}"; return 255; }
+CANARYSTING_DGX_REAL_SSH=transport_probe
+CANARYSTING_DGX_SSH_CONTROL_PATH=/tmp/canarysting-dgx-scenario.fixture/ssh-control
+ssh falcon1 true
+' >/dev/null 2>&1
+disconnect_status=$?
+set -e
+[[ "${disconnect_status}" -eq 255 && "$(wc -l <"${disconnect_log}" | tr -d '[:space:]')" == '1' ]] ||
+  fail 'a disconnected post-bootstrap SSH operation retried or changed its failure status'
+grep -Fq -- '-o ConnectionAttempts=1' "${disconnect_log}" || fail 'disconnected SSH operation omitted its one-attempt bound'
+grep -Fq -- '-o ProxyCommand=/usr/bin/false' "${disconnect_log}" || fail 'disconnected SSH operation retained a route fallback'
+grep -Fq -- '-o ServerAliveInterval=5' "${disconnect_log}" || fail 'disconnected SSH operation omitted its liveness interval'
+grep -Fq -- '-o ServerAliveCountMax=3' "${disconnect_log}" || fail 'disconnected SSH operation omitted its liveness count'
+rm -f "${disconnect_log}"
+
+kctl_once_definition="$(awk '/^kctl_once\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+kctl_definition="$(awk '/^kctl\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+[[ -n "${kctl_once_definition}" && -n "${kctl_definition}" ]] || fail 'bounded Kubernetes client is not independently testable'
+api_timeout_program="${kctl_once_definition}"$'\n'"${kctl_definition}"$'\n''
+timeout() { printf "%s\n" "$*" >>"${API_TIMEOUT_LOG}"; return 124; }
+sleep() { :; }
+kctl "$@"
+'
+read_timeout_log="$(mktemp)"
+if API_TIMEOUT_LOG="${read_timeout_log}" bash -c "${api_timeout_program}" -- get namespace fixture >/dev/null 2>&1; then
+  fail 'blackholed read-only Kubernetes API call unexpectedly succeeded'
+fi
+[[ "$(wc -l <"${read_timeout_log}" | tr -d '[:space:]')" == '2' ]] || fail 'read-only Kubernetes API call did not use exactly one bounded retry'
+grep -Fq -- '--request-timeout=8s get namespace fixture' "${read_timeout_log}" || fail 'read-only Kubernetes API request timeout is missing'
+grep -Fq -- '--kill-after=2s 12s' "${read_timeout_log}" || fail 'read-only Kubernetes API wall timeout is missing'
+mutation_timeout_log="$(mktemp)"
+if API_TIMEOUT_LOG="${mutation_timeout_log}" bash -c "${api_timeout_program}" -- create -f - >/dev/null 2>&1; then
+  fail 'blackholed Kubernetes mutation unexpectedly succeeded'
+fi
+[[ "$(wc -l <"${mutation_timeout_log}" | tr -d '[:space:]')" == '1' ]] || fail 'Kubernetes mutation was retried after an ambiguous timeout'
+grep -Fq -- '--request-timeout=15s create -f -' "${mutation_timeout_log}" || fail 'Kubernetes mutation request timeout is missing'
+grep -Fq -- '--kill-after=2s 20s' "${mutation_timeout_log}" || fail 'Kubernetes mutation wall timeout is missing'
+wait_timeout_log="$(mktemp)"
+if API_TIMEOUT_LOG="${wait_timeout_log}" bash -c "${api_timeout_program}" -- wait --for=condition=Ready pod/fixture --timeout=60s >/dev/null 2>&1; then
+  fail 'blackholed Kubernetes wait unexpectedly succeeded'
+fi
+[[ "$(wc -l <"${wait_timeout_log}" | tr -d '[:space:]')" == '1' ]] || fail 'bounded Kubernetes wait was retried'
+grep -Fq -- '--request-timeout=65s wait' "${wait_timeout_log}" || fail 'Kubernetes wait request timeout is missing'
+grep -Fq -- '--kill-after=2s 70s' "${wait_timeout_log}" || fail 'Kubernetes wait wall timeout is missing'
+rm -f "${read_timeout_log}" "${mutation_timeout_log}" "${wait_timeout_log}"
 open_line="$(grep -nF 'initialize_transport' "${proof_script}" | tail -1 | cut -d: -f1)"
 remote_line="$(grep -nF 'ssh "${ssh_options[@]}" "${dgx_host}" bash -s' "${proof_script}" | head -1 | cut -d: -f1)"
 [[ "${open_line}" =~ ^[0-9]+$ && "${remote_line}" =~ ^[0-9]+$ && "${open_line}" -lt "${remote_line}" ]] ||
@@ -186,6 +247,43 @@ namespace_uid_observed'
 if NAMESPACE_STATE=error bash -c "${namespace_state_program}" >/dev/null 2>&1; then
   fail 'Kubernetes API failure was treated as namespace absence'
 fi
+
+ownership_digest_definition="$(awk '/^ownership_token_sha256\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+owned_uid_definition="$(awk '/^owned_namespace_uid\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+persist_uid_definition="$(awk '/^persist_namespace_uid\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+recover_uid_definition="$(awk '/^recover_namespace_uid\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
+[[ -n "${ownership_digest_definition}" && -n "${owned_uid_definition}" && -n "${persist_uid_definition}" && -n "${recover_uid_definition}" ]] ||
+  fail 'namespace UID recovery functions are not independently testable'
+recovery_program=$'set -euo pipefail\n'"${validation_error_definition}"$'\n'"${owned_uid_definition}"$'\n'"${ownership_digest_definition}"$'\n'"${persist_uid_definition}"$'\n'"${recover_uid_definition}"$'\n''
+working="$1"
+run_id=m2c5-fixture
+fixture_name=initial-fixture
+stat() { [[ "$1" == -c && "$2" == %a ]] || return 1; /usr/bin/stat -f %Lp "$3"; }
+namespace_annotation() { printf "%s" "${OBSERVED_OWNER_DIGEST}"; }
+namespace_label() { case "$1" in run-id) printf "%s" "${run_id}" ;; fixture) printf "%s" "${fixture_name}" ;; *) return 1 ;; esac; }
+validate_namespace_inventory() { [[ "$1" == no ]]; }
+recover_namespace_uid 55555555-5555-5555-5555-555555555555
+'
+recovery_root="$(mktemp -d)"
+chmod 0700 "${recovery_root}"
+printf '%064d' 0 | tr '0' 'a' >"${recovery_root}/namespace.owner"
+chmod 0600 "${recovery_root}/namespace.owner"
+owner_digest="$(sha256sum "${recovery_root}/namespace.owner" | awk '{print $1}')"
+recovered_uid="$(OBSERVED_OWNER_DIGEST="${owner_digest}" bash -c "${recovery_program}" -- "${recovery_root}")" ||
+  fail 'post-create namespace UID recovery rejected its private ownership token'
+[[ "${recovered_uid}" == '55555555-5555-5555-5555-555555555555' &&
+  "$(<"${recovery_root}/namespace.uid")" == "${recovered_uid}" &&
+  "$(/usr/bin/stat -f %Lp "${recovery_root}/namespace.uid")" == '600' ]] ||
+  fail 'post-create namespace UID recovery did not persist the exact observed UID safely'
+rm -f "${recovery_root}/namespace.uid"
+if OBSERVED_OWNER_DIGEST='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+  bash -c "${recovery_program}" -- "${recovery_root}" >/dev/null 2>&1; then
+  fail 'namespace UID recovery accepted a mismatched ownership annotation'
+fi
+[[ ! -e "${recovery_root}/namespace.uid" && ! -L "${recovery_root}/namespace.uid" ]] ||
+  fail 'failed namespace UID recovery created an ownership record'
+rm -f "${recovery_root}/namespace.owner"
+rmdir "${recovery_root}"
 
 cleanup_definition="$(awk '/^cleanup_namespace\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' "${remote_script}")"
 [[ -n "${cleanup_definition}" ]] || fail 'namespace cleanup is not independently testable'

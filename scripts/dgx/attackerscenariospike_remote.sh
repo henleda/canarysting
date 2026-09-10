@@ -9,11 +9,39 @@ mode="$2"
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid remote mode'
 [[ "$(hostname)" == 'spark-5343' && "$(uname -m)" == 'aarch64' ]] || fail 'unexpected scenario host'
 [[ "$(id -u)" == '1000' ]] || fail 'unexpected scenario user'
-for tool in awk bpftool cmp date env find flock grep hostname id mkdir mv ps rm rmdir sha256sum sleep sort stat sudo timeout tr uname wc; do
+for tool in awk bpftool cmp date env find flock grep hostname id mkdir mv od ps rm rmdir sha256sum sleep sort stat sudo timeout tr uname wc; do
   command -v "${tool}" >/dev/null 2>&1 || fail "missing remote prerequisite: ${tool}"
 done
 
-kctl() { sudo -n k3s kubectl "$@"; }
+kctl_once() {
+  local request_seconds="$1" wall_seconds="$2"
+  shift 2
+  timeout --signal=TERM --kill-after=2s "${wall_seconds}s" \
+    sudo -n k3s kubectl "--request-timeout=${request_seconds}s" "$@"
+}
+
+kctl() {
+  local argument verb='' attempt status=0
+  for argument in "$@"; do
+    case "${argument}" in
+      get|api-resources|logs|wait|create|delete) verb="${argument}"; break ;;
+    esac
+  done
+  case "${verb}" in
+    get|api-resources|logs)
+      # Read-only calls may retry once inside the current SSH/profile boundary.
+      # Mutations below are deliberately one-shot.
+      for attempt in 1 2; do
+        if kctl_once 8 12 "$@"; then return 0; else status=$?; fi
+        ((attempt == 2)) && return "${status}"
+        sleep 1
+      done
+      ;;
+    wait) kctl_once 65 70 "$@" ;;
+    create|delete) kctl_once 15 20 "$@" ;;
+    *) return 2 ;;
+  esac
+}
 
 root='/var/tmp/canarysting'
 stage="${root}/${run_id}"
@@ -66,6 +94,71 @@ owned_namespace_uid() {
 namespace_label() {
   kctl get namespace "${namespace}" -o "jsonpath={.metadata.labels.canarysting\\.dev/$1}" ||
     validation_error 'unable to read scenario namespace labels'
+}
+
+namespace_annotation() {
+  kctl get namespace "${namespace}" -o "jsonpath={.metadata.annotations.canarysting\\.dev/$1}" ||
+    validation_error 'unable to read scenario namespace annotations'
+}
+
+ownership_token_sha256() {
+  local path="${working}/namespace.owner" token digest
+  [[ -f "${path}" && ! -L "${path}" && -O "${path}" && "$(stat -c %a "${path}")" == '600' ]] ||
+    validation_error 'namespace ownership token is unavailable or unsafe' || return 1
+  token="$(<"${path}")"
+  [[ "${token}" =~ ^[0-9a-f]{64}$ ]] || validation_error 'namespace ownership token is malformed' || return 1
+  digest="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')" || return 1
+  [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || validation_error 'namespace ownership token digest is malformed' || return 1
+  printf '%s' "${digest}"
+}
+
+prepare_namespace_ownership() {
+  local path="${working}/namespace.owner" temporary="${working}/.namespace.owner.tmp" token digest
+  [[ ! -e "${path}" && ! -L "${path}" && ! -e "${temporary}" && ! -L "${temporary}" ]] ||
+    validation_error 'namespace ownership token path already exists' || return 1
+  [[ -c /dev/urandom ]] || validation_error 'kernel random source is unavailable' || return 1
+  token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" || return 1
+  [[ "${token}" =~ ^[0-9a-f]{64}$ ]] || validation_error 'generated namespace ownership token is malformed' || return 1
+  printf '%s' "${token}" >"${temporary}" || return 1
+  chmod 0600 "${temporary}" || return 1
+  mv "${temporary}" "${path}" || return 1
+  digest="$(ownership_token_sha256)" || return 1
+  printf '%s' "${digest}"
+}
+
+persist_namespace_uid() {
+  local uid="$1" path="${working}/namespace.uid" temporary="${working}/.namespace.uid.tmp" existing
+  [[ "${uid}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    validation_error 'refusing to persist a malformed namespace UID' || return 1
+  [[ ! -e "${path}" && ! -L "${path}" ]] || validation_error 'namespace UID record already exists' || return 1
+  if [[ -e "${temporary}" || -L "${temporary}" ]]; then
+    [[ -f "${temporary}" && ! -L "${temporary}" && -O "${temporary}" && "$(stat -c %a "${temporary}")" == '600' ]] ||
+      validation_error 'partial namespace UID record is unsafe' || return 1
+    existing="$(<"${temporary}")"
+    [[ "${existing}" == "${uid}" ]] || validation_error 'partial namespace UID record does not match the observed namespace' || return 1
+  else
+    printf '%s' "${uid}" >"${temporary}" || return 1
+    chmod 0600 "${temporary}" || return 1
+  fi
+  mv "${temporary}" "${path}" || return 1
+  [[ "$(owned_namespace_uid)" == "${uid}" ]] || validation_error 'persisted namespace UID record is invalid' || return 1
+}
+
+recover_namespace_uid() {
+  local observed_uid="$1" expected_digest observed_digest
+  [[ "${observed_uid}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    validation_error 'cannot recover a malformed observed namespace UID' || return 1
+  [[ ! -e "${working}/namespace.uid" && ! -L "${working}/namespace.uid" ]] ||
+    validation_error 'namespace UID recovery refuses an existing record' || return 1
+  expected_digest="$(ownership_token_sha256)" || return 1
+  observed_digest="$(namespace_annotation ownership-token-sha256)" || return 1
+  [[ "${observed_digest}" == "${expected_digest}" ]] ||
+    validation_error 'namespace ownership annotation does not match the private recovery token' || return 1
+  [[ "$(namespace_label run-id)" == "${run_id}" && "$(namespace_label fixture)" == "${fixture_name}" ]] ||
+    validation_error 'namespace labels do not match during UID recovery' || return 1
+  validate_namespace_inventory no || return 1
+  persist_namespace_uid "${observed_uid}" || return 1
+  printf '%s' "${observed_uid}"
 }
 
 validate_namespace_identity() {
@@ -201,7 +294,11 @@ cleanup_namespace() {
     printf 'scenario_namespace=absent\n'
     return 0
   fi
-  expected_uid="$(owned_namespace_uid)" || return 1
+  if [[ -e "${working}/namespace.uid" || -L "${working}/namespace.uid" ]]; then
+    expected_uid="$(owned_namespace_uid)" || return 1
+  else
+    expected_uid="$(recover_namespace_uid "${observed_uid}")" || return 1
+  fi
   [[ "${observed_uid}" == "${expected_uid}" ]] || validation_error 'refusing to delete a replacement namespace' || return 1
   validate_namespace_identity "${expected_uid}" || return 1
   validate_namespace_inventory "${require_fixture}" || return 1
@@ -228,7 +325,7 @@ cleanup_working() {
   [[ -d "${working}" && ! -L "${working}" && -O "${working}" ]] || validation_error 'partial scenario workspace is unsafe' || return 1
   while IFS= read -r entry; do
     case "${entry}" in
-      f:namespace.uid|f:corpus-1.json|f:corpus-2.json|f:proof-1.log|f:proof-2.log|f:fixture.log|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:namespace.owner|f:.namespace.owner.tmp|f:namespace.uid|f:.namespace.uid.tmp|f:corpus-1.json|f:corpus-2.json|f:proof-1.log|f:proof-2.log|f:fixture.log|f:result.tsv|f:.result.tsv.tmp) ;;
       *) validation_error "partial scenario workspace contains an undeclared entry: ${entry}" || return 1 ;;
     esac
   done < <(cd "${working}" && find . -mindepth 1 -printf '%y:%P\n' | LC_ALL=C sort) || return 1
@@ -448,11 +545,14 @@ trap 'exit 143' TERM
 started_epoch="$(date -u +%s)"
 started_utc="$(date -u -d "@${started_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 
+namespace_owner_sha256="$(prepare_namespace_ownership)" || fail 'could not prepare private namespace ownership recovery'
 namespace_uid="$(kctl create -f - -o jsonpath='{.metadata.uid}' <<YAML
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ${namespace}
+  annotations:
+    canarysting.dev/ownership-token-sha256: ${namespace_owner_sha256}
   labels:
     app.kubernetes.io/part-of: canarysting
     canarysting.dev/run-id: ${run_id}
@@ -460,8 +560,7 @@ metadata:
 YAML
 )" || fail 'could not create and acquire the scenario namespace'
 [[ "${namespace_uid}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail 'created namespace UID is malformed'
-printf '%s' "${namespace_uid}" >"${working}/namespace.uid" || fail 'could not persist the acquired namespace UID'
-chmod 0600 "${working}/namespace.uid"
+persist_namespace_uid "${namespace_uid}" || fail 'could not persist the acquired namespace UID'
 validate_namespace_identity "${namespace_uid}" || fail 'created namespace identity is invalid'
 
 kctl -n "${namespace}" create -f - >/dev/null <<YAML
@@ -598,7 +697,7 @@ finished_epoch="$(date -u +%s)"
 finished_utc="$(date -u -d "@${finished_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 expires_utc="$(date -u -d "@$((finished_epoch + 86400))" +%Y-%m-%dT%H:%M:%SZ)"
 mv "${working}/proof-1.log" "${working}/proof.log"
-rm -f -- "${working}/proof-2.log" "${working}/namespace.uid"
+rm -f -- "${working}/proof-2.log" "${working}/namespace.uid" "${working}/namespace.owner"
 proof_sha256="$(sha256sum "${working}/proof.log" | awk '{print $1}')"
 {
   printf 'key\tvalue\n'
