@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/canarysting/canarysting/internal/canaryattacker/evaluation"
 	"github.com/canarysting/canarysting/internal/canaryview/correlation"
 	"github.com/canarysting/canarysting/internal/canaryview/model"
 	"github.com/canarysting/canarysting/internal/canaryview/trace"
@@ -77,6 +79,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
 		fmt.Sprintf("PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=%d conflicts=%d", operatorMissingCount, operatorConflictCount),
+		"PROOF ground_truth_ingest=PASS declared_only=true assisted=1 unassisted=1 unmatched_steps=1",
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -96,6 +99,22 @@ func executeProof(runID, scenarioID string) error {
 		return err
 	}
 	synthetic, err := model.NewSyntheticContext(scenarioID)
+	if err != nil {
+		return err
+	}
+	runNonceBytes := make([]byte, evaluation.TraceRunNonceBytes)
+	if _, err := rand.Read(runNonceBytes); err != nil {
+		return fmt.Errorf("issue independent trace run nonce: %w", err)
+	}
+	runNonce, err := evaluation.NewTraceRunNonce(runNonceBytes)
+	if err != nil {
+		return err
+	}
+	runEvidence, err := evaluation.NewTraceRunEvidence(runID, scenarioID, 1, runNonce)
+	if err != nil {
+		return err
+	}
+	runMarker, err := proofRecord("trace-run-marker", scope, synthetic, now.Add(-time.Second), "")
 	if err != nil {
 		return err
 	}
@@ -143,6 +162,7 @@ func executeProof(runID, scenarioID string) error {
 	input := trace.BuildInput{
 		Scope: scope,
 		Hops: []trace.HopInput{
+			{Record: runMarker, Kind: trace.HopObservation, Evidence: []model.EvidenceReference{runEvidence}},
 			{Record: right, Kind: trace.HopPolicyDecision},
 			{Record: anchor, Kind: trace.HopObservation, RawEvent: &raw},
 			{Record: left, Kind: trace.HopPolicyDecision},
@@ -158,7 +178,7 @@ func executeProof(runID, scenarioID string) error {
 	if err != nil {
 		return err
 	}
-	input.Hops[0], input.Hops[2] = input.Hops[2], input.Hops[0]
+	input.Hops[1], input.Hops[3] = input.Hops[3], input.Hops[1]
 	second, err := build(input)
 	if err != nil {
 		return err
@@ -168,6 +188,9 @@ func executeProof(runID, scenarioID string) error {
 	}
 	if first.Status() != trace.StatusConflicted || len(first.Conflicts()) != 1 {
 		return fmt.Errorf("ambiguous trace did not become conflicted")
+	}
+	if err := evaluateGroundTruthProof(runID, first, runMarker, runEvidence, runNonce); err != nil {
+		return fmt.Errorf("ground-truth separation proof: %w", err)
 	}
 	for _, candidate := range first.Correlations()[0].Candidates() {
 		for _, explanation := range candidate.Explanations() {
@@ -382,9 +405,9 @@ func proofRecord(id string, scope model.Scope, synthetic model.SyntheticContext,
 	}
 	input := correlation.RecordInput{Reference: reference, Scope: scope, Vantage: correlation.SourceVantageGeneral, Time: &eventTime, Synthetic: synthetic}
 	if requestDigest != "" {
-		requestID, requestErr := correlation.NewOpaqueID("dgx.trace.request", requestDigest)
-		if requestErr != nil {
-			return correlation.Record{}, requestErr
+		requestID, err := correlation.NewOpaqueID("dgx.trace.request", requestDigest)
+		if err != nil {
+			return correlation.Record{}, err
 		}
 		input.RequestIDs = []correlation.OpaqueID{requestID}
 	}
