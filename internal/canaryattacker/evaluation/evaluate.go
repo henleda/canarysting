@@ -67,6 +67,7 @@ func (r StepResult) Matched() bool { return len(r.associations) > 0 }
 type Report struct {
 	corpusID        string
 	traceReference  model.RecordReference
+	runBinding      TraceRunBinding
 	steps           []StepResult
 	assisted        int
 	unassisted      int
@@ -76,6 +77,7 @@ type Report struct {
 
 func (r Report) CorpusID() string                      { return r.corpusID }
 func (r Report) TraceReference() model.RecordReference { return r.traceReference }
+func (r Report) RunBinding() TraceRunBinding           { return r.runBinding }
 func (r Report) AssistedAssociations() int             { return r.assisted }
 func (r Report) UnassistedAssociations() int           { return r.unassisted }
 func (r Report) UnmatchedSteps() int                   { return r.unmatched }
@@ -89,9 +91,13 @@ func (r Report) Steps() []StepResult {
 	return result
 }
 
-// Evaluate compares a separate declared run with a synthetic lab trace.
-func Evaluate(run Run, value trace.Trace, inputs []AssociationInput) (Report, error) {
+// Evaluate compares a separate declared run with a synthetic lab trace whose
+// exact run and scenario version are supplied by an independent trace hop.
+func Evaluate(run Run, value trace.Trace, binding TraceRunBinding, inputs []AssociationInput) (Report, error) {
 	if err := validateRun(run); err != nil {
+		return Report{}, err
+	}
+	if err := binding.validate(); err != nil {
 		return Report{}, err
 	}
 	if len(inputs) > MaximumAssociations {
@@ -108,20 +114,38 @@ func Evaluate(run Run, value trace.Trace, inputs []AssociationInput) (Report, er
 	if !synthetic.Synthetic() || synthetic.ScenarioID() != run.scenarioID {
 		return Report{}, fmt.Errorf("trace must use the exact synthetic ground-truth scenario")
 	}
+	if binding.runID != run.runID || binding.scenarioID != run.scenarioID || binding.scenarioVersion != run.scenarioVersion {
+		return Report{}, fmt.Errorf("trace run binding must match the exact ground-truth run and scenario version")
+	}
 
 	groundTruthIDs := run.referenceIDs()
 	traceHops := make(map[string]model.RecordReference, len(value.Hops()))
+	bindingEvidenceFound := false
 	for _, hop := range value.Hops() {
 		key := modelReferenceKey(hop.Reference())
 		if groundTruthIDs[hop.Reference().ID()] {
 			return Report{}, fmt.Errorf("ground-truth record %q cannot appear as a trace hop", hop.Reference().ID())
 		}
 		traceHops[key] = hop.Reference()
+		if hop.Reference() == binding.hop {
+			for _, evidence := range hop.Evidence() {
+				if evidence == binding.evidence {
+					bindingEvidenceFound = true
+					break
+				}
+			}
+		}
 	}
 	for _, parent := range envelope.DerivationLineage() {
 		if groundTruthIDs[parent.ID()] {
 			return Report{}, fmt.Errorf("ground-truth record %q cannot appear in independent trace lineage", parent.ID())
 		}
+	}
+	if _, ok := traceHops[modelReferenceKey(binding.hop)]; !ok {
+		return Report{}, fmt.Errorf("trace run-binding hop %q is not in the independent trace", binding.hop.ID())
+	}
+	if !bindingEvidenceFound {
+		return Report{}, fmt.Errorf("exact opaque run-binding evidence is not retained on trace hop %q", binding.hop.ID())
 	}
 
 	stepIndex := make(map[string]int, len(run.steps))
@@ -148,6 +172,9 @@ func Evaluate(run Run, value trace.Trace, inputs []AssociationInput) (Report, er
 			return Report{}, fmt.Errorf("association %d hop: %w", index, err)
 		}
 		hopKey := modelReferenceKey(input.Hop)
+		if hopKey == modelReferenceKey(binding.hop) {
+			return Report{}, fmt.Errorf("association %d cannot use the provenance-only run-binding hop", index)
+		}
 		hop, ok := traceHops[hopKey]
 		if !ok {
 			return Report{}, fmt.Errorf("association %d hop %q is not in the trace", index, input.Hop.ID())
@@ -179,7 +206,12 @@ func Evaluate(run Run, value trace.Trace, inputs []AssociationInput) (Report, er
 	}
 
 	assisted, unassisted, unmatched := 0, 0, 0
-	parts := []string{run.corpusID, envelope.RecordID(), fmt.Sprint(envelope.SchemaVersion())}
+	parts := []string{
+		run.corpusID, envelope.RecordID(), fmt.Sprint(envelope.SchemaVersion()),
+		binding.runID, binding.scenarioID, fmt.Sprint(binding.scenarioVersion),
+		binding.hop.ID(), fmt.Sprint(binding.hop.SchemaVersion()),
+		binding.evidence.ID(), fmt.Sprint(binding.evidence.SchemaVersion()), string(binding.evidence.Role()),
+	}
 	for index := range results {
 		sort.Slice(results[index].associations, func(left, right int) bool {
 			leftKey := modelReferenceKey(results[index].associations[left].hop)
@@ -211,7 +243,7 @@ func Evaluate(run Run, value trace.Trace, inputs []AssociationInput) (Report, er
 		return Report{}, fmt.Errorf("trace reference: %w", err)
 	}
 	return Report{
-		corpusID: run.corpusID, traceReference: traceReference, steps: results,
+		corpusID: run.corpusID, traceReference: traceReference, runBinding: binding, steps: results,
 		assisted: assisted, unassisted: unassisted, unmatched: unmatched,
 		integritySHA256: digestParts(parts...),
 	}, nil
@@ -234,7 +266,7 @@ func validateRun(run Run) error {
 }
 
 func (r Run) referenceIDs() map[string]bool {
-	result := map[string]bool{r.scenarioReference.ID(): true}
+	result := map[string]bool{r.corpusID: true, r.scenarioReference.ID(): true}
 	for _, step := range r.steps {
 		for _, attempt := range step.attempts {
 			result[attempt.intent.reference.ID()] = true

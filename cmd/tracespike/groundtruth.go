@@ -6,6 +6,7 @@ import (
 
 	"github.com/canarysting/canarysting/internal/canaryattacker/evaluation"
 	"github.com/canarysting/canarysting/internal/canaryattacker/groundtruth"
+	"github.com/canarysting/canarysting/internal/canaryview/correlation"
 	"github.com/canarysting/canarysting/internal/canaryview/model"
 	"github.com/canarysting/canarysting/internal/canaryview/trace"
 )
@@ -13,7 +14,7 @@ import (
 // evaluateGroundTruthProof builds a native declared corpus alongside the
 // already-independent trace. The evaluator may associate trace hops, but it
 // cannot insert corpus records into the trace observation path.
-func evaluateGroundTruthProof(runID string, value trace.Trace) error {
+func evaluateGroundTruthProof(runID string, value trace.Trace, runMarker correlation.Record, runEvidence model.EvidenceReference, runNonce evaluation.TraceRunNonce) error {
 	corpus, err := proofGroundTruthCorpus(runID, value.Envelope().Scope(), value.Envelope().Synthetic().ScenarioID())
 	if err != nil {
 		return err
@@ -26,7 +27,12 @@ func evaluateGroundTruthProof(runID string, value trace.Trace) error {
 	if err != nil {
 		return err
 	}
-	hops := value.Hops()
+	hops := make([]trace.Hop, 0, len(value.Hops())-1)
+	for _, hop := range value.Hops() {
+		if hop.Reference() != runMarker.Reference() {
+			hops = append(hops, hop)
+		}
+	}
 	steps := run.Steps()
 	if len(hops) < 2 || len(steps) != 3 || len(steps[1].Attempts()) != 1 {
 		return fmt.Errorf("ground-truth proof fixture is incomplete")
@@ -34,7 +40,11 @@ func evaluateGroundTruthProof(runID string, value trace.Trace) error {
 	firstAction := steps[0].Attempts()[0].Action().Reference()
 	secondAction := steps[1].Attempts()[0].Action().Reference()
 	hint := steps[1].Attempts()[0].Hint().Action()
-	report, err := evaluation.Evaluate(run, value, []evaluation.AssociationInput{
+	binding, err := evaluation.NewTraceRunBinding(runID, value.Envelope().Synthetic().ScenarioID(), 1, runMarker.Reference(), runEvidence, runNonce)
+	if err != nil {
+		return err
+	}
+	report, err := evaluation.Evaluate(run, value, binding, []evaluation.AssociationInput{
 		{StepID: steps[0].ID(), Action: firstAction, Hop: hops[0].Reference(), Mode: evaluation.JoinUnassisted},
 		{StepID: steps[1].ID(), Action: secondAction, Hop: hops[1].Reference(), Mode: evaluation.JoinAssistedScenarioHint, HintReference: &hint},
 	})
@@ -42,6 +52,7 @@ func evaluateGroundTruthProof(runID string, value trace.Trace) error {
 		return err
 	}
 	if run.Source().Kind() != evaluation.SourceDeclaredGroundTruth || run.Source().AssertionMode() != model.AssertionDeclared ||
+		report.RunBinding().Hop() != runMarker.Reference() || report.RunBinding().Evidence() != runEvidence ||
 		report.UnassistedAssociations() != 1 || report.AssistedAssociations() != 1 || report.UnmatchedSteps() != 1 {
 		return fmt.Errorf("ground-truth proof did not retain its declared source or evaluation disposition")
 	}

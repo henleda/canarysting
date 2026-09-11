@@ -1,6 +1,7 @@
 package evaluation_test
 
 import (
+	"crypto/sha256"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +15,13 @@ import (
 )
 
 var evaluationTime = time.Date(2026, time.September, 6, 20, 0, 30, 0, time.UTC)
+
+type evaluationTraceCase struct {
+	name    string
+	value   trace.Trace
+	binding evaluation.TraceRunBinding
+	want    string
+}
 
 func TestIngestKeepsDeclarationsSeparateAndScenarioStepsComplete(t *testing.T) {
 	run, blob := fixtureRun(t)
@@ -59,14 +67,14 @@ func TestIngestKeepsDeclarationsSeparateAndScenarioStepsComplete(t *testing.T) {
 
 func TestEvaluateReportsAssistedUnassistedAndUnmatchedSteps(t *testing.T) {
 	run, _ := fixtureRun(t)
-	value := fixtureTrace(t, run.Scope(), run.ScenarioID(), []string{"vendor-hop-a", "kernel-hop-b"}, "trace-high-water")
+	value, binding := fixtureEvaluationTrace(t, run, run.Scope(), run.ScenarioID(), []string{"vendor-hop-a", "kernel-hop-b"}, "trace-high-water")
 	hops := value.Hops()
 	firstAction := run.Steps()[0].Attempts()[0].Action().Reference()
 	secondAction := run.Steps()[1].Attempts()[0].Action().Reference()
 	hint := run.Steps()[1].Attempts()[0].Hint().Action()
-	report, err := evaluation.Evaluate(run, value, []evaluation.AssociationInput{
-		{StepID: "step-b", Action: secondAction, Hop: hops[1].Reference(), Mode: evaluation.JoinAssistedScenarioHint, HintReference: &hint},
-		{StepID: "step-a", Action: firstAction, Hop: hops[0].Reference(), Mode: evaluation.JoinUnassisted},
+	report, err := evaluation.Evaluate(run, value, binding, []evaluation.AssociationInput{
+		{StepID: "step-b", Action: secondAction, Hop: hops[2].Reference(), Mode: evaluation.JoinAssistedScenarioHint, HintReference: &hint},
+		{StepID: "step-a", Action: firstAction, Hop: hops[1].Reference(), Mode: evaluation.JoinUnassisted},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +100,11 @@ func TestEvaluateReportsAssistedUnassistedAndUnmatchedSteps(t *testing.T) {
 	if report.IntegritySHA256() == "" || strings.Contains(report.IntegritySHA256(), ":") {
 		t.Fatalf("invalid report integrity digest %q", report.IntegritySHA256())
 	}
-	if len(value.Hops()) != 2 {
+	if report.RunBinding().RunID() != run.RunID() || report.RunBinding().ScenarioID() != run.ScenarioID() ||
+		report.RunBinding().ScenarioVersion() != run.ScenarioVersion() || report.RunBinding().Hop() != value.Hops()[0].Reference() {
+		t.Fatalf("report run binding = %+v", report.RunBinding())
+	}
+	if len(value.Hops()) != 3 {
 		t.Fatal("evaluation mutated the independent trace")
 	}
 	groundTruthIDs := declarationIDs(run)
@@ -102,9 +114,9 @@ func TestEvaluateReportsAssistedUnassistedAndUnmatchedSteps(t *testing.T) {
 		}
 	}
 
-	reversed, err := evaluation.Evaluate(run, value, []evaluation.AssociationInput{
-		{StepID: "step-a", Action: firstAction, Hop: hops[0].Reference(), Mode: evaluation.JoinUnassisted},
-		{StepID: "step-b", Action: secondAction, Hop: hops[1].Reference(), Mode: evaluation.JoinAssistedScenarioHint, HintReference: &hint},
+	reversed, err := evaluation.Evaluate(run, value, binding, []evaluation.AssociationInput{
+		{StepID: "step-a", Action: firstAction, Hop: hops[1].Reference(), Mode: evaluation.JoinUnassisted},
+		{StepID: "step-b", Action: secondAction, Hop: hops[2].Reference(), Mode: evaluation.JoinAssistedScenarioHint, HintReference: &hint},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,30 +133,127 @@ func TestEvaluateFailsClosedAcrossScopeScenarioAndSourceBoundaries(t *testing.T)
 		t.Fatal(err)
 	}
 	firstIntent := run.Steps()[0].Attempts()[0].Intent().Reference()
-	tests := []struct {
-		name  string
-		value trace.Trace
-		want  string
-	}{
-		{name: "scope", value: fixtureTrace(t, otherScope, run.ScenarioID(), []string{"hop"}, "high-water"), want: "outside ground-truth scope"},
-		{name: "scenario", value: fixtureTrace(t, run.Scope(), "other-scenario", []string{"hop"}, "high-water"), want: "exact synthetic"},
-		{name: "production", value: fixtureProductionTrace(t, run.Scope()), want: "exact synthetic"},
-		{name: "ground truth hop", value: fixtureTrace(t, run.Scope(), run.ScenarioID(), []string{firstIntent.ID()}, "high-water"), want: "cannot appear as a trace hop"},
-		{name: "ground truth lineage", value: fixtureTrace(t, run.Scope(), run.ScenarioID(), []string{"hop"}, firstIntent.ID()), want: "cannot appear in independent trace lineage"},
+	corpusReference, err := model.NewRecordReference(run.CorpusID(), run.SchemaVersion())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []evaluationTraceCase{
+		fixtureEvaluationTraceEntry(t, "scope", run, otherScope, run.ScenarioID(), []string{"hop"}, "high-water", "outside ground-truth scope"),
+		fixtureEvaluationTraceEntry(t, "scenario", run, run.Scope(), "other-scenario", []string{"hop"}, "high-water", "exact synthetic"),
+		fixtureProductionEvaluationTraceEntry(t, "production", run, []string{"production-hop"}, "production-high-water", "exact synthetic"),
+		fixtureEvaluationTraceEntry(t, "ground truth hop", run, run.Scope(), run.ScenarioID(), []string{firstIntent.ID()}, "high-water", "cannot appear as a trace hop"),
+		fixtureEvaluationTraceEntry(t, "ground truth lineage", run, run.Scope(), run.ScenarioID(), []string{"hop"}, firstIntent.ID(), "cannot appear in independent trace lineage"),
+		fixtureEvaluationTraceEntry(t, "corpus hop", run, run.Scope(), run.ScenarioID(), []string{corpusReference.ID()}, "high-water", "cannot appear as a trace hop"),
+		fixtureEvaluationTraceEntry(t, "corpus lineage", run, run.Scope(), run.ScenarioID(), []string{"hop"}, corpusReference.ID(), "cannot appear in independent trace lineage"),
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := evaluation.Evaluate(run, test.value, nil); err == nil || !strings.Contains(err.Error(), test.want) {
+			if _, err := evaluation.Evaluate(run, test.value, test.binding, nil); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v want substring %q", err, test.want)
 			}
 		})
 	}
 }
 
+func TestEvaluateRequiresExactIndependentRunBinding(t *testing.T) {
+	run, _ := fixtureRun(t)
+	value, _ := fixtureEvaluationTrace(t, run, run.Scope(), run.ScenarioID(), []string{"run-marker", "telemetry-hop"}, "high-water")
+	evidence := value.Hops()[0].Reference()
+	nonce := traceRunNonce(t, "exact-binding")
+	missingEvidence, err := model.NewRecordReference("missing-run-marker", model.CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		runID    string
+		scenario string
+		version  uint32
+		evidence model.RecordReference
+		want     string
+	}{
+		{name: "other run", runID: "other-run", scenario: run.ScenarioID(), version: run.ScenarioVersion(), evidence: evidence, want: "exact ground-truth run"},
+		{name: "other scenario", runID: run.RunID(), scenario: "other-scenario", version: run.ScenarioVersion(), evidence: evidence, want: "exact ground-truth run"},
+		{name: "other version", runID: run.RunID(), scenario: run.ScenarioID(), version: run.ScenarioVersion() + 1, evidence: evidence, want: "exact ground-truth run"},
+		{name: "missing evidence", runID: run.RunID(), scenario: run.ScenarioID(), version: run.ScenarioVersion(), evidence: missingEvidence, want: "not in the independent trace"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runEvidence := traceRunEvidence(t, test.runID, test.scenario, test.version, nonce)
+			binding, bindErr := evaluation.NewTraceRunBinding(test.runID, test.scenario, test.version, test.evidence, runEvidence, nonce)
+			if bindErr != nil {
+				t.Fatal(bindErr)
+			}
+			if _, evalErr := evaluation.Evaluate(run, value, binding, nil); evalErr == nil || !strings.Contains(evalErr.Error(), test.want) {
+				t.Fatalf("error=%v want substring %q", evalErr, test.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateRejectsReconstructedBindingWithSameHopReference(t *testing.T) {
+	run, _ := fixtureRun(t)
+	otherNonce := traceRunNonce(t, "other-source-issuance")
+	otherEvidence := traceRunEvidence(t, "other-run", run.ScenarioID(), run.ScenarioVersion(), otherNonce)
+	value := fixtureTraceWithEvidence(t, run.Scope(), run.ScenarioID(), []string{"shared-run-marker", "telemetry-hop"}, "high-water", otherEvidence)
+	targetNonce := traceRunNonce(t, "target-source-issuance")
+	targetEvidence := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), targetNonce)
+	binding, err := evaluation.NewTraceRunBinding(
+		run.RunID(), run.ScenarioID(), run.ScenarioVersion(), value.Hops()[0].Reference(), targetEvidence, targetNonce,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := evaluation.Evaluate(run, value, binding, nil); err == nil || !strings.Contains(err.Error(), "not retained on trace hop") {
+		t.Fatalf("reconstructed same-reference binding error=%v", err)
+	}
+}
+
+func TestTraceRunBindingRejectsMissingOrMismatchedOpaqueEvidence(t *testing.T) {
+	run, _ := fixtureRun(t)
+	nonce := traceRunNonce(t, "binding-evidence")
+	reference, err := model.NewRecordReference("run-marker", model.CurrentSchemaVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutKey, err := model.NewEvidenceReference("evidence:sha256:"+strings.Repeat("1", 64), model.CurrentSchemaVersion, model.EvidenceSupporting, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := evaluation.NewTraceRunBinding(run.RunID(), run.ScenarioID(), run.ScenarioVersion(), reference, withoutKey, nonce); err == nil || !strings.Contains(err.Error(), "not the exact opaque run key") {
+		t.Fatalf("missing-key error=%v", err)
+	}
+	withWrongKey := traceRunEvidence(t, "other-run", run.ScenarioID(), run.ScenarioVersion(), nonce)
+	if _, err := evaluation.NewTraceRunBinding(run.RunID(), run.ScenarioID(), run.ScenarioVersion(), reference, withWrongKey, nonce); err == nil || !strings.Contains(err.Error(), "not the exact opaque run key") {
+		t.Fatalf("wrong-key error=%v", err)
+	}
+	wrongNonce := traceRunNonce(t, "wrong-binding-evidence")
+	validEvidence := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), nonce)
+	if _, err := evaluation.NewTraceRunBinding(run.RunID(), run.ScenarioID(), run.ScenarioVersion(), reference, validEvidence, wrongNonce); err == nil || !strings.Contains(err.Error(), "not the exact opaque run key") {
+		t.Fatalf("wrong-nonce error=%v", err)
+	}
+}
+
+func TestTraceRunEvidenceRequiresIndependentSourceEntropy(t *testing.T) {
+	run, _ := fixtureRun(t)
+	if _, err := evaluation.NewTraceRunNonce(make([]byte, evaluation.TraceRunNonceBytes)); err == nil || !strings.Contains(err.Error(), "all zero") {
+		t.Fatalf("zero nonce error=%v", err)
+	}
+	if _, err := evaluation.NewTraceRunNonce(make([]byte, evaluation.TraceRunNonceBytes-1)); err == nil || !strings.Contains(err.Error(), "exactly") {
+		t.Fatalf("short nonce error=%v", err)
+	}
+	first := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), traceRunNonce(t, "source-a"))
+	second := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), traceRunNonce(t, "source-b"))
+	if first == second {
+		t.Fatal("corpus-visible run identity produced the same evidence across independent source nonces")
+	}
+}
+
 func TestEvaluateRejectsInvalidOrMisattributedAssociations(t *testing.T) {
 	run, _ := fixtureRun(t)
-	value := fixtureTrace(t, run.Scope(), run.ScenarioID(), []string{"hop-a", "hop-b"}, "high-water")
-	hop := value.Hops()[0].Reference()
+	value, binding := fixtureEvaluationTrace(t, run, run.Scope(), run.ScenarioID(), []string{"hop-a", "hop-b"}, "high-water")
+	hop := value.Hops()[1].Reference()
+	marker := value.Hops()[0].Reference()
 	stepAAction := run.Steps()[0].Attempts()[0].Action().Reference()
 	stepBAction := run.Steps()[1].Attempts()[0].Action().Reference()
 	stepAHint := run.Steps()[0].Attempts()[0].Hint().Intent()
@@ -161,6 +270,7 @@ func TestEvaluateRejectsInvalidOrMisattributedAssociations(t *testing.T) {
 		{name: "unknown step", inputs: []evaluation.AssociationInput{{StepID: "missing-step", Action: stepAAction, Hop: hop, Mode: evaluation.JoinUnassisted}}, want: "unknown step"},
 		{name: "foreign action", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepBAction, Hop: hop, Mode: evaluation.JoinUnassisted}}, want: "action is outside step"},
 		{name: "unknown hop", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepAAction, Hop: missingHop, Mode: evaluation.JoinUnassisted}}, want: "not in the trace"},
+		{name: "run marker", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepAAction, Hop: marker, Mode: evaluation.JoinUnassisted}}, want: "provenance-only"},
 		{name: "assisted missing hint", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepAAction, Hop: hop, Mode: evaluation.JoinAssistedScenarioHint}}, want: "requires an exact"},
 		{name: "unassisted with hint", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepAAction, Hop: hop, Mode: evaluation.JoinUnassisted, HintReference: &stepAHint}}, want: "cannot carry"},
 		{name: "foreign step hint", inputs: []evaluation.AssociationInput{{StepID: "step-a", Action: stepAAction, Hop: hop, Mode: evaluation.JoinAssistedScenarioHint, HintReference: &stepBHint}}, want: "outside step"},
@@ -168,11 +278,39 @@ func TestEvaluateRejectsInvalidOrMisattributedAssociations(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := evaluation.Evaluate(run, value, test.inputs); err == nil || !strings.Contains(err.Error(), test.want) {
+			if _, err := evaluation.Evaluate(run, value, binding, test.inputs); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v want substring %q", err, test.want)
 			}
 		})
 	}
+}
+
+func traceRunBinding(t *testing.T, run evaluation.Run, hop model.RecordReference, evidence model.EvidenceReference, nonce evaluation.TraceRunNonce) evaluation.TraceRunBinding {
+	t.Helper()
+	binding, err := evaluation.NewTraceRunBinding(run.RunID(), run.ScenarioID(), run.ScenarioVersion(), hop, evidence, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+
+func traceRunEvidence(t *testing.T, runID, scenarioID string, scenarioVersion uint32, nonce evaluation.TraceRunNonce) model.EvidenceReference {
+	t.Helper()
+	evidence, err := evaluation.NewTraceRunEvidence(runID, scenarioID, scenarioVersion, nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evidence
+}
+
+func traceRunNonce(t *testing.T, sourceEvent string) evaluation.TraceRunNonce {
+	t.Helper()
+	value := sha256.Sum256([]byte("independent-trace-source\x00" + sourceEvent))
+	nonce, err := evaluation.NewTraceRunNonce(value[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nonce
 }
 
 func TestIngestRejectsTamperedOrOversizedCorpus(t *testing.T) {
@@ -205,15 +343,50 @@ func fixtureTrace(t *testing.T, scope model.Scope, scenarioID string, hopIDs []s
 	if err != nil {
 		t.Fatal(err)
 	}
-	return buildTrace(t, scope, synthetic, hopIDs, highWaterID)
+	return buildTrace(t, scope, synthetic, hopIDs, highWaterID, nil)
+}
+
+func fixtureTraceWithEvidence(t *testing.T, scope model.Scope, scenarioID string, hopIDs []string, highWaterID string, evidence model.EvidenceReference) trace.Trace {
+	t.Helper()
+	synthetic, err := model.NewSyntheticContext(scenarioID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buildTrace(t, scope, synthetic, hopIDs, highWaterID, &evidence)
+}
+
+func fixtureEvaluationTrace(t *testing.T, run evaluation.Run, scope model.Scope, scenarioID string, hopIDs []string, highWaterID string) (trace.Trace, evaluation.TraceRunBinding) {
+	t.Helper()
+	nonce := traceRunNonce(t, "fixture:"+highWaterID)
+	evidence := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), nonce)
+	allHopIDs := append([]string{"run-binding-marker"}, hopIDs...)
+	value := fixtureTraceWithEvidence(t, scope, scenarioID, allHopIDs, highWaterID, evidence)
+	binding := traceRunBinding(t, run, value.Hops()[0].Reference(), evidence, nonce)
+	return value, binding
+}
+
+func fixtureEvaluationTraceEntry(t *testing.T, name string, run evaluation.Run, scope model.Scope, scenarioID string, hopIDs []string, highWaterID, want string) evaluationTraceCase {
+	t.Helper()
+	value, binding := fixtureEvaluationTrace(t, run, scope, scenarioID, hopIDs, highWaterID)
+	return evaluationTraceCase{name: name, value: value, binding: binding, want: want}
+}
+
+func fixtureProductionEvaluationTraceEntry(t *testing.T, name string, run evaluation.Run, hopIDs []string, highWaterID, want string) evaluationTraceCase {
+	t.Helper()
+	nonce := traceRunNonce(t, "production:"+highWaterID)
+	evidence := traceRunEvidence(t, run.RunID(), run.ScenarioID(), run.ScenarioVersion(), nonce)
+	allHopIDs := append([]string{"run-binding-marker"}, hopIDs...)
+	value := buildTrace(t, run.Scope(), model.ProductionContext(), allHopIDs, highWaterID, &evidence)
+	binding := traceRunBinding(t, run, value.Hops()[0].Reference(), evidence, nonce)
+	return evaluationTraceCase{name: name, value: value, binding: binding, want: want}
 }
 
 func fixtureProductionTrace(t *testing.T, scope model.Scope) trace.Trace {
 	t.Helper()
-	return buildTrace(t, scope, model.ProductionContext(), []string{"production-hop"}, "production-high-water")
+	return buildTrace(t, scope, model.ProductionContext(), []string{"production-hop"}, "production-high-water", nil)
 }
 
-func buildTrace(t *testing.T, scope model.Scope, synthetic model.SyntheticContext, hopIDs []string, highWaterID string) trace.Trace {
+func buildTrace(t *testing.T, scope model.Scope, synthetic model.SyntheticContext, hopIDs []string, highWaterID string, firstEvidence *model.EvidenceReference) trace.Trace {
 	t.Helper()
 	hops := make([]trace.HopInput, len(hopIDs))
 	for index, id := range hopIDs {
@@ -233,6 +406,9 @@ func buildTrace(t *testing.T, scope model.Scope, synthetic model.SyntheticContex
 			t.Fatal(err)
 		}
 		hops[index] = trace.HopInput{Record: record, Kind: trace.HopObservation}
+		if index == 0 && firstEvidence != nil {
+			hops[index].Evidence = []model.EvidenceReference{*firstEvidence}
+		}
 	}
 	highWater, err := model.NewRecordReference(highWaterID, model.CurrentSchemaVersion)
 	if err != nil {
