@@ -26,8 +26,8 @@ Usage:
 
 Run the fixed M2B.4/M2B.5 unprivileged DGX trace proof. The artifact uses only
 minimized synthetic records to prove passive partial traces, ambiguity,
-evidence citations, lifecycle, exact-scope invalidation, hard bounds, and the
-read-only operator projection. It emits only nine fixed proof statements and
+evidence citations, lifecycle, exact-scope invalidation, hard bounds, the
+read-only operator projection, and separate M2D.1 ground-truth ingestion. It emits only ten fixed proof statements and
 changes no Kubernetes, Cilium, BPF, service, firewall, socket, or system state.
 USAGE
 }
@@ -169,7 +169,7 @@ validate_trace_result_schema() {
       else if (NR == 7) good=good && ($1 == "source_state" && $2 == source_state && ($2 == "clean" || $2 == "dirty"))
       else if (NR == 8) good=good && ($1 == "source_tree_sha256" && $2 == source_tree && length($2) == 64 && $2 !~ /[^0-9a-f]/)
       else if (NR == 9) good=good && ($1 == "artifact_sha256" && $2 == artifact && length($2) == 64 && $2 !~ /[^0-9a-f]/)
-      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "9")
+      else if (NR == 10) good=good && ($1 == "proof_line_count" && $2 == "10")
       else if (NR == 11) good=good && ($1 == "raw_identifiers_emitted" && $2 == "false")
       else if (NR == 12) good=good && ($1 == "privilege" && $2 == "unprivileged")
       else if (NR == 13) good=good && ($1 == "started_utc" && $2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/)
@@ -196,8 +196,9 @@ validate_fixed_trace_output() {
     NR == 7 { good=good && ($0 == "PROOF invalidation=PASS exact_scope=true") }
     NR == 8 { good=good && ($0 == "PROOF bounds=PASS truncation=false") }
     NR == 9 { good=good && ($0 == "PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3") }
-    NR > 9 { good=0 }
-    END { exit !(good && NR == 9) }
+    NR == 10 { good=good && ($0 == "PROOF ground_truth_ingest=PASS declared_only=true assisted=1 unassisted=1 unmatched_steps=1") }
+    NR > 10 { good=0 }
+    END { exit !(good && NR == 10) }
   ' "$1"
 }
 
@@ -253,6 +254,8 @@ validate_published_evidence() {
   [[ ! -s "${evidence}/stderr.log" ]] || fail 'proof emitted unexpected stderr'
   grep -Fqx 'PROOF passive_partial=PASS canary_touch_required=false' "${evidence}/stdout.log" ||
     fail 'passive partial-trace proof marker is missing'
+  grep -Fqx 'PROOF ground_truth_ingest=PASS declared_only=true assisted=1 unassisted=1 unmatched_steps=1' "${evidence}/stdout.log" ||
+    fail 'separate declared ground-truth proof marker is missing'
 }
 
 if [[ "${mode}" == 'inspect' ]]; then

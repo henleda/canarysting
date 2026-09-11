@@ -77,6 +77,7 @@ func run(args []string, output io.Writer) error {
 		"PROOF invalidation=PASS exact_scope=true",
 		"PROOF bounds=PASS truncation=false",
 		fmt.Sprintf("PROOF operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=%d conflicts=%d", operatorMissingCount, operatorConflictCount),
+		"PROOF ground_truth_ingest=PASS declared_only=true assisted=1 unassisted=1 unmatched_steps=1",
 	} {
 		if _, err := fmt.Fprintln(output, line); err != nil {
 			return err
@@ -168,6 +169,9 @@ func executeProof(runID, scenarioID string) error {
 	}
 	if first.Status() != trace.StatusConflicted || len(first.Conflicts()) != 1 {
 		return fmt.Errorf("ambiguous trace did not become conflicted")
+	}
+	if err := evaluateGroundTruthProof(runID, first); err != nil {
+		return fmt.Errorf("ground-truth separation proof: %w", err)
 	}
 	for _, candidate := range first.Correlations()[0].Candidates() {
 		for _, explanation := range candidate.Explanations() {

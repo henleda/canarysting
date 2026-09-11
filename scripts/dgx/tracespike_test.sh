@@ -50,6 +50,7 @@ for marker in \
   'broken_raw=PASS availability=INTEGRITY_MISMATCH' \
   'ambiguity=PASS candidates=2 chosen=false' \
   'operator_projection=PASS scenario_id=m2b5-operator-conflict explanation_present=true raw_reference_metadata_present=true raw_availability=INTEGRITY_MISMATCH status=CONFLICTED missing=2 conflicts=3' \
+  'ground_truth_ingest=PASS declared_only=true assisted=1 unassisted=1 unmatched_steps=1' \
   'fixed proof output is incomplete or contains extra data' \
   'env -i LANG=C PATH=/usr/bin:/bin TZ=UTC'; do
   grep -F "${marker}" "${proof_script}" >/dev/null || fail "proof safety marker missing: ${marker}"
@@ -92,7 +93,7 @@ source_revision	1111111111111111111111111111111111111111
 source_state	clean
 source_tree_sha256	2222222222222222222222222222222222222222222222222222222222222222
 artifact_sha256	3333333333333333333333333333333333333333333333333333333333333333
-proof_line_count	9
+proof_line_count	10
 raw_identifiers_emitted	false
 privilege	unprivileged
 started_utc	2026-09-03T12:00:00Z
