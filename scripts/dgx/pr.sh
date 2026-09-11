@@ -120,8 +120,8 @@ usage() {
 Usage:
   scripts/dgx/pr.sh --profile PROFILE --run-id ID [--dry-run]
 
-Profiles: preflight, attacker-check, attacker-executor, attacker-loop, cookie, enforcement,
-kernel-full, stack, correlation, trace.
+Profiles: preflight, attacker-check, attacker-executor, attacker-loop, attacker-scenarios,
+cookie, enforcement, kernel-full, stack, correlation, trace.
 
 The coordinator performs one DGX preflight before artifact-backed scenarios.
 The attacker-check profile instead runs only its fixed passive inspection and
@@ -169,6 +169,7 @@ case "${profile}" in
   attacker-check) targets=(); scenarios=(); read_only_check='attackercheck'; preflight_count=0 ;;
   attacker-executor) targets=(attackerexecutorspike); scenarios=(attackerexecutorspike); target_count=1; scenario_count=1 ;;
   attacker-loop) targets=(attackerloopspike); scenarios=(attackerloopspike); target_count=1; scenario_count=1 ;;
+  attacker-scenarios) targets=(attackerscenariospike); scenarios=(attackerscenariospike); target_count=1; scenario_count=1 ;;
   cookie) targets=(cookiespike); scenarios=(cookiespike); target_count=1; scenario_count=1 ;;
   enforcement) targets=(enforcespike); scenarios=(enforcespike); target_count=1; scenario_count=1 ;;
   kernel-full) targets=(cookiespike enforcespike); scenarios=(cookiespike enforcespike); target_count=2; scenario_count=2 ;;
@@ -178,7 +179,7 @@ case "${profile}" in
   dgx-kubernetes|dgx-attacker-smoke|campaign)
     fail "profile ${profile} is not implemented by the bounded DGX harness; refusing to substitute weaker coverage"
     ;;
-  *) fail 'profile must be preflight, attacker-check, attacker-executor, attacker-loop, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
+  *) fail 'profile must be preflight, attacker-check, attacker-executor, attacker-loop, attacker-scenarios, cookie, enforcement, kernel-full, stack, correlation, or trace' ;;
 esac
 
 printf 'profile=%s\nrun_id=%s\npreflight_count=%s\nread_only_check_count=%s\nartifact_build_count=%s\nartifact_transfer_count=%s\n' \
@@ -212,24 +213,33 @@ proof_file=''
 cleanup_required=0
 should_run_generic_cleanup() {
   local selected_profile="$1" scenario_cleanup_failed="$2"
-  [[ "${selected_profile}" != 'attacker-loop' || "${scenario_cleanup_failed}" -eq 0 ]]
+  [[ "${scenario_cleanup_failed}" -eq 0 || ( "${selected_profile}" != 'attacker-loop' && "${selected_profile}" != 'attacker-scenarios' ) ]]
+}
+should_preserve_failed_scenario() {
+  local selected_profile="$1" run_status="$2"
+  [[ "${selected_profile}" == 'attacker-scenarios' && "${run_status}" -ne 0 ]]
 }
 cleanup() {
-  local status=$? scenario_cleanup_failed=0 transport_cleanup_failed=0 removal_status=0
+  local status=$? initial_status scenario_cleanup_failed=0 transport_cleanup_failed=0 removal_status=0
+  initial_status="${status}"
   trap - EXIT INT TERM
   if ((cleanup_required)); then
-    for ((index=scenario_count-1; index>=0; index--)); do
-      if ! CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-        "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup; then
-        status=1
-        scenario_cleanup_failed=1
-      fi
-    done
-    if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then
-      CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
-        "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
+    if should_preserve_failed_scenario "${profile}" "${initial_status}"; then
+      printf 'dgx-pr: preserving attacker-scenarios recovery state and stage after failed run\n' >&2
     else
-      printf 'dgx-pr: preserving attacker-loop stage after scenario-specific cleanup failure\n' >&2
+      for ((index=scenario_count-1; index>=0; index--)); do
+        if ! CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+          "${script_dir}/${scenarios[index]}.sh" --run-id "${run_id}" --cleanup; then
+          status=1
+          scenario_cleanup_failed=1
+        fi
+      done
+      if should_run_generic_cleanup "${profile}" "${scenario_cleanup_failed}"; then
+        CANARYSTING_DGX_PREFLIGHT_PROOF="${proof_file}" \
+          "${script_dir}/cleanup.sh" --run-id "${run_id}" || status=1
+      else
+        printf 'dgx-pr: preserving %s stage after scenario-specific cleanup failure\n' "${profile}" >&2
+      fi
     fi
   fi
   if [[ "${CANARYSTING_DGX_SSH_CONTROL_OWNED:-0}" == '1' ]]; then

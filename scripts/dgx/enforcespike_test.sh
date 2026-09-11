@@ -134,6 +134,11 @@ grep -Fq 'ConnectTimeout=12' "${subject}" || fail 'SSH connect timeout is not fi
 grep -Fq 'ServerAliveInterval=5' "${subject}" || fail 'SSH keepalive interval is not fixed'
 grep -Fq 'ServerAliveCountMax=3' "${subject}" || fail 'SSH keepalive failure bound is not fixed'
 grep -Fq 'StrictHostKeyChecking=yes' "${subject}" || fail 'SSH host-key checking is not strict'
+grep -Fq "posture_lock='/run/user/1000/canarysting-response-posture.lock'" "${subject}" || fail 'enforcement does not share the attacker-scenario posture lease'
+grep -Fq 'flock -n 6' "${subject}" || fail 'enforcement does not acquire the response-posture lease exclusively'
+lease_line="$(grep -nF 'flock -n 6' "${subject}" | cut -d: -f1)"
+stage_line="$(grep -n '^validate_stage$' "${subject}" | tail -1 | cut -d: -f1)"
+[[ "${lease_line}" =~ ^[0-9]+$ && "${stage_line}" =~ ^[0-9]+$ && "${lease_line}" -lt "${stage_line}" ]] || fail 'enforcement acquires the posture lease after entering its run path'
 grep -Fq "grep -q 'enforce_egress'" "${subject}" || fail 'live observer does not match the real egress program name'
 grep -Fq "grep -q 'enforce_release'" "${subject}" || fail 'live observer does not match the real release program name'
 grep -Fq 'control_map_entry=absent' cmd/enforcespike/main.go || fail 'binary does not report control map-miss proof'

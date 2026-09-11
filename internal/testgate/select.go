@@ -94,6 +94,9 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			if isAttackerExecutorPath(file) {
 				addAvailable(selected, all, "attacker-executor-invariants")
 			}
+			if isAttackerScenarioPath(file) {
+				addAvailable(selected, all, "attacker-scenario-invariants")
+			}
 			if isSecurityPath(file) {
 				addAvailable(selected, all, "selfcheck-sting", "selfcheck-envoy")
 				selectAdversarial(selected, all, files)
@@ -103,6 +106,10 @@ func selectAffected(all map[string]Check, files []string, risk RiskReport) map[s
 			selectAdversarial(selected, all, files)
 		case strings.HasPrefix(file, "scripts/dgx/"):
 			selectDGXHarnessForPath(selected, all, file)
+			if isAttackerScenarioPath(file) {
+				addAvailable(selected, all, "attacker-scenario-invariants", "security-invariants")
+				selectAdversarial(selected, all, files)
+			}
 		case strings.HasPrefix(file, "api/proto/"), strings.HasPrefix(file, "internal/operator/api/"):
 			addAvailable(selected, all, "generated-proto", "generated-operator", "affected-go-build", "affected-go-test", "security-invariants")
 		case strings.HasPrefix(file, "docs/"), file == ".gitignore", file == "AGENTS.md", strings.HasPrefix(file, ".agents/skills/"):
@@ -139,6 +146,9 @@ func selectPR(all map[string]Check, files []string, risk RiskReport) map[string]
 			selectAdversarial(selected, all, files)
 		case isAttackerExecutorPath(file):
 			addAvailable(selected, all, "attacker-executor-invariants")
+			selectAdversarial(selected, all, files)
+		case isAttackerScenarioPath(file):
+			addAvailable(selected, all, "attacker-scenario-invariants", "dgx-harness:attackerscenariospike")
 			selectAdversarial(selected, all, files)
 		case isFrontendPath(file):
 			addAvailable(selected, all, "frontend-lint", "frontend-build", "frontend-playwright")

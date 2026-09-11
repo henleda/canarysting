@@ -80,6 +80,23 @@ func TestBoundedAttackerLoopIsCriticalAndRequiresLiveQwen(t *testing.T) {
 	}
 }
 
+func TestReproducibleAttackerScenariosAreCriticalWithExactDGXProfile(t *testing.T) {
+	for _, path := range []string{
+		"internal/canaryattacker/scenarios/initial.go",
+		"cmd/attackerscenariospike/main.go",
+		"scripts/dgx/attackerscenariospike.sh",
+	} {
+		report, err := ClassifyRisk([]string{path}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Effective != RiskCritical || !report.RequiresDGX || report.RequiresLiveQwen ||
+			len(report.RemoteProfiles) != 1 || report.RemoteProfiles[0] != "dgx-attacker-scenarios" {
+			t.Fatalf("%s classification = %+v", path, report)
+		}
+	}
+}
+
 func TestManualRiskCanIncreaseButNeverReduce(t *testing.T) {
 	increased, err := ClassifyRisk([]string{"docs/README.md"}, "CRITICAL")
 	if err != nil {
@@ -138,7 +155,7 @@ func TestSharedDGXCleanupPathsSelectKernelAndLiveQwen(t *testing.T) {
 			t.Fatal(err)
 		}
 		if report.Effective != RiskCritical || !report.RequiresDGX || !report.RequiresLiveQwen ||
-			strings.Join(report.RemoteProfiles, ",") != "dgx-attacker-loop,dgx-kernel" {
+			strings.Join(report.RemoteProfiles, ",") != "dgx-attacker-loop,dgx-attacker-scenarios,dgx-kernel" {
 			t.Fatalf("%s classification = %+v", path, report)
 		}
 	}
@@ -178,9 +195,9 @@ func TestTimingBudgetsDependOnLevelAndRisk(t *testing.T) {
 func TestPRSelectionByRiskAndPath(t *testing.T) {
 	ids := []string{
 		"manifest-schema", "safety-policy", "repo-config", "format", "generated-proto", "generated-operator",
-		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants", "attacker-executor-invariants", "attacker-planner-invariants",
+		"go-discovery", "go-vet", "go-build", "go-test", "go-test-race", "affected-go-race", "affected-go-integration", "security-invariants", "attacker-executor-invariants", "attacker-planner-invariants", "attacker-scenario-invariants",
 		"gate-selftests", "gate-synthetic-collect-all", "frontend-lint", "frontend-build", "frontend-playwright", "bpf-compile", "bpf-object-assert",
-		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce",
+		"adversarial:fixture", "dgx-harness:syntax", "dgx-harness:enforce", "dgx-harness:attackerscenariospike",
 	}
 	manifest := Manifest{Version: 1}
 	for _, id := range ids {
@@ -234,6 +251,23 @@ func TestPRSelectionByRiskAndPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSelected(t, plannerChecks, "attacker-planner-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
+
+	scenarioChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"internal/canaryattacker/scenarios/initial.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, scenarioChecks, "attacker-scenario-invariants", "security-invariants", "go-test-race", "adversarial:fixture")
+
+	scenarioScriptChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"scripts/dgx/attackerscenariospike_remote.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, scenarioScriptChecks, "attacker-scenario-invariants", "dgx-harness:attackerscenariospike", "security-invariants", "go-test-race", "adversarial:fixture")
+	scenarioScriptFastChecks, err := SelectChecks(manifest, RunOptions{Gate: "check-fast"}, []string{"scripts/dgx/attackerscenariospike_test.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSelected(t, scenarioScriptFastChecks, "attacker-scenario-invariants", "security-invariants", "adversarial:fixture")
 
 	critical, err := SelectChecks(manifest, RunOptions{Gate: "check-pr"}, []string{"bpf/enforce/enforce.bpf.c"})
 	if err != nil {

@@ -57,7 +57,7 @@ read -r -a selected_profiles <<<"${profiles}"
 seen_profiles=' '
 for profile in "${selected_profiles[@]}"; do
   case "${profile}" in
-    preflight|attacker-check|attacker-executor|attacker-loop|cookie|enforcement|kernel-full|stack|correlation|trace) ;;
+    preflight|attacker-check|attacker-executor|attacker-loop|attacker-scenarios|cookie|enforcement|kernel-full|stack|correlation|trace) ;;
     *) fail "unsupported profile in batch: ${profile}" ;;
   esac
   case "${seen_profiles}" in

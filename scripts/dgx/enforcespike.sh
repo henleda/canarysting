@@ -143,6 +143,22 @@ sudo -n true >/dev/null || fail 'non-interactive sudo is required'
 [[ "${mode}" == 'run' || "${mode}" == 'inspect' || "${mode}" == 'cleanup' ]] || fail 'invalid mode'
 [[ "${run_id}" =~ ^[a-z0-9]([a-z0-9-]{0,46}[a-z0-9])?$ ]] || fail 'invalid run ID'
 
+# The attacker-scenario harness holds this same host-global lease while its
+# canary touch is possible. Taking it here makes a precise-enforcement proof
+# and a passive-only attacker fixture mutually exclusive instead of relying on
+# a racy one-time posture check.
+if [[ "${mode}" == 'run' ]]; then
+  command -v flock >/dev/null 2>&1 || fail 'flock is required for the response-posture lease'
+  posture_lock='/run/user/1000/canarysting-response-posture.lock'
+  [[ ! -L "${posture_lock}" ]] || fail 'response-posture lease path is a symlink'
+  exec 6>>"${posture_lock}" || fail 'could not open the response-posture lease'
+  [[ -f "${posture_lock}" && ! -L "${posture_lock}" && -O "${posture_lock}" ]] || fail 'response-posture lease file is unsafe'
+  chmod 0600 "${posture_lock}" || fail 'could not secure the response-posture lease'
+  flock -n 6 || fail 'response-posture lease is busy with a passive attacker scenario'
+  [[ "$(stat -Lc %d:%i /proc/self/fd/6)" == "$(stat -Lc %d:%i "${posture_lock}")" ]] || fail 'response-posture lease identity changed'
+  readonly posture_lock
+fi
+
 named_bpf_state() {
   local programs maps links state
   programs="$(sudo -n bpftool prog show 2>/dev/null)" || return 1

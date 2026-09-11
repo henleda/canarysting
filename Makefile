@@ -136,6 +136,7 @@ dgx-harness-check:
 	scripts/dgx/tracespike_test.sh
 	scripts/dgx/attackerexecutorspike_test.sh
 	scripts/dgx/attackerloopspike_test.sh
+	scripts/dgx/attackerscenariospike_test.sh
 	scripts/dgx/attackercheck_test.sh
 	scripts/dgx/collect_test.sh
 	scripts/dgx/cleanup_test.sh

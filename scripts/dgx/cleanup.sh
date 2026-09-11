@@ -117,7 +117,9 @@ root='/var/tmp/canarysting'
 incoming="${root}/.incoming-${run_id}"
 stage="${root}/${run_id}"
 evidence="${root}/execution-${run_id}"
-readonly root incoming stage evidence
+attacker_scenario_working="${root}/.attackerscenario-${run_id}"
+attacker_scenario_marker="${evidence}/attacker-scenario-recovery"
+readonly root incoming stage evidence attacker_scenario_working attacker_scenario_marker
 
 if [[ ! -e "${root}" && ! -L "${root}" ]]; then
   printf 'mode=%s\nrun_id=%s\nroot=absent\npostcondition=all-candidates-absent\n' "${mode}" "${run_id}"
@@ -137,6 +139,15 @@ validate_common() {
   [[ -z "${unowned}" ]] || fail "candidate contains an entry not owned by the current user: ${unowned}"
 }
 
+guard_attacker_scenario_workspace() {
+  if [[ ! -e "${attacker_scenario_working}" && ! -L "${attacker_scenario_working}" ]]; then
+    return 0
+  fi
+  [[ "${mode}" == 'inspect' ]] ||
+    fail 'active attacker-scenario recovery workspace requires scenario-specific cleanup'
+  validate_common "${attacker_scenario_working}"
+}
+
 validate_artifact_tree() {
   local path="$1"
   local require_complete="$2"
@@ -144,7 +155,7 @@ validate_artifact_tree() {
   local entry
   while IFS= read -r entry; do
     case "${entry}" in
-      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike|f:test/attackerloopspike)
+      d:product|d:test|f:manifest.tsv|f:SHA256SUMS|f:product/engine|f:product/canaryctl|f:product/operator|f:product/envoy-adapter|f:product/dashboard-backend|f:test/cookiespike|f:test/enforcespike|f:test/dgxstackspike|f:test/correlationspike|f:test/tracespike|f:test/attackerexecutorspike|f:test/attackerloopspike|f:test/attackerscenariospike)
         ;;
       *)
         fail "artifact candidate contains an undeclared entry: ${path}/${entry#*:}"
@@ -159,7 +170,7 @@ validate_artifact_tree() {
       [[ "${digest}" =~ ^[0-9a-f]{64}$ && -n "${relative_path}" && -z "${extra:-}" ]] ||
         fail "stage has a malformed checksum entry: ${path}"
       case "${relative_path}" in
-        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike)
+        manifest.tsv|product/engine|product/canaryctl|product/operator|product/envoy-adapter|product/dashboard-backend|test/cookiespike|test/enforcespike|test/dgxstackspike|test/correlationspike|test/tracespike|test/attackerexecutorspike|test/attackerloopspike|test/attackerscenariospike)
           ;;
         *) fail "stage checksum inventory contains an undeclared path: ${relative_path}" ;;
       esac
@@ -190,15 +201,30 @@ validate_model_load_marker() {
     fail 'model ownership marker is malformed'
 }
 
+validate_attacker_scenario_recovery_marker() {
+  local path="$1" marker="${path}/attacker-scenario-recovery"
+  [[ "${mode}" == 'inspect' ]] ||
+    fail 'active attacker-scenario recovery marker requires scenario-specific cleanup'
+  [[ -d "${path}" && ! -L "${path}" && -O "${path}" && "$(stat -c %a "${path}")" == '700' ]] ||
+    fail 'attacker-scenario recovery evidence directory is unsafe'
+  [[ -f "${marker}" && ! -L "${marker}" && -O "${marker}" && "$(stat -c %a "${marker}")" == '600' ]] ||
+    fail 'attacker-scenario recovery marker is unsafe'
+  [[ "$(<"${marker}")" == 'canarysting-attacker-scenario-recovery-v1' ]] ||
+    fail 'attacker-scenario recovery marker is malformed'
+}
+
 validate_evidence() {
   local path="$1"
   validate_common "${path}"
-  local entry marker_present='false'
+  local entry marker_present='false' scenario_marker_present='false'
   while IFS= read -r entry; do
     case "${entry}" in
-      f:stdout.log|f:stderr.log|f:observations.ndjson|f:result.tsv|f:.result.tsv.tmp) ;;
+      f:stdout.log|f:stderr.log|f:observations.ndjson|f:corpus-1.json|f:corpus-2.json|f:proof.log|f:result.tsv|f:.result.tsv.tmp) ;;
       f:model-load-owned)
         marker_present='true'
+        ;;
+      f:attacker-scenario-recovery)
+        scenario_marker_present='true'
         ;;
       *) fail "evidence candidate contains an undeclared entry: ${path}/${entry#*:}" ;;
     esac
@@ -206,6 +232,9 @@ validate_evidence() {
 
   if [[ "${marker_present}" == 'true' ]]; then
     validate_model_load_marker "${path}"
+  fi
+  if [[ "${scenario_marker_present}" == 'true' ]]; then
+    validate_attacker_scenario_recovery_marker "${path}"
   fi
 
   if [[ -f "${path}/result.tsv" ]]; then
@@ -223,6 +252,7 @@ validate_evidence() {
 incoming_state='absent'
 stage_state='absent'
 evidence_state='absent'
+guard_attacker_scenario_workspace
 if [[ -e "${incoming}" || -L "${incoming}" ]]; then
   validate_artifact_tree "${incoming}" no
   incoming_state='validated'
@@ -235,6 +265,8 @@ if [[ -e "${evidence}" || -L "${evidence}" ]]; then
   validate_evidence "${evidence}"
   if [[ -e "${evidence}/model-load-owned" || -L "${evidence}/model-load-owned" ]]; then
     evidence_state='model-owned'
+  elif [[ -e "${attacker_scenario_marker}" || -L "${attacker_scenario_marker}" ]]; then
+    evidence_state='attacker-scenario-recovery'
   else
     evidence_state='validated'
   fi

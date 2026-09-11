@@ -198,6 +198,7 @@ jobs:
               dgx-attacker-check) selected='attacker-check' ;;
               dgx-attacker-executor) selected='attacker-executor' ;;
               dgx-attacker-loop) selected='attacker-loop' ;;
+              dgx-attacker-scenarios) selected='attacker-scenarios' ;;
               dgx-harness) selected='preflight' ;;
               *)
                 echo "No implemented bounded DGX profile for ${required}; refusing weaker substitution" >&2
